@@ -93,10 +93,14 @@ def tokenizer_loss_fn(params, state, inputs):
     return loss, (outputs["recon"], metrics)
 
 
-@jax.jit
 def train_step(state, inputs):
     grad_fn = jax.value_and_grad(tokenizer_loss_fn, has_aux=True, allow_int=True)
     (loss, (recon, metrics)), grads = grad_fn(state.params, state, inputs)
+
+    grads = jax.lax.pmean(grads, axis_name='devices')
+    loss = jax.lax.pmean(loss, axis_name='devices')
+    metrics = jax.lax.pmean(metrics, axis_name='devices')
+
     state = state.apply_gradients(grads=grads)
     if args.log_gradients:
         metrics["encoder_gradients_std/"] = jax.tree.map(
@@ -112,6 +116,18 @@ def train_step(state, inputs):
 
 
 if __name__ == "__main__":
+    num_devices = jax.device_count()
+    if num_devices == 0:
+        raise ValueError("No JAX devices found.")
+    print(f"Running on {num_devices} devices.")
+
+    if args.batch_size % num_devices != 0:
+        raise ValueError(
+            f"Global batch size {args.batch_size} must be divisible by "
+            f"number of devices {num_devices}."
+        )
+    per_device_batch_size = args.batch_size // num_devices
+
     rng = jax.random.PRNGKey(args.seed)
     if args.log:
         wandb.init(entity=args.entity, project=args.project, group="debug", config=args)
@@ -152,25 +168,40 @@ if __name__ == "__main__":
     )
     tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
     train_state = TrainState.create(apply_fn=tokenizer.apply, params=init_params, tx=tx)
+    train_state = jax.device_put_replicated(train_state, jax.local_devices())
+
+    pmapped_train_step = jax.pmap(train_step, axis_name='devices')
 
     # --- TRAIN LOOP ---
     dataloader = get_dataloader(args.data_dir, args.seq_len, args.batch_size)
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
-            rng, _rng = jax.random.split(rng)
-            inputs = dict(videos=videos, rng=_rng)
-            train_state, loss, recon, metrics = train_step(train_state, inputs)
-            print(f"Step {step}, loss: {loss}")
+            rng, _rngs = jax.random.split(rng, num_devices + 1)
+            _rngs = jnp.array(_rngs)
+            
+            videos = einops.rearrange(
+                videos, '(d b) t h w c -> d b t h w c', d=num_devices, b=per_device_batch_size
+            )
+            
+            inputs = dict(videos=videos, rng=_rngs)
+
+            train_state, loss, recon, metrics = pmapped_train_step(
+                train_state, inputs
+            )
+            
+            print(f"Step {step}, loss: {loss[0].item()}")
             step += 1
 
-            # --- Logging ---
             if args.log:
                 if step % args.log_interval == 0:
-                    wandb.log({"loss": loss, "step": step, **metrics})
+                    for k, v_arr in metrics.items():
+                        log_data[k] = v_arr[0].item()
+                    log_data = {"loss": loss[0].item(), "step": step, **log_data}
+
                 if step % args.log_image_interval == 0:
-                    gt_seq = inputs["videos"][0]
-                    recon_seq = recon[0].clip(0, 1)
+                    gt_seq = videos[0, 0]
+                    recon_seq = recon[0, 0].clip(0, 1)
                     comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
                     comparison_seq = einops.rearrange(
                         comparison_seq * 255, "t h w c -> h (t w) c"

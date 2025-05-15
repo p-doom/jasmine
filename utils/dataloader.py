@@ -33,4 +33,5 @@ def get_dataloader(data_dir, seq_len, batch_size):
         batch_size=batch_size,
         shuffle=True,
         collate_fn=collate_fn,
+        drop_last=True,
     )
