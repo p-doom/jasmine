@@ -177,8 +177,8 @@ if __name__ == "__main__":
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
-            rng, _rngs = jax.random.split(rng, num_devices + 1)
-            _rngs = jnp.array(_rngs)
+            rng, *_rngs = jax.random.split(rng, num_devices + 1)
+            _rngs = jnp.stack(_rngs)
             
             videos = einops.rearrange(
                 videos, '(d b) t h w c -> d b t h w c', d=num_devices, b=per_device_batch_size
@@ -195,6 +195,7 @@ if __name__ == "__main__":
 
             if args.log:
                 if step % args.log_interval == 0:
+                    log_data = {}
                     for k, v_arr in metrics.items():
                         log_data[k] = v_arr[0].item()
                     log_data = {"loss": loss[0].item(), "step": step, **log_data}
