@@ -156,7 +156,7 @@ if __name__ == "__main__":
     train_state = TrainState.create(apply_fn=genie.apply, params=init_params, tx=tx)
 
     # --- TRAIN LOOP ---
-    dataloader = get_dataloader(args.data_dir, args.seq_len, args.batch_size)
+    dataloader = get_dataloader(args.data_dir, args.seq_len, args.batch_size, *image_shape)
     step = 0
     while step < args.num_steps:
         for videos in dataloader:

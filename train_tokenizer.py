@@ -173,7 +173,7 @@ if __name__ == "__main__":
     pmapped_train_step = jax.pmap(train_step, axis_name='devices')
 
     # --- TRAIN LOOP ---
-    dataloader = get_dataloader(args.data_dir, args.seq_len, args.batch_size)
+    dataloader = get_dataloader(args.data_dir, args.seq_len, args.batch_size, *image_shape)
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
@@ -190,7 +190,6 @@ if __name__ == "__main__":
                 train_state, inputs
             )
             
-            print(f"Step {step}, loss: {loss[0].item()}")
             step += 1
 
             if args.log:

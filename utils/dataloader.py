@@ -18,7 +18,7 @@ def _load_and_process_numpy(path_bytes, seq_len):
     return (seq.astype(np.float32) / 255.0)
 
 
-def get_tf_dataloader(data_dir_str: str, seq_len: int, global_batch_size: int,
+def get_dataloader(data_dir_str: str, seq_len: int, global_batch_size: int,
                         image_h: int, image_w: int, image_c: int,
                         shuffle_buffer_size: int = 1000, seed: int = 42):
     """
