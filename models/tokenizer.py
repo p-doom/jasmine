@@ -63,7 +63,7 @@ class TokenizerVQVAE(nn.Module):
         indices = indices.reshape(B, T, N)
         return dict(z_q=z_q, z=z, emb=emb, indices=indices)
 
-    def decode(self, indices: Any, video_hw: Tuple[int]):
+    def decode(self, indices: Any, video_hw: Tuple[int, int]):
         z = self.vq.codebook[indices]
         recon = self.decoder(z)
         recon = nn.sigmoid(recon)
