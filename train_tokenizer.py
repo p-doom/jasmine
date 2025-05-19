@@ -29,7 +29,7 @@ class Args:
     seq_len: int = 16
     image_channels: int = 3
     image_resolution: int = 64
-    data_dir: str = "data/coinrun_episodes"
+    data_dir: str = "data_tfrecords/coinrun"
     checkpoint: str = ""
     # Optimization
     vq_beta: float = 0.25
@@ -173,7 +173,8 @@ if __name__ == "__main__":
     pmapped_train_step = jax.pmap(train_step, axis_name='devices')
 
     # --- TRAIN LOOP ---
-    dataloader = get_dataloader(args.data_dir, args.seq_len, args.batch_size, *image_shape)
+    tfrecord_files = [os.path.join(args.data_dir, x) for x in os.listdir(args.data_dir) if x.endswith(".tfrecord")]
+    dataloader = get_dataloader(tfrecord_files, args.seq_len, args.batch_size, *image_shape)
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
@@ -190,6 +191,7 @@ if __name__ == "__main__":
                 train_state, inputs
             )
             
+            print(f"Step {step}")
             step += 1
 
             if args.log:
