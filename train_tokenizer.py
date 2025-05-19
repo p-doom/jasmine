@@ -200,6 +200,7 @@ if __name__ == "__main__":
                     for k, v_arr in metrics.items():
                         log_data[k] = v_arr[0].item()
                     log_data = {"loss": loss[0].item(), "step": step, **log_data}
+                    wandb.log(log_data)
 
                 if step % args.log_image_interval == 0:
                     gt_seq = videos[0, 0]
