@@ -175,6 +175,7 @@ if __name__ == "__main__":
     # --- TRAIN LOOP ---
     tfrecord_files = [os.path.join(args.data_dir, x) for x in os.listdir(args.data_dir) if x.endswith(".tfrecord")]
     dataloader = get_dataloader(tfrecord_files, args.seq_len, args.batch_size, *image_shape)
+    print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---

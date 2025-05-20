@@ -29,7 +29,7 @@ class Args:
     seq_len: int = 16
     image_channels: int = 3
     image_resolution: int = 64
-    data_dir: str = "data_tfrecords/coinrun_episodes"
+    data_dir: str = "data_tfrecords/coinrun"
     checkpoint: str = ""
     # Optimization
     batch_size: int = 36
@@ -92,12 +92,17 @@ def lam_loss_fn(params, state, inputs):
     return loss, (outputs["recon"], index_counts, metrics)
 
 
-@jax.jit
 def train_step(state, inputs, action_last_active):
     # --- Update model ---
-    rng, inputs["rng"] = jax.random.split(inputs["rng"])
+    rng_for_choice = jax.random.fold_in(inputs["rng_keys_all_devices"], state.step)
     grad_fn = jax.value_and_grad(lam_loss_fn, has_aux=True, allow_int=True)
     (loss, (recon, idx_counts, metrics)), grads = grad_fn(state.params, state, inputs)
+
+    grads = jax.lax.pmean(grads, axis_name='devices')
+    loss = jax.lax.pmean(loss, axis_name='devices')
+    metrics = jax.lax.pmean(metrics, axis_name='devices')
+    idx_counts = jax.lax.psum(idx_counts, axis_name='devices')
+
     state = state.apply_gradients(grads=grads)
 
     # --- Reset inactive latent actions ---
@@ -106,17 +111,31 @@ def train_step(state, inputs, action_last_active):
     active_codes = idx_counts != 0.0
     action_last_active = jnp.where(active_codes, 0, action_last_active + 1)
     p_code = active_codes / active_codes.sum()
-    reset_idxs = jax.random.choice(rng, num_codes, shape=(num_codes,), p=p_code)
+    reset_idxs = jax.random.choice(rng_for_choice, num_codes, shape=(num_codes,), p=p_code)
     do_reset = action_last_active >= args.vq_reset_thresh
     new_codebook = jnp.where(
         jnp.expand_dims(do_reset, -1), codebook[reset_idxs], codebook
     )
+    # FIXME: The following line attempts to mutate a FrozenDict, which will not work as expected
+    # or may raise an error.
     state.params["params"]["vq"]["codebook"] = new_codebook
     action_last_active = jnp.where(do_reset, 0, action_last_active)
     return state, loss, recon, action_last_active, metrics
 
 
 if __name__ == "__main__":
+    num_devices = jax.device_count()
+    if num_devices == 0:
+        raise ValueError("No JAX devices found.")
+    print(f"Running on {num_devices} devices.")
+
+    if args.batch_size % num_devices != 0:
+        raise ValueError(
+            f"Global batch size {args.batch_size} must be divisible by "
+            f"number of devices {num_devices}."
+        )
+    per_device_batch_size = args.batch_size // num_devices
+
     rng = jax.random.PRNGKey(args.seed)
     if args.log:
         wandb.init(entity=args.entity, project=args.project, group="debug", config=args)
@@ -136,15 +155,15 @@ if __name__ == "__main__":
     # Track when each action was last sampled
     action_last_active = jnp.zeros(args.num_latents)
     image_shape = (args.image_resolution, args.image_resolution, args.image_channels)
-    rng, _rng = jax.random.split(rng)
-    inputs = dict(
+    rng, _rng_init_videos = jax.random.split(rng)
+    inputs_for_init = dict(
         videos=jnp.zeros(
             (args.batch_size, args.seq_len, *image_shape), dtype=jnp.float32
         ),
-        rng=_rng,
+        rng=_rng_init_videos,
     )
-    rng, _rng = jax.random.split(rng)
-    init_params = lam.init(_rng, inputs)
+    rng, _rng_params = jax.random.split(rng)
+    init_params = lam.init(_rng_params, inputs_for_init)
 
     # --- Load checkpoint ---
     step = 0
@@ -161,28 +180,50 @@ if __name__ == "__main__":
     )
     tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
     train_state = TrainState.create(apply_fn=lam.apply, params=init_params, tx=tx)
+    train_state = jax.device_put_replicated(train_state, jax.local_devices())
+    action_last_active_replicated = jax.device_put_replicated(action_last_active, jax.local_devices())
+
+    pmapped_train_step = jax.pmap(train_step, axis_name='devices')
 
     # --- TRAIN LOOP ---
     tfrecord_files = [os.path.join(args.data_dir, x) for x in os.listdir(args.data_dir) if x.endswith(".tfrecord")]
     dataloader = get_dataloader(tfrecord_files, args.seq_len, args.batch_size, *image_shape)
+    print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
-            rng, _rng = jax.random.split(rng)
-            inputs = dict(videos=videos, rng=_rng)
-            train_state, loss, recon, action_last_active, metrics = train_step(
-                train_state, inputs, action_last_active
+            rng, dropout_key_seed, choice_key_seed_scalar = jax.random.split(rng, 3)
+            per_device_dropout_keys = jax.random.split(dropout_key_seed, num_devices)
+            replicated_choice_key_seed = jnp.stack([choice_key_seed_scalar] * num_devices)
+            videos = einops.rearrange(
+                videos, '(d b) t h w c -> d b t h w c', 
+                d=num_devices, b=per_device_batch_size
             )
-            print(f"Step {step}, loss: {loss}")
+            # FIXME: Think about whether this is correct
+            inputs_for_step = dict(
+                videos=videos, 
+                rng=per_device_dropout_keys, 
+                rng_keys_all_devices=replicated_choice_key_seed
+            )
+
+            train_state, loss, recon, action_last_active_replicated, metrics = pmapped_train_step(
+                train_state, inputs_for_step, action_last_active_replicated
+            )
+            if jax.process_index() == 0:
+                print(f"Step {step}, loss: {loss[0].item()}")
             step += 1
 
             # --- Logging ---
-            if args.log:
+            if args.log and jax.process_index() == 0:
                 if step % args.log_interval == 0:
-                    wandb.log({"loss": loss, "step": step, **metrics})
+                    log_data = {}
+                    for k, v_arr in metrics.items():
+                        log_data[k] = v_arr[0].item()
+                    log_data = {"loss": loss[0].item(), "step": step, **log_data}
+                    wandb.log(log_data)
                 if step % args.log_image_interval == 0:
-                    gt_seq = inputs["videos"][0][1:]
-                    recon_seq = recon[0].clip(0, 1)
+                    gt_seq = videos[0, 0, 1:]
+                    recon_seq = recon[0, 0].clip(0, 1)
                     comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
                     comparison_seq = einops.rearrange(
                         comparison_seq * 255, "t h w c -> h (t w) c"
@@ -196,6 +237,8 @@ if __name__ == "__main__":
                     )
                     wandb.log(log_images)
                 if step % args.log_checkpoint_interval == 0:
+                    # (f.srambical) WARN: use AsyncCheckpointer instead
+                    # (f.srambical) WARN: also checkpoint action_last_active to be able to resume runs
                     ckpt = {"model": train_state}
                     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
                     save_args = orbax_utils.save_args_from_target(ckpt)
