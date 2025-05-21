@@ -92,11 +92,15 @@ def dynamics_loss_fn(params, state, inputs):
     return ce_loss, (outputs["recon"], metrics)
 
 
-@jax.jit
 def train_step(state, inputs):
     """Update state and compute metrics"""
     grad_fn = jax.value_and_grad(dynamics_loss_fn, has_aux=True, allow_int=True)
     (loss, (recon, metrics)), grads = grad_fn(state.params, state, inputs)
+
+    grads = jax.lax.pmean(grads, axis_name='devices')
+    loss = jax.lax.pmean(loss, axis_name='devices')
+    metrics = jax.lax.pmean(metrics, axis_name='devices')
+
     state = state.apply_gradients(grads=grads)
     if args.log_gradients:
         metrics["gradients_std/"] = jax.tree.map(
@@ -106,6 +110,18 @@ def train_step(state, inputs):
 
 
 if __name__ == "__main__":
+    num_devices = jax.device_count()
+    if num_devices == 0:
+        raise ValueError("No JAX devices found.")
+    print(f"Running on {num_devices} devices.")
+
+    if args.batch_size % num_devices != 0:
+        raise ValueError(
+            f"Global batch size {args.batch_size} must be divisible by "
+            f"number of devices {num_devices}."
+        )
+    per_device_batch_size = args.batch_size // num_devices
+
     rng = jax.random.PRNGKey(args.seed)
     if args.log:
         wandb.init(entity=args.entity, project=args.project, group="debug", config=args)
@@ -154,39 +170,60 @@ if __name__ == "__main__":
     )
     tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
     train_state = TrainState.create(apply_fn=genie.apply, params=init_params, tx=tx)
+    train_state = jax.device_put_replicated(train_state, jax.local_devices())
+
+    pmapped_train_step = jax.pmap(train_step, axis_name='devices')
 
     # --- TRAIN LOOP ---
     tfrecord_files = [os.path.join(args.data_dir, x) for x in os.listdir(args.data_dir) if x.endswith(".tfrecord")]
     dataloader = get_dataloader(tfrecord_files, args.seq_len, args.batch_size, *image_shape)
     step = 0
+    print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
-            rng, _rng, _mask_rng = jax.random.split(rng, 3)
+            rng, base_dropout_rng, base_mask_rng = jax.random.split(rng, 3)
+            _rngs = jax.random.split(base_dropout_rng, num_devices)
+            _mask_rngs = jax.random.split(base_mask_rng, num_devices)
+            
+            videos = einops.rearrange(
+                videos, '(d b) t h w c -> d b t h w c', d=num_devices, b=per_device_batch_size
+            )
+            
+            actions_global = jnp.zeros((args.batch_size, args.seq_len), dtype=jnp.float32)
+            actions = einops.rearrange(
+                actions_global, '(d b) t -> d b t', d=num_devices, b=per_device_batch_size
+            )
+
             inputs = dict(
                 videos=videos,
-                action=jnp.zeros((args.batch_size, args.seq_len), dtype=jnp.float32),
-                dropout_rng=_rng,
-                mask_rng=_mask_rng,
+                action=actions,
+                dropout_rng=_rngs,
+                mask_rng=_mask_rngs,
             )
-            train_state, loss, recon, metrics = train_step(train_state, inputs)
-            print(f"Step {step}, loss: {loss}")
+            train_state, loss, recon, metrics = pmapped_train_step(train_state, inputs)
+            print(f"Step {step}, loss: {loss[0].item()}")
             step += 1
 
             # --- Logging ---
             if args.log:
                 if step % args.log_interval == 0:
-                    wandb.log({"loss": loss, "step": step, **metrics})
+                    log_data = {}
+                    for k, v_arr in metrics.items():
+                        log_data[k] = v_arr[0].item()
+                    log_data = {"loss": loss[0].item(), "step": step, **log_data}
+                    wandb.log(log_data)
+
                 if step % args.log_image_interval == 0:
-                    gt_seq = inputs["videos"][0]
-                    recon_seq = recon[0].clip(0, 1)
+                    gt_seq = videos[0, 0] 
+                    recon_seq = recon[0, 0].clip(0, 1)
                     comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
                     comparison_seq = einops.rearrange(
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
                     log_images = dict(
-                        image=wandb.Image(np.asarray(gt_seq[15])),
-                        recon=wandb.Image(np.asarray(recon_seq[15])),
+                        image=wandb.Image(np.asarray(gt_seq[args.seq_len-1])),
+                        recon=wandb.Image(np.asarray(recon_seq[args.seq_len-1])),
                         true_vs_recon=wandb.Image(
                             np.asarray(comparison_seq.astype(np.uint8))
                         ),
