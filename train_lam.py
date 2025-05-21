@@ -94,7 +94,6 @@ def lam_loss_fn(params, state, inputs):
 
 def train_step(state, inputs, action_last_active):
     # --- Update model ---
-    rng_for_choice = jax.random.fold_in(inputs["rng_keys_all_devices"], state.step)
     grad_fn = jax.value_and_grad(lam_loss_fn, has_aux=True, allow_int=True)
     (loss, (recon, idx_counts, metrics)), grads = grad_fn(state.params, state, inputs)
 
@@ -111,7 +110,7 @@ def train_step(state, inputs, action_last_active):
     active_codes = idx_counts != 0.0
     action_last_active = jnp.where(active_codes, 0, action_last_active + 1)
     p_code = active_codes / active_codes.sum()
-    reset_idxs = jax.random.choice(rng_for_choice, num_codes, shape=(num_codes,), p=p_code)
+    reset_idxs = jax.random.choice(inputs["rng_for_choice"], num_codes, shape=(num_codes,), p=p_code)
     do_reset = action_last_active >= args.vq_reset_thresh
     new_codebook = jnp.where(
         jnp.expand_dims(do_reset, -1), codebook[reset_idxs], codebook
@@ -192,23 +191,25 @@ if __name__ == "__main__":
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
-            rng, dropout_key_seed, choice_key_seed_scalar = jax.random.split(rng, 3)
-            per_device_dropout_keys = jax.random.split(dropout_key_seed, num_devices)
-            replicated_choice_key_seed = jnp.stack([choice_key_seed_scalar] * num_devices)
+            rng, *_rngs, choice_key_scalar = jax.random.split(rng, num_devices + 2)
+            _rngs = jnp.stack(_rngs)
+            replicated_choice_key = jnp.stack([choice_key_scalar] * num_devices)
+
             videos = einops.rearrange(
                 videos, '(d b) t h w c -> d b t h w c', 
                 d=num_devices, b=per_device_batch_size
             )
-            # FIXME: Think about whether this is correct
+            
             inputs_for_step = dict(
                 videos=videos, 
-                rng=per_device_dropout_keys, 
-                rng_keys_all_devices=replicated_choice_key_seed
+                rng=_rngs, 
+                rng_for_choice=replicated_choice_key
             )
 
             train_state, loss, recon, action_last_active_replicated, metrics = pmapped_train_step(
                 train_state, inputs_for_step, action_last_active_replicated
             )
+
             if jax.process_index() == 0:
                 print(f"Step {step}, loss: {loss[0].item()}")
             step += 1
