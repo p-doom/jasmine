@@ -15,12 +15,12 @@ import tyro
 @dataclass
 class Args:
     num_episodes: int = 10000
-    output_dir: str = "data/coinrun_episodes"
+    env_name: str = "coinrun"
     min_episode_length: int = 50
 
 
 args = tyro.cli(Args)
-output_dir = Path(args.output_dir)
+output_dir = f"data/{args.env_name}_episodes"
 output_dir.mkdir(parents=True, exist_ok=True)
 
 # --- Generate episodes ---
