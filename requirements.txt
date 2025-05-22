@@ -7,3 +7,4 @@ procgen>=0.10.7
 torch>=2.0.1
 tyro>=0.8.5
 wandb>=0.17.4
+gym==0.25.2 # Last version that supports backward compatibility https://github.com/openai/gym/releases/tag/0.26.0
