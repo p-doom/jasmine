@@ -5,6 +5,7 @@ import time
 import einops
 from flax.training import orbax_utils
 from flax.training.train_state import TrainState
+from flax.jax_utils import unreplicate
 import optax
 import orbax
 from orbax.checkpoint import PyTreeCheckpointer
@@ -192,7 +193,8 @@ if __name__ == "__main__":
                 train_state, inputs
             )
             
-            print(f"Step {step}")
+            if jax.process_index() == 0:
+                print(f"Step {step}, loss: {loss[0].item()}")
             step += 1
 
             if args.log:
@@ -219,7 +221,9 @@ if __name__ == "__main__":
                     )
                     wandb.log(log_images)
                 if step % args.log_checkpoint_interval == 0:
-                    ckpt = {"model": train_state}
+                    # (f.srambical) WARN: use AsyncCheckpointer instead
+                    # (f.srambical) WARN: also checkpoint action_last_active to be able to resume runs
+                    ckpt = {"model": unreplicate(train_state)}
                     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
                     save_args = orbax_utils.save_args_from_target(ckpt)
                     orbax_checkpointer.save(
