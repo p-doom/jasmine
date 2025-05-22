@@ -97,9 +97,9 @@ def train_step(state, inputs):
     grad_fn = jax.value_and_grad(dynamics_loss_fn, has_aux=True, allow_int=True)
     (loss, (recon, metrics)), grads = grad_fn(state.params, state, inputs)
 
-    grads = jax.lax.pmean(grads, axis_name='devices')
-    loss = jax.lax.pmean(loss, axis_name='devices')
-    metrics = jax.lax.pmean(metrics, axis_name='devices')
+    grads = jax.lax.pmean(grads, axis_name="devices")
+    loss = jax.lax.pmean(loss, axis_name="devices")
+    metrics = jax.lax.pmean(metrics, axis_name="devices")
 
     state = state.apply_gradients(grads=grads)
     if args.log_gradients:
@@ -172,11 +172,17 @@ if __name__ == "__main__":
     train_state = TrainState.create(apply_fn=genie.apply, params=init_params, tx=tx)
     train_state = jax.device_put_replicated(train_state, jax.local_devices())
 
-    pmapped_train_step = jax.pmap(train_step, axis_name='devices')
+    pmapped_train_step = jax.pmap(train_step, axis_name="devices")
 
     # --- TRAIN LOOP ---
-    tfrecord_files = [os.path.join(args.data_dir, x) for x in os.listdir(args.data_dir) if x.endswith(".tfrecord")]
-    dataloader = get_dataloader(tfrecord_files, args.seq_len, args.batch_size, *image_shape)
+    tfrecord_files = [
+        os.path.join(args.data_dir, x)
+        for x in os.listdir(args.data_dir)
+        if x.endswith(".tfrecord")
+    ]
+    dataloader = get_dataloader(
+        tfrecord_files, args.seq_len, args.batch_size, *image_shape
+    )
     step = 0
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
@@ -185,14 +191,22 @@ if __name__ == "__main__":
             rng, base_dropout_rng, base_mask_rng = jax.random.split(rng, 3)
             _rngs = jax.random.split(base_dropout_rng, num_devices)
             _mask_rngs = jax.random.split(base_mask_rng, num_devices)
-            
+
             videos = einops.rearrange(
-                videos, '(d b) t h w c -> d b t h w c', d=num_devices, b=per_device_batch_size
+                videos,
+                "(d b) t h w c -> d b t h w c",
+                d=num_devices,
+                b=per_device_batch_size,
             )
-            
-            actions_global = jnp.zeros((args.batch_size, args.seq_len), dtype=jnp.float32)
+
+            actions_global = jnp.zeros(
+                (args.batch_size, args.seq_len), dtype=jnp.float32
+            )
             actions = einops.rearrange(
-                actions_global, '(d b) t -> d b t', d=num_devices, b=per_device_batch_size
+                actions_global,
+                "(d b) t -> d b t",
+                d=num_devices,
+                b=per_device_batch_size,
             )
 
             inputs = dict(
@@ -215,15 +229,15 @@ if __name__ == "__main__":
                     wandb.log(log_data)
 
                 if step % args.log_image_interval == 0:
-                    gt_seq = videos[0, 0] 
+                    gt_seq = videos[0, 0]
                     recon_seq = recon[0, 0].clip(0, 1)
                     comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
                     comparison_seq = einops.rearrange(
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
                     log_images = dict(
-                        image=wandb.Image(np.asarray(gt_seq[args.seq_len-1])),
-                        recon=wandb.Image(np.asarray(recon_seq[args.seq_len-1])),
+                        image=wandb.Image(np.asarray(gt_seq[args.seq_len - 1])),
+                        recon=wandb.Image(np.asarray(recon_seq[args.seq_len - 1])),
                         true_vs_recon=wandb.Image(
                             np.asarray(comparison_seq.astype(np.uint8))
                         ),

@@ -98,9 +98,9 @@ def train_step(state, inputs):
     grad_fn = jax.value_and_grad(tokenizer_loss_fn, has_aux=True, allow_int=True)
     (loss, (recon, metrics)), grads = grad_fn(state.params, state, inputs)
 
-    grads = jax.lax.pmean(grads, axis_name='devices')
-    loss = jax.lax.pmean(loss, axis_name='devices')
-    metrics = jax.lax.pmean(metrics, axis_name='devices')
+    grads = jax.lax.pmean(grads, axis_name="devices")
+    loss = jax.lax.pmean(loss, axis_name="devices")
+    metrics = jax.lax.pmean(metrics, axis_name="devices")
 
     state = state.apply_gradients(grads=grads)
     if args.log_gradients:
@@ -171,28 +171,35 @@ if __name__ == "__main__":
     train_state = TrainState.create(apply_fn=tokenizer.apply, params=init_params, tx=tx)
     train_state = jax.device_put_replicated(train_state, jax.local_devices())
 
-    pmapped_train_step = jax.pmap(train_step, axis_name='devices')
+    pmapped_train_step = jax.pmap(train_step, axis_name="devices")
 
     # --- TRAIN LOOP ---
-    tfrecord_files = [os.path.join(args.data_dir, x) for x in os.listdir(args.data_dir) if x.endswith(".tfrecord")]
-    dataloader = get_dataloader(tfrecord_files, args.seq_len, args.batch_size, *image_shape)
+    tfrecord_files = [
+        os.path.join(args.data_dir, x)
+        for x in os.listdir(args.data_dir)
+        if x.endswith(".tfrecord")
+    ]
+    dataloader = get_dataloader(
+        tfrecord_files, args.seq_len, args.batch_size, *image_shape
+    )
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
             rng, *_rngs = jax.random.split(rng, num_devices + 1)
             _rngs = jnp.stack(_rngs)
-            
+
             videos = einops.rearrange(
-                videos, '(d b) t h w c -> d b t h w c', d=num_devices, b=per_device_batch_size
+                videos,
+                "(d b) t h w c -> d b t h w c",
+                d=num_devices,
+                b=per_device_batch_size,
             )
-            
+
             inputs = dict(videos=videos, rng=_rngs)
 
-            train_state, loss, recon, metrics = pmapped_train_step(
-                train_state, inputs
-            )
-            
+            train_state, loss, recon, metrics = pmapped_train_step(train_state, inputs)
+
             if jax.process_index() == 0:
                 print(f"Step {step}, loss: {loss[0].item()}")
             step += 1

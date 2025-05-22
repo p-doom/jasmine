@@ -98,10 +98,10 @@ def train_step(state, inputs, action_last_active):
     grad_fn = jax.value_and_grad(lam_loss_fn, has_aux=True, allow_int=True)
     (loss, (recon, idx_counts, metrics)), grads = grad_fn(state.params, state, inputs)
 
-    grads = jax.lax.pmean(grads, axis_name='devices')
-    loss = jax.lax.pmean(loss, axis_name='devices')
-    metrics = jax.lax.pmean(metrics, axis_name='devices')
-    idx_counts = jax.lax.psum(idx_counts, axis_name='devices')
+    grads = jax.lax.pmean(grads, axis_name="devices")
+    loss = jax.lax.pmean(loss, axis_name="devices")
+    metrics = jax.lax.pmean(metrics, axis_name="devices")
+    idx_counts = jax.lax.psum(idx_counts, axis_name="devices")
 
     state = state.apply_gradients(grads=grads)
 
@@ -111,7 +111,9 @@ def train_step(state, inputs, action_last_active):
     active_codes = idx_counts != 0.0
     action_last_active = jnp.where(active_codes, 0, action_last_active + 1)
     p_code = active_codes / active_codes.sum()
-    reset_idxs = jax.random.choice(inputs["rng_for_choice"], num_codes, shape=(num_codes,), p=p_code)
+    reset_idxs = jax.random.choice(
+        inputs["rng_for_choice"], num_codes, shape=(num_codes,), p=p_code
+    )
     do_reset = action_last_active >= args.vq_reset_thresh
     new_codebook = jnp.where(
         jnp.expand_dims(do_reset, -1), codebook[reset_idxs], codebook
@@ -181,13 +183,21 @@ if __name__ == "__main__":
     tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
     train_state = TrainState.create(apply_fn=lam.apply, params=init_params, tx=tx)
     train_state = jax.device_put_replicated(train_state, jax.local_devices())
-    action_last_active_replicated = jax.device_put_replicated(action_last_active, jax.local_devices())
+    action_last_active_replicated = jax.device_put_replicated(
+        action_last_active, jax.local_devices()
+    )
 
-    pmapped_train_step = jax.pmap(train_step, axis_name='devices')
+    pmapped_train_step = jax.pmap(train_step, axis_name="devices")
 
     # --- TRAIN LOOP ---
-    tfrecord_files = [os.path.join(args.data_dir, x) for x in os.listdir(args.data_dir) if x.endswith(".tfrecord")]
-    dataloader = get_dataloader(tfrecord_files, args.seq_len, args.batch_size, *image_shape)
+    tfrecord_files = [
+        os.path.join(args.data_dir, x)
+        for x in os.listdir(args.data_dir)
+        if x.endswith(".tfrecord")
+    ]
+    dataloader = get_dataloader(
+        tfrecord_files, args.seq_len, args.batch_size, *image_shape
+    )
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
@@ -197,18 +207,20 @@ if __name__ == "__main__":
             replicated_choice_key = jnp.stack([choice_key_scalar] * num_devices)
 
             videos = einops.rearrange(
-                videos, '(d b) t h w c -> d b t h w c', 
-                d=num_devices, b=per_device_batch_size
-            )
-            
-            inputs_for_step = dict(
-                videos=videos, 
-                rng=_rngs, 
-                rng_for_choice=replicated_choice_key
+                videos,
+                "(d b) t h w c -> d b t h w c",
+                d=num_devices,
+                b=per_device_batch_size,
             )
 
-            train_state, loss, recon, action_last_active_replicated, metrics = pmapped_train_step(
-                train_state, inputs_for_step, action_last_active_replicated
+            inputs_for_step = dict(
+                videos=videos, rng=_rngs, rng_for_choice=replicated_choice_key
+            )
+
+            train_state, loss, recon, action_last_active_replicated, metrics = (
+                pmapped_train_step(
+                    train_state, inputs_for_step, action_last_active_replicated
+                )
             )
 
             if jax.process_index() == 0:

@@ -2,6 +2,7 @@ import functools
 
 import tensorflow as tf
 
+
 # --- TensorFlow function for processing: slicing, normalization ---
 def _tf_process_episode(episode_tensor, seq_len, image_h, image_w, image_c):
     """
@@ -23,8 +24,10 @@ def _tf_process_episode(episode_tensor, seq_len, image_h, image_w, image_c):
     current_episode_len = tf.shape(episode_tensor)[0]
 
     max_start_idx = current_episode_len - seq_len
-    
-    start_idx = tf.random.uniform(shape=(), minval=0, maxval=max_start_idx + 1, dtype=tf.int32)
+
+    start_idx = tf.random.uniform(
+        shape=(), minval=0, maxval=max_start_idx + 1, dtype=tf.int32
+    )
 
     seq = episode_tensor[start_idx : start_idx + seq_len]
 
@@ -39,51 +42,54 @@ def _tf_process_episode(episode_tensor, seq_len, image_h, image_w, image_c):
 
 def _parse_tfrecord_fn(example_proto, image_h, image_w, image_c):
     feature_description = {
-        'height': tf.io.FixedLenFeature([], tf.int64),
-        'width': tf.io.FixedLenFeature([], tf.int64),
-        'channels': tf.io.FixedLenFeature([], tf.int64),
-        'sequence_length': tf.io.FixedLenFeature([], tf.int64),
-        'raw_video': tf.io.FixedLenFeature([], tf.string),
+        "height": tf.io.FixedLenFeature([], tf.int64),
+        "width": tf.io.FixedLenFeature([], tf.int64),
+        "channels": tf.io.FixedLenFeature([], tf.int64),
+        "sequence_length": tf.io.FixedLenFeature([], tf.int64),
+        "raw_video": tf.io.FixedLenFeature([], tf.string),
     }
     example = tf.io.parse_single_example(example_proto, feature_description)
-    
-    video_shape = (
-        example['sequence_length'],
-        image_h,
-        image_w,
-        image_c
-    )
-    
-    episode_tensor = tf.io.decode_raw(example['raw_video'], out_type=tf.uint8)
+
+    video_shape = (example["sequence_length"], image_h, image_w, image_c)
+
+    episode_tensor = tf.io.decode_raw(example["raw_video"], out_type=tf.uint8)
     episode_tensor = tf.reshape(episode_tensor, video_shape)
-    
+
     episode_tensor = tf.ensure_shape(episode_tensor, [None, image_h, image_w, image_c])
     return episode_tensor
 
 
-def get_dataloader(tfrecord_paths: list[str], # List of TFRecord file paths
-                   seq_len: int, global_batch_size: int,
-                   image_h: int, image_w: int, image_c: int,
-                   shuffle_buffer_size: int = 1000,
-                   num_parallel_calls: int = tf.data.AUTOTUNE,
-                   cache_processed_data: bool = True,
-                   seed: int = 42):
+def get_dataloader(
+    tfrecord_paths: list[str],  # List of TFRecord file paths
+    seq_len: int,
+    global_batch_size: int,
+    image_h: int,
+    image_w: int,
+    image_c: int,
+    shuffle_buffer_size: int = 1000,
+    num_parallel_calls: int = tf.data.AUTOTUNE,
+    cache_processed_data: bool = True,
+    seed: int = 42,
+):
     """
     Creates a tf.data.Dataset pipeline from TFRecord files.
     """
     if not tfrecord_paths:
         raise ValueError("tfrecord_paths list cannot be empty.")
 
-    dataset = tf.data.TFRecordDataset(tfrecord_paths, num_parallel_reads=tf.data.AUTOTUNE)
+    dataset = tf.data.TFRecordDataset(
+        tfrecord_paths, num_parallel_reads=tf.data.AUTOTUNE
+    )
 
     # (f.srambical) NOTE: For TFRecords, it's often good to have a large shuffle buffer.
     if shuffle_buffer_size > 0:
-        dataset = dataset.shuffle(buffer_size=shuffle_buffer_size,
-                                  seed=seed,
-                                  reshuffle_each_iteration=True)
+        dataset = dataset.shuffle(
+            buffer_size=shuffle_buffer_size, seed=seed, reshuffle_each_iteration=True
+        )
 
-    parse_fn = functools.partial(_parse_tfrecord_fn,
-                                 image_h=image_h, image_w=image_w, image_c=image_c)
+    parse_fn = functools.partial(
+        _parse_tfrecord_fn, image_h=image_h, image_w=image_w, image_c=image_c
+    )
     dataset = dataset.map(parse_fn, num_parallel_calls=num_parallel_calls)
 
     tf_process_fn = functools.partial(
@@ -91,10 +97,10 @@ def get_dataloader(tfrecord_paths: list[str], # List of TFRecord file paths
         seq_len=seq_len,
         image_h=image_h,
         image_w=image_w,
-        image_c=image_c
+        image_c=image_c,
     )
     dataset = dataset.map(tf_process_fn, num_parallel_calls=num_parallel_calls)
-    
+
     dataset = dataset.cache() if cache_processed_data else dataset
 
     dataset = dataset.repeat(None)
