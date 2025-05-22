@@ -17,6 +17,7 @@ Jafar was built with `python 3.10` and `jax 0.4.30`. To install requirements, ru
 
 ```bash
 pip install -r requirements.txt
+pre-commit install
 ```
 
 Before training the models, generate the CoinRun dataset by running:

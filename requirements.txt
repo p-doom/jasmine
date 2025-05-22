@@ -7,3 +7,4 @@ procgen>=0.10.7
 torch>=2.0.1
 tyro>=0.8.5
 wandb>=0.17.4
+pre-commit>=4.2.0
