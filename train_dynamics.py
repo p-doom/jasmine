@@ -5,6 +5,8 @@ import time
 import einops
 from flax.training import orbax_utils
 from flax.training.train_state import TrainState
+from jax.sharding import Mesh, PartitionSpec, NamedSharding
+from jax.experimental.mesh_utils import create_device_mesh
 import optax
 import orbax
 import numpy as np
@@ -106,6 +108,17 @@ def train_step(state, inputs):
 
 
 if __name__ == "__main__":
+    num_devices = jax.device_count()
+    if num_devices == 0:
+        raise ValueError("No JAX devices found.")
+    print(f"Running on {num_devices} devices.")
+
+    if args.batch_size % num_devices != 0:
+        raise ValueError(
+            f"Global batch size {args.batch_size} must be divisible by "
+            f"number of devices {num_devices}."
+        )
+
     rng = jax.random.PRNGKey(args.seed)
     if args.log:
         wandb.init(entity=args.entity, project=args.project, group="debug", config=args)
@@ -140,6 +153,7 @@ if __name__ == "__main__":
         videos=jnp.zeros(
             (args.batch_size, args.seq_len, *image_shape), dtype=jnp.float32
         ),
+        action=jnp.zeros((args.batch_size, args.seq_len), dtype=jnp.float32),
         mask_rng=_rng,
     )
     rng, _rng = jax.random.split(rng)
@@ -155,6 +169,12 @@ if __name__ == "__main__":
     tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
     train_state = TrainState.create(apply_fn=genie.apply, params=init_params, tx=tx)
 
+    device_mesh_arr = create_device_mesh((num_devices,))
+    mesh = Mesh(devices=device_mesh_arr, axis_names=('data',))
+
+    replicated_sharding = NamedSharding(mesh, PartitionSpec())
+    train_state = jax.device_put(train_state, replicated_sharding)
+
     # --- TRAIN LOOP ---
     tfrecord_files = [
         os.path.join(args.data_dir, x)
@@ -169,9 +189,17 @@ if __name__ == "__main__":
         for videos in dataloader:
             # --- Train step ---
             rng, _rng, _mask_rng = jax.random.split(rng, 3)
+            
+            videos_sharding = NamedSharding(mesh, PartitionSpec('data', None, None, None, None))
+            videos = jax.device_put(videos, videos_sharding)
+            
+            action_data = jnp.zeros((args.batch_size, args.seq_len), dtype=jnp.float32)
+            action_sharding = NamedSharding(mesh, PartitionSpec('data', None))
+            action = jax.device_put(action_data, action_sharding)
+            
             inputs = dict(
                 videos=videos,
-                action=jnp.zeros((args.batch_size, args.seq_len), dtype=jnp.float32),
+                action=action,
                 dropout_rng=_rng,
                 mask_rng=_mask_rng,
             )
@@ -191,8 +219,8 @@ if __name__ == "__main__":
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
                     log_images = dict(
-                        image=wandb.Image(np.asarray(gt_seq[15])),
-                        recon=wandb.Image(np.asarray(recon_seq[15])),
+                        image=wandb.Image(np.asarray(gt_seq[args.seq_len-1])),
+                        recon=wandb.Image(np.asarray(recon_seq[args.seq_len-1])),
                         true_vs_recon=wandb.Image(
                             np.asarray(comparison_seq.astype(np.uint8))
                         ),

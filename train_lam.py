@@ -5,6 +5,8 @@ import time
 import einops
 from flax.training import orbax_utils
 from flax.training.train_state import TrainState
+from jax.sharding import Mesh, PartitionSpec, NamedSharding
+from jax.experimental.mesh_utils import create_device_mesh
 import optax
 import orbax
 from orbax.checkpoint import PyTreeCheckpointer
@@ -117,6 +119,17 @@ def train_step(state, inputs, action_last_active):
 
 
 if __name__ == "__main__":
+    num_devices = jax.device_count()
+    if num_devices == 0:
+        raise ValueError("No JAX devices found.")
+    print(f"Running on {num_devices} devices.")
+
+    if args.batch_size % num_devices != 0:
+        raise ValueError(
+            f"Global batch size {args.batch_size} must be divisible by "
+            f"number of devices {num_devices}."
+        )
+
     rng = jax.random.PRNGKey(args.seed)
     if args.log:
         wandb.init(entity=args.entity, project=args.project, group="debug", config=args)
@@ -161,6 +174,15 @@ if __name__ == "__main__":
     )
     tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
     train_state = TrainState.create(apply_fn=lam.apply, params=init_params, tx=tx)
+    
+    # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
+    device_mesh_arr = create_device_mesh((num_devices,))
+    mesh = Mesh(devices=device_mesh_arr, axis_names=('data',))
+
+    replicated_sharding = NamedSharding(mesh, PartitionSpec())
+    train_state = jax.device_put(train_state, replicated_sharding)
+    action_last_active = jax.device_put(action_last_active, replicated_sharding)
+
 
     # --- TRAIN LOOP ---
     tfrecord_files = [
@@ -176,6 +198,10 @@ if __name__ == "__main__":
         for videos in dataloader:
             # --- Train step ---
             rng, _rng = jax.random.split(rng)
+            
+            videos_sharding = NamedSharding(mesh, PartitionSpec('data', None, None, None, None))
+            videos = jax.device_put(videos, videos_sharding)
+            
             inputs = dict(videos=videos, rng=_rng)
             train_state, loss, recon, action_last_active, metrics = train_step(
                 train_state, inputs, action_last_active
