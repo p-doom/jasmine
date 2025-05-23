@@ -27,6 +27,12 @@ python generate_dataset.py --num_episodes 10000
 
 Note: this is a large dataset (around 100GB) and may take a while to generate.
 
+For performant distributed training, we additionally preprocess the dataset into `TFRecord`s:
+
+```bash
+python preprocess_dataset.py
+```
+
 <h2 name="train" id="train">Quick Start 🚀 </h2>
 
 Genie has three components: a [video tokenizer](models/tokenizer.py), a [latent action model](models/lam.py), and a [dynamics model](models/dynamics.py). Each of these components are trained separately, however, the dynamics model requires a pre-trained video tokenizer and latent action model.
