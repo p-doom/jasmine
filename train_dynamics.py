@@ -27,7 +27,7 @@ class Args:
     seq_len: int = 16
     image_channels: int = 3
     image_resolution: int = 64
-    data_dir: str = "data/coinrun_episodes"
+    data_dir: str = "data_tfrecords/coinrun"
     # Optimization
     batch_size: int = 36
     min_lr: float = 3e-6
