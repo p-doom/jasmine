@@ -114,6 +114,7 @@ def train_step(state, inputs):
 
 
 if __name__ == "__main__":
+    jax.distributed.initialize()
     num_devices = jax.device_count()
     if num_devices == 0:
         raise ValueError("No JAX devices found.")
@@ -124,9 +125,11 @@ if __name__ == "__main__":
             f"Global batch size {args.batch_size} must be divisible by "
             f"number of devices {num_devices}."
         )
+    
+    per_device_batch_size_for_init = args.batch_size // num_devices
 
     rng = jax.random.PRNGKey(args.seed)
-    if args.log:
+    if args.log and jax.process_index() == 0:
         wandb.init(entity=args.entity, project=args.project, group="debug", config=args)
 
     # --- Initialize model ---
@@ -145,7 +148,7 @@ if __name__ == "__main__":
     image_shape = (args.image_resolution, args.image_resolution, args.image_channels)
     inputs = dict(
         videos=jnp.zeros(
-            (args.batch_size, args.seq_len, *image_shape), dtype=jnp.float32
+            (per_device_batch_size_for_init, args.seq_len, *image_shape), dtype=jnp.float32
         ),
     )
     init_params = tokenizer.init(_rng, inputs)
@@ -181,6 +184,8 @@ if __name__ == "__main__":
         if x.endswith(".tfrecord")
     ]
     dataloader = get_dataloader(
+        # NOTE: We deliberately pass the global batch size
+        # The dataloader shards the dataset across all processes
         tfrecord_files, args.seq_len, args.batch_size, *image_shape
     )
     print(f"Starting training from step {step}...")
@@ -190,7 +195,7 @@ if __name__ == "__main__":
             rng, _rng = jax.random.split(rng)
             
             videos_sharding = NamedSharding(mesh, PartitionSpec('data', None, None, None, None))
-            videos = jax.device_put(videos, videos_sharding)
+            videos = jax.make_array_from_process_local_data(videos_sharding, videos)
             
             inputs = dict(videos=videos, rng=_rng)
             train_state, loss, recon, metrics = train_step(train_state, inputs)
@@ -198,7 +203,7 @@ if __name__ == "__main__":
             step += 1
 
             # --- Logging ---
-            if args.log:
+            if args.log and jax.process_index() == 0:
                 if step % args.log_interval == 0:
                     wandb.log({"loss": loss, "step": step, **metrics})
                 if step % args.log_image_interval == 0:

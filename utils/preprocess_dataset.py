@@ -84,7 +84,7 @@ def main_preprocess(data_dir_str, output_dir_str, num_shards):
 
 if __name__ == "__main__":
     source_data_dir = "data/coinrun_episodes"
-    output_tfrecords_dir = "data_tfrecords"
+    output_tfrecords_dir = "data_tfrecords/coinrun"
     NUM_SHARDS = 50
 
     if (
