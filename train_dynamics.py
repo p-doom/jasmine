@@ -208,7 +208,7 @@ if __name__ == "__main__":
             step += 1
 
             # --- Logging ---
-            if args.log:
+            if args.log and jax.process_index() == 0:
                 if step % args.log_interval == 0:
                     wandb.log({"loss": loss, "step": step, **metrics})
                 if step % args.log_image_interval == 0:
