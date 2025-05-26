@@ -153,15 +153,6 @@ if __name__ == "__main__":
     )
     init_params = tokenizer.init(_rng, inputs)
 
-    # --- Load checkpoint ---
-    step = 0
-    if args.checkpoint:
-        init_params["params"].update(
-            PyTreeCheckpointer().restore(args.checkpoint)["model"]["params"]["params"]
-        )
-        # Assume checkpoint is of the form tokenizer_<timestamp>_<step>
-        step += int(args.checkpoint.split("_")[-1])
-
     # --- Initialize optimizer ---
     lr_schedule = optax.warmup_cosine_decay_schedule(
         args.min_lr, args.max_lr, args.warmup_steps, args.num_steps
@@ -176,6 +167,16 @@ if __name__ == "__main__":
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
     train_state = jax.device_put(train_state, replicated_sharding)
 
+    # --- Load checkpoint ---
+    step = 0
+    if args.checkpoint:
+        restore_target = {"model": train_state}
+        restore_args = orbax_utils.restore_args_from_target(restore_target)
+        train_state.params["params"].update(
+            PyTreeCheckpointer().restore(args.checkpoint, item=restore_target, restore_args=restore_args)["model"].params["params"]
+        )
+        # Assume checkpoint is of the form tokenizer_<timestamp>_<step>
+        step += int(args.checkpoint.split("_")[-1])
 
     # --- TRAIN LOOP ---
     tfrecord_files = [
