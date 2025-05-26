@@ -233,14 +233,14 @@ if __name__ == "__main__":
                         ),
                     )
                     wandb.log(log_images)
-                if step % args.log_checkpoint_interval == 0:
-                    ckpt = {"model": train_state}
-                    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-                    save_args = orbax_utils.save_args_from_target(ckpt)
-                    orbax_checkpointer.save(
-                        os.path.join(os.getcwd(), args.ckpt_dir, f"lam_{ts}_{step}"),
-                        ckpt,
-                        save_args=save_args,
-                    )
+            if step % args.log_checkpoint_interval == 0:
+                ckpt = {"model": train_state}
+                orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+                save_args = orbax_utils.save_args_from_target(ckpt)
+                orbax_checkpointer.save(
+                    os.path.join(os.getcwd(), args.ckpt_dir, f"lam_{ts}_{step}"),
+                    ckpt,
+                    save_args=save_args,
+                )
             if step >= args.num_steps:
                 break
