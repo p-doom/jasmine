@@ -22,10 +22,22 @@ pip install -r requirements.txt
 Before training the models, generate the CoinRun dataset by running:
 
 ```bash
-python generate_dataset.py --num_episodes 10000
+python generate_dataset.py --num_episodes 10000 --env_name coinrun
 ```
 
+See [here](https://github.com/openai/procgen?tab=readme-ov-file#environments) for more environments.
+
 Note: this is a large dataset (around 100GB) and may take a while to generate.
+
+To generate other datasets from the gym environment run:
+
+```bash
+python generate_dataset_gym.py --num_episodes 10000 --env_name Acrobot-v1
+```
+
+See [here](https://gym.openai.com/envs/#classic_control) for more environments.
+
+Note: This project uses gym==0.25.2 for backwards compatibility. Newer versions of gym are not supported.
 
 <h2 name="train" id="train">Quick Start 🚀 </h2>
 
