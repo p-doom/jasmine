@@ -9,6 +9,7 @@ from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.mesh_utils import create_device_mesh
 import optax
 import orbax
+from orbax.checkpoint import PyTreeCheckpointer
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -16,6 +17,8 @@ import tyro
 import wandb
 
 from genie import Genie, restore_genie_components
+from models.tokenizer import TokenizerVQVAE
+from models.lam import LatentActionModel
 from utils.dataloader import get_dataloader
 
 ts = int(time.time())
@@ -161,9 +164,6 @@ if __name__ == "__main__":
     )
     rng, _rng = jax.random.split(rng)
     init_params = genie.init(_rng, dummy_inputs)
-    init_params = restore_genie_components(
-        init_params, args.tokenizer_checkpoint, args.lam_checkpoint
-    )
 
     # --- Initialize optimizer ---
     lr_schedule = optax.warmup_cosine_decay_schedule(
@@ -177,6 +177,9 @@ if __name__ == "__main__":
 
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
     train_state = jax.device_put(train_state, replicated_sharding)
+
+    # --- Restore checkpoint ---
+    train_state = restore_genie_components(train_state, replicated_sharding, dummy_inputs, rng, args)
 
     # --- TRAIN LOOP ---
     tfrecord_files = [
