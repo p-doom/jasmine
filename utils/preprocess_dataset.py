@@ -1,10 +1,22 @@
+from dataclasses import dataclass
+
 import tensorflow as tf
 import numpy as np
 import logging
+import tyro
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
 
+
+@dataclass
+class Args:
+    source_data_dir: str = "data/coinrun_episodes"
+    output_tfrecords_dir: str = "data_tfrecords"
+    num_shards: int = 50
+
+
+args = tyro.cli(Args)
 
 def _bytes_feature(value):
     if isinstance(value, type(tf.constant(0))):
@@ -83,14 +95,10 @@ def main_preprocess(data_dir_str, output_dir_str, num_shards):
 
 
 if __name__ == "__main__":
-    source_data_dir = "data/coinrun_episodes"
-    output_tfrecords_dir = "data_tfrecords"
-    NUM_SHARDS = 50
-
     if (
-        not Path(source_data_dir).exists()
-        or not (Path(source_data_dir) / "metadata.npy").exists()
+        not Path(args.source_data_dir).exists()
+        or not (Path(args.source_data_dir) / "metadata.npy").exists()
     ):
-        logging.error(f"Please generate data in '{source_data_dir}' first.")
+        logging.error(f"Please generate data in '{args.source_data_dir}' first.")
     else:
-        main_preprocess(source_data_dir, output_tfrecords_dir, NUM_SHARDS)
+        main_preprocess(args.source_data_dir, args.output_tfrecords_dir, args.num_shards)
