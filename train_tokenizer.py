@@ -5,6 +5,8 @@ import time
 import einops
 from flax.training import orbax_utils
 from flax.training.train_state import TrainState
+from jax.sharding import Mesh, PartitionSpec, NamedSharding
+from jax.experimental.mesh_utils import create_device_mesh
 import optax
 import orbax
 from orbax.checkpoint import PyTreeCheckpointer
@@ -112,8 +114,22 @@ def train_step(state, inputs):
 
 
 if __name__ == "__main__":
+    jax.distributed.initialize()
+    num_devices = jax.device_count()
+    if num_devices == 0:
+        raise ValueError("No JAX devices found.")
+    print(f"Running on {num_devices} devices.")
+
+    if args.batch_size % num_devices != 0:
+        raise ValueError(
+            f"Global batch size {args.batch_size} must be divisible by "
+            f"number of devices {num_devices}."
+        )
+    
+    per_device_batch_size_for_init = args.batch_size // num_devices
+
     rng = jax.random.PRNGKey(args.seed)
-    if args.log:
+    if args.log and jax.process_index() == 0:
         wandb.init(entity=args.entity, project=args.project, group="debug", config=args)
 
     # --- Initialize model ---
@@ -132,19 +148,10 @@ if __name__ == "__main__":
     image_shape = (args.image_resolution, args.image_resolution, args.image_channels)
     inputs = dict(
         videos=jnp.zeros(
-            (args.batch_size, args.seq_len, *image_shape), dtype=jnp.float32
+            (per_device_batch_size_for_init, args.seq_len, *image_shape), dtype=jnp.float32
         ),
     )
     init_params = tokenizer.init(_rng, inputs)
-
-    # --- Load checkpoint ---
-    step = 0
-    if args.checkpoint:
-        init_params["params"].update(
-            PyTreeCheckpointer().restore(args.checkpoint)["model"]["params"]["params"]
-        )
-        # Assume checkpoint is of the form tokenizer_<timestamp>_<step>
-        step += int(args.checkpoint.split("_")[-1])
 
     # --- Initialize optimizer ---
     lr_schedule = optax.warmup_cosine_decay_schedule(
@@ -152,6 +159,24 @@ if __name__ == "__main__":
     )
     tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
     train_state = TrainState.create(apply_fn=tokenizer.apply, params=init_params, tx=tx)
+    
+    # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
+    device_mesh_arr = create_device_mesh((num_devices,))
+    mesh = Mesh(devices=device_mesh_arr, axis_names=('data',))
+
+    replicated_sharding = NamedSharding(mesh, PartitionSpec())
+    train_state = jax.device_put(train_state, replicated_sharding)
+
+    # --- Load checkpoint ---
+    step = 0
+    if args.checkpoint:
+        restore_target = {"model": train_state}
+        restore_args = orbax_utils.restore_args_from_target(restore_target)
+        train_state.params["params"].update(
+            PyTreeCheckpointer().restore(args.checkpoint, item=restore_target, restore_args=restore_args)["model"].params["params"]
+        )
+        # Assume checkpoint is of the form tokenizer_<timestamp>_<step>
+        step += int(args.checkpoint.split("_")[-1])
 
     # --- TRAIN LOOP ---
     tfrecord_files = [
@@ -160,6 +185,8 @@ if __name__ == "__main__":
         if x.endswith(".tfrecord")
     ]
     dataloader = get_dataloader(
+        # NOTE: We deliberately pass the global batch size
+        # The dataloader shards the dataset across all processes
         tfrecord_files, args.seq_len, args.batch_size, *image_shape
     )
     print(f"Starting training from step {step}...")
@@ -167,13 +194,17 @@ if __name__ == "__main__":
         for videos in dataloader:
             # --- Train step ---
             rng, _rng = jax.random.split(rng)
+            
+            videos_sharding = NamedSharding(mesh, PartitionSpec('data', None, None, None, None))
+            videos = jax.make_array_from_process_local_data(videos_sharding, videos)
+            
             inputs = dict(videos=videos, rng=_rng)
             train_state, loss, recon, metrics = train_step(train_state, inputs)
             print(f"Step {step}, loss: {loss}")
             step += 1
 
             # --- Logging ---
-            if args.log:
+            if args.log and jax.process_index() == 0:
                 if step % args.log_interval == 0:
                     wandb.log({"loss": loss, "step": step, **metrics})
                 if step % args.log_image_interval == 0:
@@ -191,16 +222,16 @@ if __name__ == "__main__":
                         ),
                     )
                     wandb.log(log_images)
-                if step % args.log_checkpoint_interval == 0:
-                    ckpt = {"model": train_state}
-                    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-                    save_args = orbax_utils.save_args_from_target(ckpt)
-                    orbax_checkpointer.save(
-                        os.path.join(
-                            os.getcwd(), args.ckpt_dir, f"tokenizer_{ts}_{step}"
-                        ),
-                        ckpt,
-                        save_args=save_args,
-                    )
+            if step % args.log_checkpoint_interval == 0:
+                ckpt = {"model": train_state}
+                orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+                save_args = orbax_utils.save_args_from_target(ckpt)
+                orbax_checkpointer.save(
+                    os.path.join(
+                        os.getcwd(), args.ckpt_dir, f"tokenizer_{ts}_{step}"
+                    ),
+                    ckpt,
+                    save_args=save_args,
+                )
             if step >= args.num_steps:
                 break

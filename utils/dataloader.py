@@ -1,4 +1,5 @@
 import functools
+import jax
 
 import tensorflow as tf
 
@@ -77,6 +78,16 @@ def get_dataloader(
     if not tfrecord_paths:
         raise ValueError("tfrecord_paths list cannot be empty.")
 
+    process_id = jax.process_index()
+    num_processes = jax.process_count()
+
+    if global_batch_size % num_processes != 0:
+        raise ValueError(
+            f"Global batch size {global_batch_size} must be divisible by "
+            f"the number of JAX processes {num_processes} for proper sharding."
+        )
+    per_process_batch_size = global_batch_size // num_processes
+
     dataset = tf.data.TFRecordDataset(
         tfrecord_paths, num_parallel_reads=tf.data.AUTOTUNE
     )
@@ -86,6 +97,8 @@ def get_dataloader(
         dataset = dataset.shuffle(
             buffer_size=shuffle_buffer_size, seed=seed, reshuffle_each_iteration=True
         )
+    
+    dataset = dataset.shard(num_shards=num_processes, index=process_id)
 
     parse_fn = functools.partial(
         _parse_tfrecord_fn, image_h=image_h, image_w=image_w, image_c=image_c
@@ -104,7 +117,7 @@ def get_dataloader(
     dataset = dataset.cache() if cache_processed_data else dataset
 
     dataset = dataset.repeat(None)
-    dataset = dataset.batch(global_batch_size, drop_remainder=True)
+    dataset = dataset.batch(per_process_batch_size, drop_remainder=True)
     dataset = dataset.prefetch(tf.data.AUTOTUNE)
 
     return dataset.as_numpy_iterator()

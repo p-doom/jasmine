@@ -5,8 +5,11 @@ import time
 import einops
 from flax.training import orbax_utils
 from flax.training.train_state import TrainState
+from jax.sharding import Mesh, PartitionSpec, NamedSharding
+from jax.experimental.mesh_utils import create_device_mesh
 import optax
 import orbax
+from orbax.checkpoint import PyTreeCheckpointer
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -14,6 +17,8 @@ import tyro
 import wandb
 
 from genie import Genie, restore_genie_components
+from models.tokenizer import TokenizerVQVAE
+from models.lam import LatentActionModel
 from utils.dataloader import get_dataloader
 
 ts = int(time.time())
@@ -106,8 +111,22 @@ def train_step(state, inputs):
 
 
 if __name__ == "__main__":
+    jax.distributed.initialize()
+    num_devices = jax.device_count()
+    if num_devices == 0:
+        raise ValueError("No JAX devices found.")
+    print(f"Running on {num_devices} devices.")
+
+    if args.batch_size % num_devices != 0:
+        raise ValueError(
+            f"Global batch size {args.batch_size} must be divisible by "
+            f"number of devices {num_devices}."
+        )
+    
+    per_device_batch_size_for_init = args.batch_size // num_devices
+
     rng = jax.random.PRNGKey(args.seed)
-    if args.log:
+    if args.log and jax.process_index() == 0:
         wandb.init(entity=args.entity, project=args.project, group="debug", config=args)
 
     # --- Initialize model ---
@@ -138,15 +157,13 @@ if __name__ == "__main__":
     image_shape = (args.image_resolution, args.image_resolution, args.image_channels)
     dummy_inputs = dict(
         videos=jnp.zeros(
-            (args.batch_size, args.seq_len, *image_shape), dtype=jnp.float32
+            (per_device_batch_size_for_init, args.seq_len, *image_shape), dtype=jnp.float32
         ),
+        action=jnp.zeros((per_device_batch_size_for_init, args.seq_len), dtype=jnp.float32),
         mask_rng=_rng,
     )
     rng, _rng = jax.random.split(rng)
     init_params = genie.init(_rng, dummy_inputs)
-    init_params = restore_genie_components(
-        init_params, args.tokenizer_checkpoint, args.lam_checkpoint
-    )
 
     # --- Initialize optimizer ---
     lr_schedule = optax.warmup_cosine_decay_schedule(
@@ -155,6 +172,15 @@ if __name__ == "__main__":
     tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
     train_state = TrainState.create(apply_fn=genie.apply, params=init_params, tx=tx)
 
+    device_mesh_arr = create_device_mesh((num_devices,))
+    mesh = Mesh(devices=device_mesh_arr, axis_names=('data',))
+
+    replicated_sharding = NamedSharding(mesh, PartitionSpec())
+    train_state = jax.device_put(train_state, replicated_sharding)
+
+    # --- Restore checkpoint ---
+    train_state = restore_genie_components(train_state, replicated_sharding, dummy_inputs, rng, args)
+
     # --- TRAIN LOOP ---
     tfrecord_files = [
         os.path.join(args.data_dir, x)
@@ -162,6 +188,8 @@ if __name__ == "__main__":
         if x.endswith(".tfrecord")
     ]
     dataloader = get_dataloader(
+        # NOTE: We deliberately pass the global batch size
+        # The dataloader shards the dataset across all processes
         tfrecord_files, args.seq_len, args.batch_size, *image_shape
     )
     step = 0
@@ -169,9 +197,12 @@ if __name__ == "__main__":
         for videos in dataloader:
             # --- Train step ---
             rng, _rng, _mask_rng = jax.random.split(rng, 3)
+            
+            videos_sharding = NamedSharding(mesh, PartitionSpec('data', None, None, None, None))
+            videos = jax.make_array_from_process_local_data(videos_sharding, videos)
+            
             inputs = dict(
                 videos=videos,
-                action=jnp.zeros((args.batch_size, args.seq_len), dtype=jnp.float32),
                 dropout_rng=_rng,
                 mask_rng=_mask_rng,
             )
@@ -180,7 +211,7 @@ if __name__ == "__main__":
             step += 1
 
             # --- Logging ---
-            if args.log:
+            if args.log and jax.process_index() == 0:
                 if step % args.log_interval == 0:
                     wandb.log({"loss": loss, "step": step, **metrics})
                 if step % args.log_image_interval == 0:
@@ -191,21 +222,21 @@ if __name__ == "__main__":
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
                     log_images = dict(
-                        image=wandb.Image(np.asarray(gt_seq[15])),
-                        recon=wandb.Image(np.asarray(recon_seq[15])),
+                        image=wandb.Image(np.asarray(gt_seq[args.seq_len-1])),
+                        recon=wandb.Image(np.asarray(recon_seq[args.seq_len-1])),
                         true_vs_recon=wandb.Image(
                             np.asarray(comparison_seq.astype(np.uint8))
                         ),
                     )
                     wandb.log(log_images)
-                if step % args.log_checkpoint_interval == 0:
-                    ckpt = {"model": train_state}
-                    orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-                    save_args = orbax_utils.save_args_from_target(ckpt)
-                    orbax_checkpointer.save(
-                        os.path.join(os.getcwd(), args.ckpt_dir, f"genie_{ts}_{step}"),
-                        ckpt,
-                        save_args=save_args,
-                    )
+            if step % args.log_checkpoint_interval == 0:
+                ckpt = {"model": train_state}
+                orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+                save_args = orbax_utils.save_args_from_target(ckpt)
+                orbax_checkpointer.save(
+                    os.path.join(os.getcwd(), args.ckpt_dir, f"genie_{ts}_{step}"),
+                    ckpt,
+                    save_args=save_args,
+                )
             if step >= args.num_steps:
                 break
