@@ -11,20 +11,13 @@ from tqdm import tqdm
 class Args:
     target_width, target_height = 160, 90
     target_fps = 10
-    input_path: str = "/hkfs/work/workspace/scratch/tum_ind3695-jafar_ws/minecraft_videos/knoms/"
-    output_path: str = "/hkfs/work/workspace/scratch/tum_ind3695-jafar_ws/minecraft_videos/preprocessed"
+    input_path: str = "/hkfs/work/workspace/scratch/tum_ind3695-jafa_ws_shared/data/knoms"
+    output_path: str = "/hkfs/work/workspace/scratch/tum_ind3695-jafa_ws_shared/data/knoms_npy"
 
 
 # Preprocess one video and save it to a .npy file
 def preprocess_video(idx, in_filename, output_path, target_width, target_height, target_fps):
     print(f"Processing video {idx}")
-
-    # TODO: this is purely for logging and sanity checking
-    p = ffmpeg.probe(in_filename, select_streams='v')
-    orig_width = int(p['streams'][0]['width'])
-    orig_height = int(p['streams'][0]['height'])
-    orig_fps = eval(p['streams'][0]['r_frame_rate'])
-    print(f"Original: {orig_width}x{orig_height} @ {orig_fps} fps")
 
     # Stream the video as raw RGB24, resize, and set fps
     out, _ = (

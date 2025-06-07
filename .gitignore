@@ -7,3 +7,10 @@ wandb_key
 checkpoints/
 wandb/
 __pycache__/
+
+logs/
+sandbox/
+sbatch_scripts/
+vs-code-recorder/
+data/
+data_tfrecords/
