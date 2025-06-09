@@ -81,11 +81,8 @@ def get_dataloader(
     process_id = jax.process_index()
     num_processes = jax.process_count()
 
-    if global_batch_size % num_processes != 0:
-        raise ValueError(
-            f"Global batch size {global_batch_size} must be divisible by "
-            f"the number of JAX processes {num_processes} for proper sharding."
-        )
+    assert global_batch_size % num_processes == 0, "Global batch size {global_batch_size} \
+        must be divisible by the number of JAX processes {num_processes} for proper sharding."
     per_process_batch_size = global_batch_size // num_processes
 
     dataset = tf.data.TFRecordDataset(
