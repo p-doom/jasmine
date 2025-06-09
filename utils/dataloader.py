@@ -88,19 +88,20 @@ def get_dataloader(
     dataset = tf.data.TFRecordDataset(
         tfrecord_paths, num_parallel_reads=tf.data.AUTOTUNE
     )
+    
+    dataset = dataset.shard(num_shards=num_processes, index=process_id)
 
     # (f.srambical) NOTE: For TFRecords, it's often good to have a large shuffle buffer.
     if shuffle_buffer_size > 0:
         dataset = dataset.shuffle(
             buffer_size=shuffle_buffer_size, seed=seed, reshuffle_each_iteration=True
         )
-    
-    dataset = dataset.shard(num_shards=num_processes, index=process_id)
-
     parse_fn = functools.partial(
         _parse_tfrecord_fn, image_h=image_h, image_w=image_w, image_c=image_c
     )
     dataset = dataset.map(parse_fn, num_parallel_calls=num_parallel_calls)
+
+    dataset = dataset.cache() if cache_processed_data else dataset
 
     tf_process_fn = functools.partial(
         _tf_process_episode,
@@ -110,8 +111,6 @@ def get_dataloader(
         image_c=image_c,
     )
     dataset = dataset.map(tf_process_fn, num_parallel_calls=num_parallel_calls)
-
-    dataset = dataset.cache() if cache_processed_data else dataset
 
     dataset = dataset.repeat(None)
     dataset = dataset.batch(per_process_batch_size, drop_remainder=True)
