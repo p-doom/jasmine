@@ -11,13 +11,12 @@ from tqdm import tqdm
 class Args:
     target_width, target_height = 160, 90
     target_fps = 10
-    input_path: str = "/hkfs/work/workspace/scratch/tum_ind3695-jafa_ws_shared/data/knoms"
-    output_path: str = "/hkfs/work/workspace/scratch/tum_ind3695-jafa_ws_shared/data/knoms_npy"
+    input_path: str = "/hkfs/work/workspace/scratch/tum_ind3695-jafa_ws_shared/data/knoms/"
+    output_path: str = "/hkfs/work/workspace/scratch/tum_ind3695-jafa_ws_shared/data/knoms_npy_tmp"
 
 
 # Preprocess one video and save it to a .npy file
-def preprocess_video(idx, in_filename, output_path, target_width, target_height, target_fps):
-    print(f"Processing video {idx}")
+def preprocess_video(in_filename, output_path, target_width, target_height, target_fps):
 
     # Stream the video as raw RGB24, resize, and set fps
     out, _ = (
@@ -26,7 +25,7 @@ def preprocess_video(idx, in_filename, output_path, target_width, target_height,
         .filter('fps', fps=target_fps, round='up')
         .filter('scale', target_width, target_height)
         .output('pipe:', format='rawvideo', pix_fmt='rgb24')
-        .run(capture_stdout=True)
+        .run(capture_stdout=False)
     )
 
     frame_size = target_height * target_width * 3
@@ -54,27 +53,26 @@ def main():
     args = tyro.cli(Args)
 
     # creates a list of arguments for the preprocess_video function
+    print("Output path: ", output_path)
     output_path = f'{args.output_path}/{args.target_fps}fps_{args.target_width}x{args.target_height}'
-    print(output_path)
-    pool_args = [
-        (idx, args.input_path + in_filename, output_path, args.target_width, args.target_height, args.target_fps)
-        for idx, in_filename in enumerate(os.listdir(args.input_path)) if in_filename.endswith('.mp4') or in_filename.endswith('.webm')
-    ]
 
-    print(f"Number of processes: {mp.cpu_count()}")
     print("Starting to process videos...")
-    with mp.Pool(processes=mp.cpu_count()) as pool:
-        pool.starmap(preprocess_video, pool_args)
+    filenames = [args.input_path + filename for filename in os.listdir(args.input_path) if filename.endswith('.mp4') or filename.endswith('.webm')]
+    output_paths = [output_path] * len(filenames)
+    target_widths = [args.target_width] * len(filenames)
+    target_heights = [args.target_height] * len(filenames)
+    target_fpss = [args.target_fps] * len(filenames)
 
+    with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+        list(tqdm(executor.map(preprocess_video, filenames, output_paths, target_widths, target_heights, target_fpss), total=len(filenames)))
 
     # Create metadata file 
-    metadata = {}
+    metadata = []
     npy_files = [f for f in os.listdir(output_path) if f.endswith('.npy') and f != 'metadata.npy']
-
+    print("Creating metadata file...")
     with ProcessPoolExecutor() as executor:
         results = list(tqdm(executor.map(get_n_from_file, npy_files, [output_path] * len(npy_files)), total=len(npy_files)))
-        metadata = {k: v for k, v in results}
-
+        metadata = [{"path": path, "length": length} for path, length in results]
     np.save(output_path + '/metadata.npy', metadata)
 
     print("Done")
