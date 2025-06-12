@@ -30,7 +30,8 @@ class Args:
     seed: int = 0
     seq_len: int = 16
     image_channels: int = 3
-    image_resolution: int = 64
+    image_height: int = 90
+    image_width: int = 160
     data_dir: str = "data_tfrecords/coinrun"
     checkpoint: str = ""
     # Optimization
@@ -125,7 +126,7 @@ if __name__ == "__main__":
             f"Global batch size {args.batch_size} must be divisible by "
             f"number of devices {num_devices}."
         )
-    
+
     per_device_batch_size_for_init = args.batch_size // num_devices
 
     rng = jax.random.PRNGKey(args.seed)
@@ -145,10 +146,11 @@ if __name__ == "__main__":
         codebook_dropout=args.codebook_dropout,
     )
     rng, _rng = jax.random.split(rng)
-    image_shape = (args.image_resolution, args.image_resolution, args.image_channels)
+    image_shape = (args.image_height, args.image_width, args.image_channels)
     inputs = dict(
         videos=jnp.zeros(
-            (per_device_batch_size_for_init, args.seq_len, *image_shape), dtype=jnp.float32
+            (per_device_batch_size_for_init, args.seq_len, *image_shape),
+            dtype=jnp.float32,
         ),
     )
     init_params = tokenizer.init(_rng, inputs)
@@ -159,10 +161,10 @@ if __name__ == "__main__":
     )
     tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
     train_state = TrainState.create(apply_fn=tokenizer.apply, params=init_params, tx=tx)
-    
+
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
     device_mesh_arr = create_device_mesh((num_devices,))
-    mesh = Mesh(devices=device_mesh_arr, axis_names=('data',))
+    mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
 
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
     train_state = jax.device_put(train_state, replicated_sharding)
@@ -173,7 +175,11 @@ if __name__ == "__main__":
         restore_target = {"model": train_state}
         restore_args = orbax_utils.restore_args_from_target(restore_target)
         train_state.params["params"].update(
-            PyTreeCheckpointer().restore(args.checkpoint, item=restore_target, restore_args=restore_args)["model"].params["params"]
+            PyTreeCheckpointer()
+            .restore(args.checkpoint, item=restore_target, restore_args=restore_args)[
+                "model"
+            ]
+            .params["params"]
         )
         # Assume checkpoint is of the form tokenizer_<timestamp>_<step>
         step += int(args.checkpoint.split("_")[-1])
@@ -187,17 +193,22 @@ if __name__ == "__main__":
     dataloader = get_dataloader(
         # NOTE: We deliberately pass the global batch size
         # The dataloader shards the dataset across all processes
-        tfrecord_files, args.seq_len, args.batch_size, *image_shape
+        tfrecord_files,
+        args.seq_len,
+        args.batch_size,
+        *image_shape,
     )
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
             rng, _rng = jax.random.split(rng)
-            
-            videos_sharding = NamedSharding(mesh, PartitionSpec('data', None, None, None, None))
+
+            videos_sharding = NamedSharding(
+                mesh, PartitionSpec("data", None, None, None, None)
+            )
             videos = jax.make_array_from_process_local_data(videos_sharding, videos)
-            
+
             inputs = dict(videos=videos, rng=_rng)
             train_state, loss, recon, metrics = train_step(train_state, inputs)
             print(f"Step {step}, loss: {loss}")
@@ -227,9 +238,7 @@ if __name__ == "__main__":
                 orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
                 save_args = orbax_utils.save_args_from_target(ckpt)
                 orbax_checkpointer.save(
-                    os.path.join(
-                        os.getcwd(), args.ckpt_dir, f"tokenizer_{ts}_{step}"
-                    ),
+                    os.path.join(os.getcwd(), args.ckpt_dir, f"tokenizer_{ts}_{step}"),
                     ckpt,
                     save_args=save_args,
                 )
