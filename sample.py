@@ -5,6 +5,7 @@ import dm_pix as pix
 import einops
 import jax
 import jax.numpy as jnp
+import flax.linen as nn
 import numpy as np
 from orbax.checkpoint import PyTreeCheckpointer
 from PIL import Image, ImageDraw
@@ -104,6 +105,26 @@ def _autoreg_sample(rng, video_batch, action_batch):
         vid = jnp.concatenate([vid, new_frame], axis=1)
     return vid
 
+def _autoreg_sample_jit(rng, video_batch, action_batch):
+    vid = video_batch[:, : args.start_frame + 1]
+
+    def mock_fn(module, batch):
+        return module.sample(batch, args.maskgit_steps, args.temperature, args.sample_argmax)
+
+    sampling_fn = jax.jit(nn.apply(mock_fn, genie)) 
+
+    for frame_idx in range(args.start_frame + 1, args.seq_len):
+        # --- Sample next frame ---
+        print("Frame", frame_idx)
+        rng, _rng = jax.random.split(rng)
+        batch = dict(videos=vid, latent_actions=action_batch[:, :frame_idx], rng=_rng)
+        new_frame = sampling_fn(
+            params,
+            batch
+        )
+        vid = jnp.concatenate([vid, new_frame], axis=1)
+    return vid
+
 
 # --- Get video + latent actions ---
 dataloader = get_dataloader(args.data_dir, args.seq_len, args.batch_size)
@@ -117,7 +138,15 @@ action_batch = action_batch.reshape(1, args.seq_len - 1, 1)
 action_batch = jnp.repeat(action_batch, video_batch.shape[0], axis=0)
 
 # --- Sample + evaluate video ---
+start_time = time.time()
 vid = _autoreg_sample(rng, video_batch, action_batch)
+end_time = time.time()
+
+total_time = end_time - start_time
+time_per_frame = total_time / video_batch.shape[1]
+print(f"Total sampling time: {total_time:.2f} seconds")
+print(f"Time per frame: {time_per_frame:.2f} seconds")
+# =====================================
 gt = video_batch[:, : vid.shape[1]].clip(0, 1).reshape(-1, *video_batch.shape[2:])
 recon = vid.clip(0, 1).reshape(-1, *vid.shape[2:])
 ssim = pix.ssim(gt[:, args.start_frame + 1 :], recon[:, args.start_frame + 1 :]).mean()
