@@ -215,6 +215,8 @@ if __name__ == "__main__":
             step += 1
 
             # --- Logging ---
+            jax.lax.all_gather(inputs, 'data')
+            jax.lax.all_gather(recon, 'data')
             if args.log and jax.process_index() == 0:
                 if step % args.log_interval == 0:
                     wandb.log({"loss": loss, "step": step, **metrics})

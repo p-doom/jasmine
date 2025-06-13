@@ -215,6 +215,8 @@ if __name__ == "__main__":
             print(f"Step {step}, loss: {loss}")
             step += 1
 
+            jax.lax.all_gather(inputs, 'data')
+            jax.lax.all_gather(recon, 'data')
             # --- Logging ---
             if args.log and jax.process_index() == 0:
                 if step % args.log_interval == 0:
