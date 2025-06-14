@@ -81,14 +81,19 @@ def get_dataloader(
     process_id = jax.process_index()
     num_processes = jax.process_count()
 
-    assert global_batch_size % num_processes == 0, "Global batch size {global_batch_size} \
+    # FIXME: This is a hack to ensure that the shuffle buffer size is large enough to shuffle the dataset.
+    shuffle_buffer_size = 50
+
+    assert (
+        global_batch_size % num_processes == 0
+    ), "Global batch size {global_batch_size} \
         must be divisible by the number of JAX processes {num_processes} for proper sharding."
     per_process_batch_size = global_batch_size // num_processes
 
     dataset = tf.data.TFRecordDataset(
         tfrecord_paths, num_parallel_reads=tf.data.AUTOTUNE
     )
-    
+
     dataset = dataset.shard(num_shards=num_processes, index=process_id)
 
     # (f.srambical) NOTE: For TFRecords, it's often good to have a large shuffle buffer.

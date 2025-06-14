@@ -7,3 +7,14 @@ wandb_key
 checkpoints/
 wandb/
 __pycache__/
+
+
+sbatch_scripts/
+data*/
+logs/
+sandbox/
+vs-code-recorder/
+shell_scripts/
+logs_data_gen/
+utils/clip_checker.py
+notes.md

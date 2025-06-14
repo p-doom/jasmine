@@ -191,56 +191,62 @@ if __name__ == "__main__":
         if x.endswith(".tfrecord")
     ]
     dataloader = get_dataloader(
-        # NOTE: We deliberately pass the global batch size
-        # The dataloader shards the dataset across all processes
         tfrecord_files,
         args.seq_len,
         args.batch_size,
+        cache_processed_data=False,
         *image_shape,
     )
-    print(f"Starting training from step {step}...")
+
+    # HACK: Get a single batch for overfitting test
+    single_batch = next(dataloader)
+    print(f"Starting overfitting test from step {step}...")
+
     while step < args.num_steps:
-        for videos in dataloader:
-            # --- Train step ---
-            rng, _rng = jax.random.split(rng)
+        # --- Train step ---
+        rng, _rng = jax.random.split(rng)
 
-            videos_sharding = NamedSharding(
-                mesh, PartitionSpec("data", None, None, None, None)
-            )
-            videos = jax.make_array_from_process_local_data(videos_sharding, videos)
+        videos_sharding = NamedSharding(
+            mesh, PartitionSpec("data", None, None, None, None)
+        )
+        videos = jax.make_array_from_process_local_data(videos_sharding, single_batch)
 
-            inputs = dict(videos=videos, rng=_rng)
-            train_state, loss, recon, metrics = train_step(train_state, inputs)
-            print(f"Step {step}, loss: {loss}")
-            step += 1
+        inputs = dict(videos=videos, rng=_rng)
+        train_state, loss, recon, metrics = train_step(train_state, inputs)
+        print(f"Step {step}, loss: {loss}")
+        step += 1
 
-            # --- Logging ---
-            if args.log and jax.process_index() == 0:
-                if step % args.log_interval == 0:
-                    wandb.log({"loss": loss, "step": step, **metrics})
-                if step % args.log_image_interval == 0:
-                    gt_seq = inputs["videos"][0]
-                    recon_seq = recon[0].clip(0, 1)
-                    comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
-                    comparison_seq = einops.rearrange(
-                        comparison_seq * 255, "t h w c -> h (t w) c"
-                    )
-                    log_images = dict(
-                        image=wandb.Image(np.asarray(gt_seq[0])),
-                        recon=wandb.Image(np.asarray(recon_seq[0])),
-                        true_vs_recon=wandb.Image(
-                            np.asarray(comparison_seq.astype(np.uint8))
-                        ),
-                    )
-                    wandb.log(log_images)
-            if step % args.log_checkpoint_interval == 0:
-                ckpt = {"model": train_state}
-                orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-                save_args = orbax_utils.save_args_from_target(ckpt)
-                orbax_checkpointer.save(
-                    os.path.join(os.getcwd(), args.ckpt_dir, f"tokenizer_{ts}_{step}"),
-                    ckpt,
-                    save_args=save_args,
+        # --- Logging ---
+        # HACK: migth fix the logging?
+        jax.lax.all_gather(inputs, "data")
+        jax.lax.all_gather(recon, "data")
+
+        if args.log and jax.process_index() == 0:
+            if step % args.log_interval == 0:
+                wandb.log({"loss": loss, "step": step, **metrics})
+            if step % args.log_image_interval == 0:
+                gt_seq = inputs["videos"][0]
+                recon_seq = recon[0].clip(0, 1)
+                comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
+                comparison_seq = einops.rearrange(
+                    comparison_seq * 255, "t h w c -> h (t w) c"
                 )
-            if step >= args.num_steps:
-                break
+                log_images = dict(
+                    image=wandb.Image(np.asarray(gt_seq[0])),
+                    recon=wandb.Image(np.asarray(recon_seq[0])),
+                    true_vs_recon=wandb.Image(
+                        np.asarray(comparison_seq.astype(np.uint8))
+                    ),
+                )
+                wandb.log(log_images)
+        if step % args.log_checkpoint_interval == 0:
+            ckpt = {"model": train_state}
+            orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+            save_args = orbax_utils.save_args_from_target(ckpt)
+            orbax_checkpointer.save(
+                os.path.join(os.getcwd(), args.ckpt_dir, f"tokenizer_{ts}_{step}"),
+                ckpt,
+                save_args=save_args,
+            )
+        if step >= args.num_steps:
+            break
