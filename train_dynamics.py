@@ -206,14 +206,16 @@ if __name__ == "__main__":
                 dropout_rng=_rng,
                 mask_rng=_mask_rng,
             )
+            start_time = time.time()
             train_state, loss, recon, metrics = train_step(train_state, inputs)
-            print(f"Step {step}, loss: {loss}")
+            elapsed_time = (time.time() - start_time) * 1000
+            print(f"Step {step}, loss: {loss}, step time: {elapsed_time}ms")
             step += 1
 
             # --- Logging ---
             if args.log and jax.process_index() == 0:
                 if step % args.log_interval == 0:
-                    wandb.log({"loss": loss, "step": step, **metrics})
+                    wandb.log({"loss": loss, "step": step, "step_time_ms": elapsed_time, **metrics})
                 if step % args.log_image_interval == 0:
                     gt_seq = inputs["videos"][0]
                     recon_seq = recon[0].clip(0, 1)
