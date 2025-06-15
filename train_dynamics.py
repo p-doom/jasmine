@@ -11,6 +11,7 @@ import optax
 import orbax
 from orbax.checkpoint import PyTreeCheckpointer
 import numpy as np
+import tensorflow as tf
 import jax
 import jax.numpy as jnp
 import tyro
@@ -72,6 +73,8 @@ class Args:
 
 
 args = tyro.cli(Args)
+tf.random.set_seed(args.seed)
+np.random.seed(args.seed)
 
 
 def dynamics_loss_fn(params, state, inputs):
