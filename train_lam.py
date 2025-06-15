@@ -11,6 +11,7 @@ import optax
 import orbax
 from orbax.checkpoint import PyTreeCheckpointer
 import numpy as np
+import tensorflow as tf
 import dm_pix as pix
 import jax
 import jax.numpy as jnp
@@ -60,6 +61,8 @@ class Args:
 
 
 args = tyro.cli(Args)
+tf.random.set_seed(args.seed)
+np.random.seed(args.seed)
 
 
 def lam_loss_fn(params, state, inputs):
