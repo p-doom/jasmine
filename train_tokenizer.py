@@ -215,8 +215,8 @@ if __name__ == "__main__":
             step += 1
 
             # --- Logging ---
-            if args.log and jax.process_index() == 0:
-                if step % args.log_interval == 0:
+            if args.log :
+                if step % args.log_interval == 0 and jax.process_index() == 0:
                     wandb.log({"loss": loss, "step": step, **metrics})
                 if step % args.log_image_interval == 0:
                     gt_seq = inputs["videos"][0]
@@ -225,14 +225,18 @@ if __name__ == "__main__":
                     comparison_seq = einops.rearrange(
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
-                    log_images = dict(
-                        image=wandb.Image(np.asarray(gt_seq[0])),
-                        recon=wandb.Image(np.asarray(recon_seq[0])),
-                        true_vs_recon=wandb.Image(
-                            np.asarray(comparison_seq.astype(np.uint8))
-                        ),
-                    )
-                    wandb.log(log_images)
+                    # NOTE: Process-dependent control flow deliberately happens
+                    # after indexing operation since it must not contain code
+                    # sections that lead to cross-accelerator communication. 
+                    if jax.process_index() == 0:
+                        log_images = dict(
+                            image=wandb.Image(np.asarray(gt_seq[0])),
+                            recon=wandb.Image(np.asarray(recon_seq[0])),
+                            true_vs_recon=wandb.Image(
+                                np.asarray(comparison_seq.astype(np.uint8))
+                            ),
+                        )
+                        wandb.log(log_images)
             if step % args.log_checkpoint_interval == 0:
                 ckpt = {"model": train_state}
                 orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
