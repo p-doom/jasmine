@@ -225,6 +225,9 @@ if __name__ == "__main__":
                     comparison_seq = einops.rearrange(
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
+                    # NOTE: Process-dependent control flow deliberately happens
+                    # after indexing operation since it must not contain code
+                    # sections that lead to cross-accelerator communication. 
                     if jax.process_index() == 0:
                         log_images = dict(
                             image=wandb.Image(np.asarray(gt_seq[0])),
