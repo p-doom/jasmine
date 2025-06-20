@@ -31,7 +31,8 @@ class Args:
     seed: int = 0
     seq_len: int = 16
     image_channels: int = 3
-    image_resolution: int = 64
+    image_height: int = 90
+    image_width: int = 160
     data_dir: str = "data_tfrecords/coinrun"
     # Optimization
     batch_size: int = 36
@@ -122,7 +123,7 @@ if __name__ == "__main__":
             f"Global batch size {args.batch_size} must be divisible by "
             f"number of devices {num_devices}."
         )
-    
+
     per_device_batch_size_for_init = args.batch_size // num_devices
 
     rng = jax.random.PRNGKey(args.seed)
@@ -154,12 +155,15 @@ if __name__ == "__main__":
         mask_limit=args.mask_limit,
     )
     rng, _rng = jax.random.split(rng)
-    image_shape = (args.image_resolution, args.image_resolution, args.image_channels)
+    image_shape = (args.image_height, args.image_width, args.image_channels)
     dummy_inputs = dict(
         videos=jnp.zeros(
-            (per_device_batch_size_for_init, args.seq_len, *image_shape), dtype=jnp.float32
+            (per_device_batch_size_for_init, args.seq_len, *image_shape),
+            dtype=jnp.float32,
         ),
-        action=jnp.zeros((per_device_batch_size_for_init, args.seq_len), dtype=jnp.float32),
+        action=jnp.zeros(
+            (per_device_batch_size_for_init, args.seq_len), dtype=jnp.float32
+        ),
         mask_rng=_rng,
     )
     rng, _rng = jax.random.split(rng)
@@ -173,13 +177,15 @@ if __name__ == "__main__":
     train_state = TrainState.create(apply_fn=genie.apply, params=init_params, tx=tx)
 
     device_mesh_arr = create_device_mesh((num_devices,))
-    mesh = Mesh(devices=device_mesh_arr, axis_names=('data',))
+    mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
 
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
     train_state = jax.device_put(train_state, replicated_sharding)
 
     # --- Restore checkpoint ---
-    train_state = restore_genie_components(train_state, replicated_sharding, dummy_inputs, rng, args)
+    train_state = restore_genie_components(
+        train_state, replicated_sharding, dummy_inputs, rng, args
+    )
 
     # --- TRAIN LOOP ---
     tfrecord_files = [
@@ -190,17 +196,22 @@ if __name__ == "__main__":
     dataloader = get_dataloader(
         # NOTE: We deliberately pass the global batch size
         # The dataloader shards the dataset across all processes
-        tfrecord_files, args.seq_len, args.batch_size, *image_shape
+        tfrecord_files,
+        args.seq_len,
+        args.batch_size,
+        *image_shape,
     )
     step = 0
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
             rng, _rng, _mask_rng = jax.random.split(rng, 3)
-            
-            videos_sharding = NamedSharding(mesh, PartitionSpec('data', None, None, None, None))
+
+            videos_sharding = NamedSharding(
+                mesh, PartitionSpec("data", None, None, None, None)
+            )
             videos = jax.make_array_from_process_local_data(videos_sharding, videos)
-            
+
             inputs = dict(
                 videos=videos,
                 dropout_rng=_rng,
@@ -223,8 +234,8 @@ if __name__ == "__main__":
                     )
                     if jax.process_index() == 0:
                         log_images = dict(
-                            image=wandb.Image(np.asarray(gt_seq[args.seq_len-1])),
-                            recon=wandb.Image(np.asarray(recon_seq[args.seq_len-1])),
+                            image=wandb.Image(np.asarray(gt_seq[args.seq_len - 1])),
+                            recon=wandb.Image(np.asarray(recon_seq[args.seq_len - 1])),
                             true_vs_recon=wandb.Image(
                                 np.asarray(comparison_seq.astype(np.uint8))
                             ),
