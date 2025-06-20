@@ -85,6 +85,7 @@ params = genie.init(_rng, dummy_inputs)
 ckpt = PyTreeCheckpointer().restore(args.checkpoint)["model"]["params"]["params"]
 params["params"].update(ckpt)
 
+
 # --- Define autoregressive sampling loop ---
 def _autoreg_sample(rng, video_batch, action_batch):
     vid = video_batch[:, : args.start_frame + 1]
