@@ -215,7 +215,7 @@ if __name__ == "__main__":
             step += 1
 
             # --- Logging ---
-            if args.log :
+            if args.log:
                 if step % args.log_interval == 0 and jax.process_index() == 0:
                     wandb.log({"loss": loss, "step": step, **metrics})
                 if step % args.log_image_interval == 0:
@@ -227,7 +227,7 @@ if __name__ == "__main__":
                     )
                     # NOTE: Process-dependent control flow deliberately happens
                     # after indexing operation since it must not contain code
-                    # sections that lead to cross-accelerator communication. 
+                    # sections that lead to cross-accelerator communication.
                     if jax.process_index() == 0:
                         log_images = dict(
                             image=wandb.Image(np.asarray(gt_seq[0])),

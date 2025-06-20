@@ -112,7 +112,9 @@ class VectorQuantizer(nn.Module):
         )
         self.drop = nn.Dropout(self.dropout, deterministic=False)
 
-    def __call__(self, x: jax.Array, training: bool) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    def __call__(
+        self, x: jax.Array, training: bool
+    ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         # --- Compute distances ---
         x = normalize(x)
         codebook = normalize(self.codebook)

@@ -18,6 +18,7 @@ class Args:
 
 args = tyro.cli(Args)
 
+
 def _bytes_feature(value):
     if isinstance(value, type(tf.constant(0))):
         value = value.numpy()
@@ -101,4 +102,6 @@ if __name__ == "__main__":
     ):
         logging.error(f"Please generate data in '{args.source_data_dir}' first.")
     else:
-        main_preprocess(args.source_data_dir, args.output_tfrecords_dir, args.num_shards)
+        main_preprocess(
+            args.source_data_dir, args.output_tfrecords_dir, args.num_shards
+        )
