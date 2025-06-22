@@ -78,7 +78,7 @@ args = tyro.cli(Args)
 def dynamics_loss_fn(params, state, inputs):
     """Compute masked dynamics loss"""
     outputs = state.apply_fn(
-        params, inputs, training=True, rngs={"dropout": inputs["dropout_rng"]}
+        params, inputs, training=True, rngs={"params": inputs["rng"], "dropout": inputs["dropout_rng"]}
     )
     mask = outputs["mask"]
     ce_loss = optax.softmax_cross_entropy_with_integer_labels(
@@ -205,7 +205,7 @@ if __name__ == "__main__":
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
-            rng, _rng, _mask_rng = jax.random.split(rng, 3)
+            rng, _rng, _rng_dropout, _rng_mask = jax.random.split(rng, 4)
 
             videos_sharding = NamedSharding(
                 mesh, PartitionSpec("data", None, None, None, None)
@@ -214,8 +214,9 @@ if __name__ == "__main__":
 
             inputs = dict(
                 videos=videos,
-                dropout_rng=_rng,
-                mask_rng=_mask_rng,
+                rng=_rng,
+                dropout_rng=_rng_dropout,
+                mask_rng=_rng_mask,
             )
             train_state, loss, recon, metrics = train_step(train_state, inputs)
             print(f"Step {step}, loss: {loss}")

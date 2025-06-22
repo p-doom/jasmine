@@ -120,7 +120,8 @@ class VectorQuantizer(nn.Module):
         codebook = normalize(self.codebook)
         distance = -jnp.matmul(x, codebook.T)
         if training:
-            distance = self.drop(distance)
+            dropout_key = self.make_rng("dropout")
+            distance = self.drop(distance, rng=dropout_key)
 
         # --- Get indices and embeddings ---
         indices = jnp.argmin(distance, axis=-1)
