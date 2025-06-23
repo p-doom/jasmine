@@ -78,7 +78,10 @@ args = tyro.cli(Args)
 def dynamics_loss_fn(params, state, inputs):
     """Compute masked dynamics loss"""
     outputs = state.apply_fn(
-        params, inputs, training=True, rngs={"params": inputs["rng"], "dropout": inputs["dropout_rng"]}
+        params,
+        inputs,
+        training=True,
+        rngs={"params": inputs["rng"], "dropout": inputs["dropout_rng"]},
     )
     mask = outputs["mask"]
     ce_loss = optax.softmax_cross_entropy_with_integer_labels(
@@ -218,14 +221,23 @@ if __name__ == "__main__":
                 dropout_rng=_rng_dropout,
                 mask_rng=_rng_mask,
             )
+            start_time = time.time()
             train_state, loss, recon, metrics = train_step(train_state, inputs)
-            print(f"Step {step}, loss: {loss}")
+            elapsed_time = (time.time() - start_time) * 1000
+            print(f"Step {step}, loss: {loss}, step time: {elapsed_time}ms")
             step += 1
 
             # --- Logging ---
             if args.log:
                 if step % args.log_interval == 0 and jax.process_index() == 0:
-                    wandb.log({"loss": loss, "step": step, **metrics})
+                    wandb.log(
+                        {
+                            "loss": loss,
+                            "step": step,
+                            "step_time_ms": elapsed_time,
+                            **metrics,
+                        }
+                    )
                 if step % args.log_image_interval == 0:
                     gt_seq = inputs["videos"][0]
                     recon_seq = recon[0].clip(0, 1)
