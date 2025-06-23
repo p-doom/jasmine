@@ -10,8 +10,6 @@ from jax.experimental.mesh_utils import create_device_mesh
 import optax
 import orbax
 from orbax.checkpoint import PyTreeCheckpointer
-import numpy as np
-import tensorflow as tf
 import dm_pix as pix
 import jax
 import jax.numpy as jnp
@@ -62,8 +60,6 @@ class Args:
 
 
 args = tyro.cli(Args)
-tf.random.set_seed(args.seed)
-np.random.seed(args.seed)
 
 
 def tokenizer_loss_fn(params, state, inputs):
@@ -188,11 +184,13 @@ if __name__ == "__main__":
         step += int(args.checkpoint.split("_")[-1])
 
     # --- TRAIN LOOP ---
-    tfrecord_files = [
-        os.path.join(args.data_dir, x)
-        for x in os.listdir(args.data_dir)
-        if x.endswith(".tfrecord")
-    ]
+    tfrecord_files = sorted(
+        [
+            os.path.join(args.data_dir, x)
+            for x in os.listdir(args.data_dir)
+            if x.endswith(".tfrecord")
+        ]
+    )
     dataloader = get_dataloader(
         # NOTE: We deliberately pass the global batch size
         # The dataloader shards the dataset across all processes
