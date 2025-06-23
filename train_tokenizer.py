@@ -216,7 +216,7 @@ if __name__ == "__main__":
             start_time = time.time()
             train_state, loss, recon, metrics = train_step(train_state, inputs)
             elapsed_time = (time.time() - start_time) * 1000
-            print(f"Step {step}, loss: {loss}, step_time: {elapsed_time}ms")
+            print(f"Step {step}, loss: {loss}, step time: {elapsed_time}ms")
             step += 1
 
             # --- Logging ---
