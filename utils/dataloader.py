@@ -3,6 +3,12 @@ import jax
 
 import tensorflow as tf
 
+# reserve GPU memory for JAX only if tensorflow is built with GPU support
+try:
+  tf.config.experimental.set_visible_devices([], "GPU")
+except tf.errors.NotFoundError:
+  pass
+
 
 # --- TensorFlow function for processing: slicing, normalization ---
 def _tf_process_episode(episode_tensor, seq_len, image_h, image_w, image_c):
