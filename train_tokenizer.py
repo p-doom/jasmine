@@ -66,7 +66,10 @@ args = tyro.cli(Args)
 def tokenizer_loss_fn(params, state, inputs):
     # --- Compute loss ---
     outputs = state.apply_fn(
-        params, inputs, training=True, rngs={"dropout": inputs["rng"]}
+        params,
+        inputs,
+        training=True,
+        rngs={"params": inputs["rng"], "dropout": inputs["dropout_rng"]},
     )
     mse = jnp.square(inputs["videos"] - outputs["recon"]).mean()
     q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()
@@ -202,14 +205,14 @@ if __name__ == "__main__":
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
-            rng, _rng = jax.random.split(rng)
+            rng, _rng, _rng_dropout = jax.random.split(rng, 3)
 
             videos_sharding = NamedSharding(
                 mesh, PartitionSpec("data", None, None, None, None)
             )
             videos = jax.make_array_from_process_local_data(videos_sharding, videos)
 
-            inputs = dict(videos=videos, rng=_rng)
+            inputs = dict(videos=videos, rng=_rng, dropout_rng=_rng_dropout)
             start_time = time.time()
             train_state, loss, recon, metrics = train_step(train_state, inputs)
             elapsed_time = (time.time() - start_time) * 1000
@@ -217,9 +220,16 @@ if __name__ == "__main__":
             step += 1
 
             # --- Logging ---
-            if args.log and jax.process_index() == 0:
-                if step % args.log_interval == 0:
-                    wandb.log({"loss": loss, "step": step, "step_time_ms": elapsed_time, **metrics})
+            if args.log:
+                if step % args.log_interval == 0 and jax.process_index() == 0:
+                    wandb.log(
+                        {
+                            "loss": loss,
+                            "step": step,
+                            "step_time_ms": elapsed_time,
+                            **metrics,
+                        }
+                    )
                 if step % args.log_image_interval == 0:
                     gt_seq = inputs["videos"][0]
                     recon_seq = recon[0].clip(0, 1)
@@ -227,14 +237,18 @@ if __name__ == "__main__":
                     comparison_seq = einops.rearrange(
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
-                    log_images = dict(
-                        image=wandb.Image(np.asarray(gt_seq[0])),
-                        recon=wandb.Image(np.asarray(recon_seq[0])),
-                        true_vs_recon=wandb.Image(
-                            np.asarray(comparison_seq.astype(np.uint8))
-                        ),
-                    )
-                    wandb.log(log_images)
+                    # NOTE: Process-dependent control flow deliberately happens
+                    # after indexing operation since it must not contain code
+                    # sections that lead to cross-accelerator communication.
+                    if jax.process_index() == 0:
+                        log_images = dict(
+                            image=wandb.Image(np.asarray(gt_seq[0])),
+                            recon=wandb.Image(np.asarray(recon_seq[0])),
+                            true_vs_recon=wandb.Image(
+                                np.asarray(comparison_seq.astype(np.uint8))
+                            ),
+                        )
+                        wandb.log(log_images)
             if step % args.log_checkpoint_interval == 0:
                 ckpt = {"model": train_state}
                 orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
