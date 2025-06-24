@@ -13,6 +13,7 @@ from orbax.checkpoint import PyTreeCheckpointer
 import dm_pix as pix
 import jax
 import jax.numpy as jnp
+import numpy as np
 import tyro
 import wandb
 
