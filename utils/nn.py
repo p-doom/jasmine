@@ -42,6 +42,7 @@ class STBlock(nn.Module):
             num_heads=self.num_heads,
             qkv_features=self.dim,
             dropout_rate=self.dropout,
+            deterministic=False,
         )(z)
         x = x + z
 
@@ -54,6 +55,7 @@ class STBlock(nn.Module):
             num_heads=self.num_heads,
             qkv_features=self.dim,
             dropout_rate=self.dropout,
+            deterministic=False,
         )(z, mask=causal_mask)
         x = x + z
         x = x.swapaxes(1, 2)
@@ -112,7 +114,9 @@ class VectorQuantizer(nn.Module):
         )
         self.drop = nn.Dropout(self.dropout, deterministic=False)
 
-    def __call__(self, x: jax.Array, training: bool) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    def __call__(
+        self, x: jax.Array, training: bool
+    ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         # --- Compute distances ---
         x = normalize(x)
         codebook = normalize(self.codebook)
