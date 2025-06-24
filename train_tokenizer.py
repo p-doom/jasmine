@@ -60,61 +60,64 @@ class Args:
     log_gradients: bool = False
 
 
-args = tyro.cli(Args)
+def create_training_functions(args):
+    """Create training functions with args captured in closure."""
 
-
-def tokenizer_loss_fn(params, state, inputs):
-    # --- Compute loss ---
-    outputs = state.apply_fn(
-        params, inputs, training=True, rngs={"dropout": inputs["rng"]}
-    )
-    mse = jnp.square(inputs["videos"] - outputs["recon"]).mean()
-    q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()
-    commitment_loss = jnp.square(
-        outputs["emb"] - jax.lax.stop_gradient(outputs["z"])
-    ).mean()
-    loss = mse + q_loss + args.vq_beta * commitment_loss
-
-    # --- Compute validation metrics ---
-    gt = inputs["videos"].clip(0, 1).reshape(-1, *inputs["videos"].shape[2:])
-    recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
-    psnr = pix.psnr(gt, recon).mean()
-    ssim = pix.ssim(gt, recon).mean()
-    _, index_counts = jnp.unique_counts(
-        jnp.ravel(outputs["indices"]), size=args.num_latents, fill_value=0
-    )
-    codebook_usage = (index_counts != 0).mean()
-    metrics = dict(
-        loss=loss,
-        mse=mse,
-        q_loss=q_loss,
-        commitment_loss=commitment_loss,
-        psnr=psnr,
-        ssim=ssim,
-        codebook_usage=codebook_usage,
-    )
-    return loss, (outputs["recon"], metrics)
-
-
-@jax.jit
-def train_step(state, inputs):
-    grad_fn = jax.value_and_grad(tokenizer_loss_fn, has_aux=True, allow_int=True)
-    (loss, (recon, metrics)), grads = grad_fn(state.params, state, inputs)
-    state = state.apply_gradients(grads=grads)
-    if args.log_gradients:
-        metrics["encoder_gradients_std/"] = jax.tree.map(
-            lambda x: x.std(), grads["params"]["encoder"]
+    def tokenizer_loss_fn(params, state, inputs):
+        # --- Compute loss ---
+        outputs = state.apply_fn(
+            params, inputs, training=True, rngs={"dropout": inputs["rng"]}
         )
-        metrics["vq_gradients_std/"] = jax.tree.map(
-            lambda x: x.std(), grads["params"]["vq"]
+        mse = jnp.square(inputs["videos"] - outputs["recon"]).mean()
+        q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()
+        commitment_loss = jnp.square(
+            outputs["emb"] - jax.lax.stop_gradient(outputs["z"])
+        ).mean()
+        loss = mse + q_loss + args.vq_beta * commitment_loss
+
+        # --- Compute validation metrics ---
+        gt = inputs["videos"].clip(0, 1).reshape(-1, *inputs["videos"].shape[2:])
+        recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
+        psnr = pix.psnr(gt, recon).mean()
+        ssim = pix.ssim(gt, recon).mean()
+        _, index_counts = jnp.unique_counts(
+            jnp.ravel(outputs["indices"]), size=args.num_latents, fill_value=0
         )
-        metrics["decoder_gradients_std/"] = jax.tree.map(
-            lambda x: x.std(), grads["params"]["decoder"]
+        codebook_usage = (index_counts != 0).mean()
+        metrics = dict(
+            loss=loss,
+            mse=mse,
+            q_loss=q_loss,
+            commitment_loss=commitment_loss,
+            psnr=psnr,
+            ssim=ssim,
+            codebook_usage=codebook_usage,
         )
-    return state, loss, recon, metrics
+        return loss, (outputs["recon"], metrics)
+
+    @jax.jit
+    def train_step(state, inputs):
+        grad_fn = jax.value_and_grad(tokenizer_loss_fn, has_aux=True, allow_int=True)
+        (loss, (recon, metrics)), grads = grad_fn(state.params, state, inputs)
+        state = state.apply_gradients(grads=grads)
+        if args.log_gradients:
+            metrics["encoder_gradients_std/"] = jax.tree.map(
+                lambda x: x.std(), grads["params"]["encoder"]
+            )
+            metrics["vq_gradients_std/"] = jax.tree.map(
+                lambda x: x.std(), grads["params"]["vq"]
+            )
+            metrics["decoder_gradients_std/"] = jax.tree.map(
+                lambda x: x.std(), grads["params"]["decoder"]
+            )
+        return state, loss, recon, metrics
+
+    return tokenizer_loss_fn, train_step
 
 
 if __name__ == "__main__":
+    args = tyro.cli(Args)
+
     jax.distributed.initialize()
     num_devices = jax.device_count()
     if num_devices == 0:
@@ -132,6 +135,8 @@ if __name__ == "__main__":
     rng = jax.random.PRNGKey(args.seed)
     if args.log and jax.process_index() == 0:
         wandb.init(entity=args.entity, project=args.project, group="debug", config=args)
+
+    tokenizer_loss_fn, train_step = create_training_functions(args)
 
     # --- Initialize model ---
     tokenizer = TokenizerVQVAE(
@@ -199,6 +204,7 @@ if __name__ == "__main__":
         args.seq_len,
         args.batch_size,
         *image_shape,
+        seed=args.seed,
     )
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
