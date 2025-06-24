@@ -31,7 +31,8 @@ class Args:
     seed: int = 0
     seq_len: int = 16
     image_channels: int = 3
-    image_resolution: int = 64
+    image_height: int = 90
+    image_width: int = 160
     data_dir: str = "data_tfrecords/coinrun"
     # Optimization
     batch_size: int = 36
@@ -77,7 +78,10 @@ args = tyro.cli(Args)
 def dynamics_loss_fn(params, state, inputs):
     """Compute masked dynamics loss"""
     outputs = state.apply_fn(
-        params, inputs, training=True, rngs={"dropout": inputs["dropout_rng"]}
+        params,
+        inputs,
+        training=True,
+        rngs={"params": inputs["rng"], "dropout": inputs["dropout_rng"]},
     )
     mask = outputs["mask"]
     ce_loss = optax.softmax_cross_entropy_with_integer_labels(
@@ -122,7 +126,7 @@ if __name__ == "__main__":
             f"Global batch size {args.batch_size} must be divisible by "
             f"number of devices {num_devices}."
         )
-    
+
     per_device_batch_size_for_init = args.batch_size // num_devices
 
     rng = jax.random.PRNGKey(args.seed)
@@ -154,12 +158,15 @@ if __name__ == "__main__":
         mask_limit=args.mask_limit,
     )
     rng, _rng = jax.random.split(rng)
-    image_shape = (args.image_resolution, args.image_resolution, args.image_channels)
+    image_shape = (args.image_height, args.image_width, args.image_channels)
     dummy_inputs = dict(
         videos=jnp.zeros(
-            (per_device_batch_size_for_init, args.seq_len, *image_shape), dtype=jnp.float32
+            (per_device_batch_size_for_init, args.seq_len, *image_shape),
+            dtype=jnp.float32,
         ),
-        action=jnp.zeros((per_device_batch_size_for_init, args.seq_len), dtype=jnp.float32),
+        action=jnp.zeros(
+            (per_device_batch_size_for_init, args.seq_len), dtype=jnp.float32
+        ),
         mask_rng=_rng,
     )
     rng, _rng = jax.random.split(rng)
@@ -173,13 +180,15 @@ if __name__ == "__main__":
     train_state = TrainState.create(apply_fn=genie.apply, params=init_params, tx=tx)
 
     device_mesh_arr = create_device_mesh((num_devices,))
-    mesh = Mesh(devices=device_mesh_arr, axis_names=('data',))
+    mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
 
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
     train_state = jax.device_put(train_state, replicated_sharding)
 
     # --- Restore checkpoint ---
-    train_state = restore_genie_components(train_state, replicated_sharding, dummy_inputs, rng, args)
+    train_state = restore_genie_components(
+        train_state, replicated_sharding, dummy_inputs, rng, args
+    )
 
     # --- TRAIN LOOP ---
     tfrecord_files = [
@@ -190,30 +199,45 @@ if __name__ == "__main__":
     dataloader = get_dataloader(
         # NOTE: We deliberately pass the global batch size
         # The dataloader shards the dataset across all processes
-        tfrecord_files, args.seq_len, args.batch_size, *image_shape
+        tfrecord_files,
+        args.seq_len,
+        args.batch_size,
+        *image_shape,
     )
     step = 0
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
-            rng, _rng, _mask_rng = jax.random.split(rng, 3)
-            
-            videos_sharding = NamedSharding(mesh, PartitionSpec('data', None, None, None, None))
+            rng, _rng, _rng_dropout, _rng_mask = jax.random.split(rng, 4)
+
+            videos_sharding = NamedSharding(
+                mesh, PartitionSpec("data", None, None, None, None)
+            )
             videos = jax.make_array_from_process_local_data(videos_sharding, videos)
-            
+
             inputs = dict(
                 videos=videos,
-                dropout_rng=_rng,
-                mask_rng=_mask_rng,
+                rng=_rng,
+                dropout_rng=_rng_dropout,
+                mask_rng=_rng_mask,
             )
+            start_time = time.time()
             train_state, loss, recon, metrics = train_step(train_state, inputs)
-            print(f"Step {step}, loss: {loss}")
+            elapsed_time = (time.time() - start_time) * 1000
+            print(f"Step {step}, loss: {loss}, step time: {elapsed_time}ms")
             step += 1
 
             # --- Logging ---
-            if args.log and jax.process_index() == 0:
-                if step % args.log_interval == 0:
-                    wandb.log({"loss": loss, "step": step, **metrics})
+            if args.log:
+                if step % args.log_interval == 0 and jax.process_index() == 0:
+                    wandb.log(
+                        {
+                            "loss": loss,
+                            "step": step,
+                            "step_time_ms": elapsed_time,
+                            **metrics,
+                        }
+                    )
                 if step % args.log_image_interval == 0:
                     gt_seq = inputs["videos"][0]
                     recon_seq = recon[0].clip(0, 1)
@@ -221,14 +245,15 @@ if __name__ == "__main__":
                     comparison_seq = einops.rearrange(
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
-                    log_images = dict(
-                        image=wandb.Image(np.asarray(gt_seq[args.seq_len-1])),
-                        recon=wandb.Image(np.asarray(recon_seq[args.seq_len-1])),
-                        true_vs_recon=wandb.Image(
-                            np.asarray(comparison_seq.astype(np.uint8))
-                        ),
-                    )
-                    wandb.log(log_images)
+                    if jax.process_index() == 0:
+                        log_images = dict(
+                            image=wandb.Image(np.asarray(gt_seq[args.seq_len - 1])),
+                            recon=wandb.Image(np.asarray(recon_seq[args.seq_len - 1])),
+                            true_vs_recon=wandb.Image(
+                                np.asarray(comparison_seq.astype(np.uint8))
+                            ),
+                        )
+                        wandb.log(log_images)
             if step % args.log_checkpoint_interval == 0:
                 ckpt = {"model": train_state}
                 orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()

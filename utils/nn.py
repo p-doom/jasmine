@@ -112,13 +112,16 @@ class VectorQuantizer(nn.Module):
         )
         self.drop = nn.Dropout(self.dropout, deterministic=False)
 
-    def __call__(self, x: jax.Array, training: bool) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    def __call__(
+        self, x: jax.Array, training: bool
+    ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         # --- Compute distances ---
         x = normalize(x)
         codebook = normalize(self.codebook)
         distance = -jnp.matmul(x, codebook.T)
         if training:
-            distance = self.drop(distance)
+            dropout_key = self.make_rng("dropout")
+            distance = self.drop(distance, rng=dropout_key)
 
         # --- Get indices and embeddings ---
         indices = jnp.argmin(distance, axis=-1)
