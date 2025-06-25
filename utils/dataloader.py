@@ -4,10 +4,7 @@ import jax
 import tensorflow as tf
 
 # reserve GPU memory for JAX only if tensorflow is built with GPU support
-try:
-  tf.config.experimental.set_visible_devices([], "GPU")
-except tf.errors.NotFoundError:
-  pass
+tf.config.experimental.set_visible_devices([], "GPU")
 
 
 # --- TensorFlow function for processing: slicing, normalization ---
