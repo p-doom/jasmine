@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 import time
 
@@ -65,6 +65,8 @@ class Args:
     log: bool = False
     entity: str = ""
     project: str = ""
+    name: str = "train_dynamics"
+    tags: list = field(default_factory=lambda: ["dynamics"])
     log_interval: int = 5
     log_image_interval: int = 250
     ckpt_dir: str = ""
@@ -131,7 +133,14 @@ if __name__ == "__main__":
 
     rng = jax.random.PRNGKey(args.seed)
     if args.log and jax.process_index() == 0:
-        wandb.init(entity=args.entity, project=args.project, group="debug", config=args)
+        wandb.init(
+            entity=args.entity,
+            project=args.project,
+            name=args.name,
+            tags=args.tags,
+            group="debug",
+            config=args
+        )
 
     # --- Initialize model ---
     genie = Genie(
