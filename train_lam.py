@@ -55,7 +55,7 @@ class Args:
     entity: str = ""
     project: str = ""
     name: str = "train_lam"
-    tags: list = field(default_factory=lambda: ["lam"])
+    tags: list[str] = field(default_factory=lambda: ["lam"])
     log_interval: int = 5
     log_image_interval: int = 250
     ckpt_dir: str = ""

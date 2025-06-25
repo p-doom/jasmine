@@ -54,7 +54,7 @@ class Args:
     entity: str = ""
     project: str = ""
     name: str = "train_tokenizer"
-    tags: list = field(default_factory=lambda: ["tokenizer"])
+    tags: list[str] = field(default_factory=lambda: ["tokenizer"])
     log_interval: int = 5
     log_image_interval: int = 250
     ckpt_dir: str = ""
