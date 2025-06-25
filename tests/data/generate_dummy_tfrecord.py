@@ -1,6 +1,15 @@
+import tyro
 import tensorflow as tf
 import numpy as np
 from pathlib import Path
+from dataclasses import dataclass
+
+@dataclass
+class Args:
+    data_dir: str = "data_tfrecords/dummy"
+    num_episodes: int = 5
+    episode_length: int = 16
+
 
 
 def _bytes_feature(value):
@@ -28,7 +37,7 @@ def create_tfrecord_example(episode_numpy_array):
 
 
 def generate_dummy_tfrecord(
-    output_path, num_episodes=5, episode_length=16, height=64, width=64, channels=3
+    output_path, num_episodes=5, episode_length=16, height=90, width=160, channels=3
 ):
     """Generates a dummy TFRecord file with synthetic video data."""
     print(f"Generating dummy TFRecord file at {output_path}")
@@ -44,8 +53,9 @@ def generate_dummy_tfrecord(
 
 
 if __name__ == "__main__":
-    temp_dir = Path("/tmp/jafar_test_data")
+    args = tyro.cli(Args)
+    temp_dir = Path(args.data_dir)
     temp_dir.mkdir(parents=True, exist_ok=True)
     dummy_file = temp_dir / "dummy_test_shard.tfrecord"
-    generate_dummy_tfrecord(dummy_file)
+    generate_dummy_tfrecord(dummy_file, num_episodes=args.num_episodes, episode_length=args.episode_length)
     print(f"Generated dummy file: {dummy_file}")
