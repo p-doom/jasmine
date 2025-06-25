@@ -145,7 +145,7 @@ if __name__ == "__main__":
             tags=args.tags,
             group="debug",
             config=args
-        ) 
+        )
 
     # --- Initialize model ---
     lam = LatentActionModel(
