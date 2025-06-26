@@ -11,12 +11,8 @@ import json
 class Args:
     target_width, target_height = 160, 90
     target_fps = 10
-    input_path: str = (
-        "/hkfs/work/workspace/scratch/tum_ind3695-jafa_ws_shared/data/knoms/"
-    )
-    output_path: str = (
-        "/hkfs/work/workspace/scratch/tum_ind3695-jafa_ws_shared/data/knoms_npy"
-    )
+    input_path: str = "data/minecraft_videos"
+    output_path: str = "data/minecraft_npy"
 
 
 def preprocess_video(

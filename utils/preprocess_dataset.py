@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO)
 @dataclass
 class Args:
     source_data_dir: str = "data/coinrun_episodes"
-    output_tfrecords_dir: str = "data_tfrecords"
+    output_tfrecords_dir: str = "data/coinrun_tfrecords"
     num_shards: int = 50
 
 
