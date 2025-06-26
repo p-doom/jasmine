@@ -70,7 +70,7 @@ def get_dataloader(
     image_h: int,
     image_w: int,
     image_c: int,
-    shuffle_buffer_size: int = 1000,
+    shuffle_buffer_size: int = 50,
     num_parallel_calls: int = tf.data.AUTOTUNE,
     seed: int = 42,
 ):

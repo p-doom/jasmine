@@ -19,6 +19,7 @@ import wandb
 
 from models.lam import LatentActionModel
 from utils.dataloader import get_dataloader
+from utils.parameter_utils import count_parameters_by_component
 
 ts = int(time.time())
 
@@ -144,7 +145,7 @@ if __name__ == "__main__":
             name=args.name,
             tags=args.tags,
             group="debug",
-            config=args
+            config=args,
         )
 
     # --- Initialize model ---
@@ -172,6 +173,10 @@ if __name__ == "__main__":
     )
     rng, _rng = jax.random.split(rng)
     init_params = lam.init(_rng, inputs)
+
+    param_counts = count_parameters_by_component(init_params)
+    print("Parameter counts:")
+    print(param_counts)
 
     # --- Initialize optimizer ---
     lr_schedule = optax.warmup_cosine_decay_schedule(
