@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import time
+import os
 
 import dm_pix as pix
 import einops
@@ -21,7 +22,9 @@ class Args:
     seq_len: int = 16
     image_channels: int = 3
     image_resolution: int = 64
-    data_dir: str = "data/coinrun_episodes"
+    image_height: int = 90
+    image_width: int = 160
+    data_dir: str = "data_tfrecords/coinrun_episodes"
     checkpoint: str = ""
     # Sampling
     batch_size: int = 1
@@ -75,7 +78,7 @@ genie = Genie(
     dyna_num_heads=args.dyna_num_heads,
 )
 rng, _rng = jax.random.split(rng)
-image_shape = (args.image_resolution, args.image_resolution, args.image_channels)
+image_shape = (args.image_height, args.image_width, args.image_channels)
 dummy_inputs = dict(
     videos=jnp.zeros((args.batch_size, args.seq_len, *image_shape), dtype=jnp.float32),
     mask_rng=_rng,
@@ -107,7 +110,17 @@ def _autoreg_sample(rng, video_batch, action_batch):
 
 
 # --- Get video + latent actions ---
-dataloader = get_dataloader(args.data_dir, args.seq_len, args.batch_size)
+tfrecord_files = [
+    os.path.join(args.data_dir, x)
+    for x in os.listdir(args.data_dir)
+    if x.endswith(".tfrecord")
+]
+dataloader = get_dataloader(
+    tfrecord_files,
+    args.seq_len,
+    args.batch_size,
+    *image_shape
+)
 video_batch = next(iter(dataloader))
 # Get latent actions from first video only
 first_video = video_batch[:1]
