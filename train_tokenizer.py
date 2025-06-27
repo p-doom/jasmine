@@ -60,6 +60,7 @@ class Args:
     ckpt_dir: str = ""
     log_checkpoint_interval: int = 10000
     log_gradients: bool = False
+    time_measurement_interval: int = 50 
 
 
 args = tyro.cli(Args)
@@ -210,6 +211,7 @@ if __name__ == "__main__":
         args.batch_size,
         *image_shape,
     )
+    start_time = time.time()
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
@@ -222,10 +224,18 @@ if __name__ == "__main__":
             videos = jax.make_array_from_process_local_data(videos_sharding, videos)
 
             inputs = dict(videos=videos, rng=_rng, dropout_rng=_rng_dropout)
-            start_time = time.time()
             train_state, loss, recon, metrics = train_step(train_state, inputs)
-            elapsed_time = (time.time() - start_time) * 1000
-            print(f"Step {step}, loss: {loss}, step time: {elapsed_time}ms")
+            if step % args.time_measurement_interval == 0:
+                jax.block_until_ready(train_state)
+                elapsed_time = (time.time() - start_time)
+                avg_step_time = elapsed_time / args.time_measurement_interval
+                print(f"Step {step}, loss: {loss}, avg step time: {avg_step_time:.2f}s")
+                if args.log and jax.process_index() == 0:
+                    wandb.log({"avg_step_time_s": avg_step_time, "step": step})
+                start_time = time.time()
+            else:
+                print(f"Step {step}, loss: {loss}")
+            
             step += 1
 
             # --- Logging ---
@@ -235,7 +245,6 @@ if __name__ == "__main__":
                         {
                             "loss": loss,
                             "step": step,
-                            "step_time_ms": elapsed_time,
                             **metrics,
                         }
                     )
