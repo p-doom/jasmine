@@ -229,12 +229,10 @@ if __name__ == "__main__":
             videos = jax.make_array_from_process_local_data(videos_sharding, videos)
 
             inputs = dict(videos=videos, rng=_rng)
-            start_time = time.time()
             train_state, loss, recon, action_last_active, metrics = train_step(
                 train_state, inputs, action_last_active
             )
-            elapsed_time = (time.time() - start_time) * 1000
-            print(f"Step {step}, loss: {loss}, step time: {elapsed_time}ms")
+            print(f"Step {step}, loss: {loss}")
             step += 1
 
             # --- Logging ---
@@ -244,7 +242,6 @@ if __name__ == "__main__":
                         {
                             "loss": loss,
                             "step": step,
-                            "step_time_ms": elapsed_time,
                             **metrics,
                         }
                     )
