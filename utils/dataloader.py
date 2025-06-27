@@ -69,7 +69,7 @@ def get_dataloader(
     image_w: int,
     image_c: int,
     shuffle_buffer_size: int = 1000,
-    num_parallel_calls: int = 1,
+    num_parallel_calls: int = tf.data.AUTOTUNE,
     cache_processed_data: bool = True,
     seed: int = 42,
 ):
@@ -103,7 +103,7 @@ def get_dataloader(
         _parse_tfrecord_fn, image_h=image_h, image_w=image_w, image_c=image_c
     )
     dataset = dataset.map(
-        parse_fn, num_parallel_calls=num_parallel_calls, deterministic=True
+        parse_fn, num_parallel_calls=num_parallel_calls
     )
 
     dataset = dataset.cache() if cache_processed_data else dataset
@@ -117,7 +117,7 @@ def get_dataloader(
         seed=seed,
     )
     dataset = dataset.map(
-        tf_process_fn, num_parallel_calls=num_parallel_calls, deterministic=True
+        tf_process_fn, num_parallel_calls=num_parallel_calls
     )
 
     dataset = dataset.repeat(None)

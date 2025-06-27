@@ -190,13 +190,12 @@ if __name__ == "__main__":
         step += int(args.checkpoint.split("_")[-1])
 
     # --- TRAIN LOOP ---
-    tfrecord_files = sorted(
-        [
+    tfrecord_files = [
             os.path.join(args.data_dir, x)
             for x in os.listdir(args.data_dir)
             if x.endswith(".tfrecord")
         ]
-    )
+    
     dataloader = get_dataloader(
         # NOTE: We deliberately pass the global batch size
         # The dataloader shards the dataset across all processes
