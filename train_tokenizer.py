@@ -179,6 +179,9 @@ if __name__ == "__main__":
     mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
 
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
+    videos_sharding = NamedSharding(
+        mesh, PartitionSpec("data", None, None, None, None)
+    )
     train_state = jax.device_put(train_state, replicated_sharding)
 
     # --- Load checkpoint ---
@@ -210,16 +213,12 @@ if __name__ == "__main__":
         args.batch_size,
         *image_shape,
     )
+    dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in dataloader) # type: ignore
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
             rng, _rng, _rng_dropout = jax.random.split(rng, 3)
-
-            videos_sharding = NamedSharding(
-                mesh, PartitionSpec("data", None, None, None, None)
-            )
-            videos = jax.make_array_from_process_local_data(videos_sharding, videos)
 
             inputs = dict(videos=videos, rng=_rng, dropout_rng=_rng_dropout)
             start_time = time.time()
