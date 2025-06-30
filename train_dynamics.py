@@ -20,6 +20,7 @@ from genie import Genie, restore_genie_components
 from models.tokenizer import TokenizerVQVAE
 from models.lam import LatentActionModel
 from utils.dataloader import get_dataloader
+from utils.parameter_utils import count_parameters_by_component
 
 ts = int(time.time())
 
@@ -132,15 +133,6 @@ if __name__ == "__main__":
     per_device_batch_size_for_init = args.batch_size // num_devices
 
     rng = jax.random.PRNGKey(args.seed)
-    if args.log and jax.process_index() == 0:
-        wandb.init(
-            entity=args.entity,
-            project=args.project,
-            name=args.name,
-            tags=args.tags,
-            group="debug",
-            config=args
-        )
 
     # --- Initialize model ---
     genie = Genie(
@@ -180,6 +172,22 @@ if __name__ == "__main__":
     )
     rng, _rng = jax.random.split(rng)
     init_params = genie.init(_rng, dummy_inputs)
+
+    param_counts = count_parameters_by_component(init_params)
+
+    if args.log and jax.process_index() == 0:
+        wandb.init(
+            entity=args.entity,
+            project=args.project,
+            name=args.name,
+            tags=args.tags,
+            group="debug",
+            config=args,
+        )
+        wandb.config.update({"model_param_count": param_counts})
+
+    print("Parameter counts:")
+    print(param_counts)
 
     # --- Initialize optimizer ---
     lr_schedule = optax.warmup_cosine_decay_schedule(

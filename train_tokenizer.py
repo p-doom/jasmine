@@ -19,6 +19,7 @@ import wandb
 
 from models.tokenizer import TokenizerVQVAE
 from utils.dataloader import get_dataloader
+from utils.parameter_utils import count_parameters_by_component
 
 ts = int(time.time())
 
@@ -135,15 +136,6 @@ if __name__ == "__main__":
     per_device_batch_size_for_init = args.batch_size // num_devices
 
     rng = jax.random.PRNGKey(args.seed)
-    if args.log and jax.process_index() == 0:
-        wandb.init(
-            entity=args.entity,
-            project=args.project,
-            name=args.name,
-            tags=args.tags,
-            group="debug",
-            config=args
-        )
 
     # --- Initialize model ---
     tokenizer = TokenizerVQVAE(
@@ -166,6 +158,22 @@ if __name__ == "__main__":
         ),
     )
     init_params = tokenizer.init(_rng, inputs)
+
+    param_counts = count_parameters_by_component(init_params)
+
+    if args.log and jax.process_index() == 0:
+        wandb.init(
+            entity=args.entity,
+            project=args.project,
+            name=args.name,
+            tags=args.tags,
+            group="debug",
+            config=args,
+        )
+        wandb.config.update({"model_param_count": param_counts})
+
+    print("Parameter counts:")
+    print(param_counts)
 
     # --- Initialize optimizer ---
     lr_schedule = optax.warmup_cosine_decay_schedule(
