@@ -166,8 +166,6 @@ if __name__ == "__main__":
     init_params = lam.init(_rng, inputs)
 
     param_counts = count_parameters_by_component(init_params)
-    print("Parameter counts:")
-    print(param_counts)
 
     if args.log and jax.process_index() == 0:
         wandb.init(
@@ -179,6 +177,9 @@ if __name__ == "__main__":
             config=args,
         )
         wandb.config.update({"model_param_count": param_counts})
+
+    print("Parameter counts:")
+    print(param_counts)
 
     # --- Initialize optimizer ---
     lr_schedule = optax.warmup_cosine_decay_schedule(
