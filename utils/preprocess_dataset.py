@@ -5,7 +5,6 @@ import numpy as np
 import logging
 import tyro
 from pathlib import Path
-from tqdm import tqdm
 
 logging.basicConfig(level=logging.INFO)
 
@@ -13,7 +12,7 @@ logging.basicConfig(level=logging.INFO)
 @dataclass
 class Args:
     source_data_dir: str = "data/coinrun_episodes"
-    output_tfrecords_dir: str = "data/coinrun_tfrecords"
+    output_tfrecords_dir: str = "data_tfrecords"
     num_shards: int = 50
 
 
@@ -71,11 +70,9 @@ def main_preprocess(data_dir_str, output_dir_str, num_shards):
 
     writer_idx_for_episode = 0
     try:
-        for i, npy_path in tqdm(
-            enumerate(episode_source_paths),
-            total=num_total_episodes,
-            desc="Processing episodes",
-        ):
+        for i, npy_path in enumerate(episode_source_paths):
+            if i % 100 == 0 and i > 0:
+                logging.info(f"  Processed {i}/{num_total_episodes} episodes...")
             try:
                 episode_data = np.load(npy_path)
                 tf_example = create_tfrecord_example(episode_data)
