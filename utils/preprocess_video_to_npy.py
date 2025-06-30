@@ -18,9 +18,7 @@ class Args:
 def preprocess_video(
     idx, in_filename, output_path, target_width, target_height, target_fps
 ):
-    print(f"Processing video {idx}")
-
-    print("filename", in_filename)
+    print(f"Processing video {idx}, Filename: {in_filename}")
     try:
         out, _ = (
             ffmpeg.input(in_filename)
@@ -61,17 +59,21 @@ def get_meta_data(filename, directory):
 def main():
     args = tyro.cli(Args)
 
-    output_path = f"{args.output_path}/{args.target_fps}fps_{args.target_width}x{args.target_height}"
-    print(output_path)
+    output_path = os.path.join(
+        args.output_path,
+        f"{args.target_fps}fps_{args.target_width}x{args.target_height}",
+    )
+    print(f"Output path: {output_path}")
 
     num_processes = mp.cpu_count()
+    num_processes = 1
     print(f"Number of processes: {num_processes}")
 
     print("Converting mp4 to npy files...")
     pool_args = [
         (
             idx,
-            args.input_path + in_filename,
+            os.path.join(args.input_path, in_filename),
             output_path,
             args.target_width,
             args.target_height,
