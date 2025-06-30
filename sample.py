@@ -21,8 +21,8 @@ class Args:
     seed: int = 0
     seq_len: int = 16
     image_channels: int = 3
-    image_height: int = 64
-    image_width: int = 64
+    image_height: int = 90
+    image_width: int = 160
     data_dir: str = "data/coinrun_episodes"
     checkpoint: str = ""
     # Sampling
