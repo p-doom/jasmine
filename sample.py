@@ -20,7 +20,8 @@ class Args:
     seed: int = 0
     seq_len: int = 16
     image_channels: int = 3
-    image_resolution: int = 64
+    image_height: int = 64
+    image_width: int = 64
     data_dir: str = "data/coinrun_episodes"
     checkpoint: str = ""
     # Sampling
@@ -55,7 +56,7 @@ rng = jax.random.PRNGKey(args.seed)
 # --- Load Genie checkpoint ---
 genie = Genie(
     # Tokenizer
-    in_dim=args.image_channels,
+    in_dim=args.image_channels,  # Assuming in_dim is related to image_channels
     tokenizer_dim=args.tokenizer_dim,
     latent_patch_dim=args.latent_patch_dim,
     num_patch_latents=args.num_patch_latents,
@@ -75,7 +76,7 @@ genie = Genie(
     dyna_num_heads=args.dyna_num_heads,
 )
 rng, _rng = jax.random.split(rng)
-image_shape = (args.image_resolution, args.image_resolution, args.image_channels)
+image_shape = (args.image_height, args.image_width, args.image_channels)
 dummy_inputs = dict(
     videos=jnp.zeros((args.batch_size, args.seq_len, *image_shape), dtype=jnp.float32),
     mask_rng=_rng,
@@ -107,7 +108,21 @@ def _autoreg_sample(rng, video_batch, action_batch):
 
 
 # --- Get video + latent actions ---
-dataloader = get_dataloader(args.data_dir, args.seq_len, args.batch_size)
+import os
+tfrecord_files = [
+    os.path.join(args.data_dir, x)
+    for x in os.listdir(args.data_dir)
+    if x.endswith(".tfrecord")
+]
+dataloader = get_dataloader(
+    tfrecord_files,
+    args.seq_len,
+    args.batch_size,
+    args.image_height,
+    args.image_width,
+    args.image_channels,
+    seed=args.seed,
+)
 video_batch = next(iter(dataloader))
 # Get latent actions from first video only
 first_video = video_batch[:1]
