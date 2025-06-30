@@ -66,7 +66,6 @@ def main():
     print(f"Output path: {output_path}")
 
     num_processes = mp.cpu_count()
-    num_processes = 1
     print(f"Number of processes: {num_processes}")
 
     print("Converting mp4 to npy files...")
