@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import time
+import os
 
 import dm_pix as pix
 import einops
@@ -56,7 +57,7 @@ rng = jax.random.PRNGKey(args.seed)
 # --- Load Genie checkpoint ---
 genie = Genie(
     # Tokenizer
-    in_dim=args.image_channels,  # Assuming in_dim is related to image_channels
+    in_dim=args.image_channels,
     tokenizer_dim=args.tokenizer_dim,
     latent_patch_dim=args.latent_patch_dim,
     num_patch_latents=args.num_patch_latents,
@@ -108,7 +109,6 @@ def _autoreg_sample(rng, video_batch, action_batch):
 
 
 # --- Get video + latent actions ---
-import os
 tfrecord_files = [
     os.path.join(args.data_dir, x)
     for x in os.listdir(args.data_dir)
