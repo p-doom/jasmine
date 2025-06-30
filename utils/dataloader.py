@@ -8,7 +8,7 @@ tf.config.experimental.set_visible_devices([], "GPU")
 
 
 # --- TensorFlow function for processing: slicing, normalization ---
-def _tf_process_episode(episode_tensor, seq_len, image_h, image_w, image_c):
+def _tf_process_episode(episode_tensor, seq_len, image_h, image_w, image_c, seed):
     """
     Processes a raw episode tensor in TensorFlow.
     Takes a full episode, extracts a random sequence, and normalizes it.
@@ -20,6 +20,7 @@ def _tf_process_episode(episode_tensor, seq_len, image_h, image_w, image_c):
         image_h: The height of each frame.
         image_w: The width of each frame.
         image_c: The number of channels in each frame.
+        seed: The seed for the random number generator.
     Returns:
         A TensorFlow tensor representing the processed video sequence.
         Shape: (seq_len, image_h, image_w, image_c)
@@ -30,7 +31,7 @@ def _tf_process_episode(episode_tensor, seq_len, image_h, image_w, image_c):
     max_start_idx = current_episode_len - seq_len
 
     start_idx = tf.random.uniform(
-        shape=(), minval=0, maxval=max_start_idx + 1, dtype=tf.int32
+        shape=(), minval=0, maxval=max_start_idx + 1, dtype=tf.int32, seed=seed
     )
 
     seq = episode_tensor[start_idx : start_idx + seq_len]
@@ -111,6 +112,7 @@ def get_dataloader(
         image_h=image_h,
         image_w=image_w,
         image_c=image_c,
+        seed=seed,
     )
     dataset = dataset.map(tf_process_fn, num_parallel_calls=num_parallel_calls)
 

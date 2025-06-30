@@ -209,6 +209,7 @@ if __name__ == "__main__":
         args.seq_len,
         args.batch_size,
         *image_shape,
+        seed=args.seed,
     )
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
