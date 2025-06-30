@@ -18,9 +18,7 @@ class Args:
 def preprocess_video(
     idx, in_filename, output_path, target_width, target_height, target_fps
 ):
-    print(f"Processing video {idx}")
-
-    print("filename", in_filename)
+    print(f"Processing video {idx}, Filename: {in_filename}")
     try:
         out, _ = (
             ffmpeg.input(in_filename)
@@ -37,9 +35,10 @@ def preprocess_video(
             n_frames, target_height, target_width, 3
         )
 
-        output_file = (
-            f"{output_path}/{os.path.splitext(os.path.basename(in_filename))[0]}.npy"
+        output_file = os.path.join(
+            output_path, os.path.splitext(os.path.basename(in_filename))[0] + ".npy"
         )
+
         if not os.path.exists(os.path.dirname(output_file)):
             os.makedirs(os.path.dirname(output_file))
 
@@ -60,8 +59,11 @@ def get_meta_data(filename, directory):
 def main():
     args = tyro.cli(Args)
 
-    output_path = f"{args.output_path}/{args.target_fps}fps_{args.target_width}x{args.target_height}"
-    print(output_path)
+    output_path = os.path.join(
+        args.output_path,
+        f"{args.target_fps}fps_{args.target_width}x{args.target_height}",
+    )
+    print(f"Output path: {output_path}")
 
     num_processes = mp.cpu_count()
     print(f"Number of processes: {num_processes}")
@@ -70,7 +72,7 @@ def main():
     pool_args = [
         (
             idx,
-            args.input_path + in_filename,
+            os.path.join(args.input_path, in_filename),
             output_path,
             args.target_width,
             args.target_height,
@@ -92,7 +94,8 @@ def main():
     print(f"Number of successful videos: {len(results) - len(failed_videos)}")
     print(f"Number of total videos: {len(results)}")
 
-    json.dump(failed_videos, open(output_path + "/failed_videos.json", "w"))
+    with open(os.path.join(output_path, "failed_videos.json"), "w") as f:
+        json.dump(failed_videos, f)
 
     print("Creating metadata file...")
     metadata = []
@@ -106,7 +109,7 @@ def main():
     with mp.Pool(processes=num_processes) as pool:
         results = list(pool.starmap(get_meta_data, pool_args))
         metadata = [{"path": path, "length": length} for path, length in results]
-    np.save(output_path + "/metadata.npy", metadata)
+    np.save(os.path.join(output_path, "metadata.npy"), metadata)
     print(f"Saved {len(metadata)} videos to {output_path}")
 
 
