@@ -197,18 +197,21 @@ if __name__ == "__main__":
         step += int(args.checkpoint.split("_")[-1])
 
     # --- TRAIN LOOP ---
-    tfrecord_files = [
+    array_record_files = [
         os.path.join(args.data_dir, x)
         for x in os.listdir(args.data_dir)
-        if x.endswith(".tfrecord")
+        if x.endswith(".array_record")
     ]
     dataloader = get_dataloader(
         # NOTE: We deliberately pass the global batch size
         # The dataloader shards the dataset across all processes
-        tfrecord_files,
+        array_record_files,
         args.seq_len,
         args.batch_size,
         *image_shape,
+        num_workers=16,
+        prefetch_buffer_size=2,
+        seed=args.seed,
     )
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
