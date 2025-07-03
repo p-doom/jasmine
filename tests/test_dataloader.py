@@ -52,6 +52,8 @@ class DataloaderReproducibilityTest(unittest.TestCase):
             self.image_height,
             self.image_width,
             self.image_channels,
+            num_workers=8,
+            prefetch_buffer_size=1,
             seed=self.fixed_seed,
         )
         batches1 = [next(dataloader1) for _ in range(3)]
@@ -63,6 +65,8 @@ class DataloaderReproducibilityTest(unittest.TestCase):
             self.image_height,
             self.image_width,
             self.image_channels,
+            num_workers=8,
+            prefetch_buffer_size=1,
             seed=self.fixed_seed,
         )
         batches2 = [next(dataloader2) for _ in range(3)]
