@@ -9,3 +9,4 @@ wandb>=0.17.4
 grain>=0.2.10
 pre-commit>=4.2.0
 array-record>=0.7.2
+tqdm>=4.67.1

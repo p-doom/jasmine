@@ -19,6 +19,7 @@ import wandb
 
 from models.lam import LatentActionModel
 from utils.dataloader import get_dataloader
+from utils.parameter_utils import count_parameters_by_component
 
 ts = int(time.time())
 
@@ -137,15 +138,6 @@ if __name__ == "__main__":
     per_device_batch_size_for_init = args.batch_size // num_devices
 
     rng = jax.random.PRNGKey(args.seed)
-    if args.log and jax.process_index() == 0:
-        wandb.init(
-            entity=args.entity,
-            project=args.project,
-            name=args.name,
-            tags=args.tags,
-            group="debug",
-            config=args
-        )
 
     # --- Initialize model ---
     lam = LatentActionModel(
@@ -173,6 +165,22 @@ if __name__ == "__main__":
     rng, _rng = jax.random.split(rng)
     init_params = lam.init(_rng, inputs)
 
+    param_counts = count_parameters_by_component(init_params)
+
+    if args.log and jax.process_index() == 0:
+        wandb.init(
+            entity=args.entity,
+            project=args.project,
+            name=args.name,
+            tags=args.tags,
+            group="debug",
+            config=args,
+        )
+        wandb.config.update({"model_param_count": param_counts})
+
+    print("Parameter counts:")
+    print(param_counts)
+
     # --- Initialize optimizer ---
     lr_schedule = optax.warmup_cosine_decay_schedule(
         args.min_lr, args.max_lr, args.warmup_steps, args.num_steps
@@ -185,6 +193,9 @@ if __name__ == "__main__":
     mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
 
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
+    videos_sharding = NamedSharding(
+        mesh, PartitionSpec("data", None, None, None, None)
+    )
     train_state = jax.device_put(train_state, replicated_sharding)
     action_last_active = jax.device_put(action_last_active, replicated_sharding)
 
@@ -217,24 +228,18 @@ if __name__ == "__main__":
         args.batch_size,
         *image_shape,
     )
+    dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in dataloader) # type: ignore
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
             rng, _rng = jax.random.split(rng)
 
-            videos_sharding = NamedSharding(
-                mesh, PartitionSpec("data", None, None, None, None)
-            )
-            videos = jax.make_array_from_process_local_data(videos_sharding, videos)
-
             inputs = dict(videos=videos, rng=_rng)
-            start_time = time.time()
             train_state, loss, recon, action_last_active, metrics = train_step(
                 train_state, inputs, action_last_active
             )
-            elapsed_time = (time.time() - start_time) * 1000
-            print(f"Step {step}, loss: {loss}, step time: {elapsed_time}ms")
+            print(f"Step {step}, loss: {loss}")
             step += 1
 
             # --- Logging ---
@@ -244,7 +249,6 @@ if __name__ == "__main__":
                         {
                             "loss": loss,
                             "step": step,
-                            "step_time_ms": elapsed_time,
                             **metrics,
                         }
                     )
