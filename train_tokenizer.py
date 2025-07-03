@@ -209,8 +209,8 @@ if __name__ == "__main__":
         args.seq_len,
         args.batch_size,
         *image_shape,
-        num_workers=16,
-        prefetch_buffer_size=2,
+        num_workers=8,
+        prefetch_buffer_size=1,
         seed=args.seed,
     )
     print(f"Starting training from step {step}...")
