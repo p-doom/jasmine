@@ -33,7 +33,7 @@ class Args:
     image_channels: int = 3
     image_height: int = 90
     image_width: int = 160
-    data_dir: str = "data_tfrecords/coinrun"
+    data_dir: str = ""
     checkpoint: str = ""
     # Optimization
     batch_size: int = 36
