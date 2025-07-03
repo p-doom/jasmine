@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from utils.dataloader import get_dataloader
-from tests.data.generate_dummy_arrayrecord import generate_dummy_arrayrecord
+from tests.data.generate_dummy_data import generate_dummy_arrayrecord
 
 
 class DataloaderReproducibilityTest(unittest.TestCase):
