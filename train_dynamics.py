@@ -151,6 +151,7 @@ if __name__ == "__main__":
         lam_patch_size=args.lam_patch_size,
         lam_num_blocks=args.lam_num_blocks,
         lam_num_heads=args.lam_num_heads,
+        lam_co_train=not args.lam_checkpoint,
         # Dynamics
         dyna_dim=args.dyna_dim,
         dyna_num_blocks=args.dyna_num_blocks,

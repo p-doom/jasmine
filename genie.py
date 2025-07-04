@@ -32,6 +32,7 @@ class Genie(nn.Module):
     lam_patch_size: int
     lam_num_blocks: int
     lam_num_heads: int
+    lam_co_train: bool
     # --- Dynamics ---
     dyna_dim: int
     dyna_num_blocks: int
@@ -76,7 +77,7 @@ class Genie(nn.Module):
         lam_outputs = self.lam.vq_encode(batch["videos"], training=False)
         outputs = dict(
             video_tokens=jax.lax.stop_gradient(tokenizer_outputs["indices"]),
-            latent_actions=jax.lax.stop_gradient(lam_outputs["z_q"]),
+            latent_actions=lam_outputs["z_q"] if self.lam_co_train else jax.lax.stop_gradient(lam_outputs["z_q"]),
         )
         outputs["mask_rng"] = batch["mask_rng"]
         dyna_outputs = self.dynamics(outputs, training)
@@ -303,6 +304,7 @@ def restore_genie_components(
     }
 
     train_state.params["params"]["tokenizer"].update(restored_tokenizer_params)
-    train_state.params["params"]["lam"].update(restored_lam_params)
+    if args.lam_checkpoint:
+        train_state.params["params"]["lam"].update(restored_lam_params)
 
     return train_state
