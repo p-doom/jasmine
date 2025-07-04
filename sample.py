@@ -91,22 +91,18 @@ params["params"].update(ckpt)
 # --- Define autoregressive sampling loop ---
 def _autoreg_sample(rng, video_batch, action_batch):
     vid = video_batch[:, : args.start_frame + 1]
-    for frame_idx in range(args.start_frame + 1, args.seq_len):
-        # --- Sample next frame ---
-        print("Frame", frame_idx)
-        rng, _rng = jax.random.split(rng)
-        batch = dict(videos=vid, latent_actions=action_batch[:, :frame_idx], rng=_rng)
-        new_frame = genie.apply(
-            params,
-            batch,
-            args.maskgit_steps,
-            args.temperature,
-            args.sample_argmax,
-            method=Genie.sample,
-        )
-        vid = jnp.concatenate([vid, new_frame], axis=1)
-    return vid
-
+    rng, _rng = jax.random.split(rng)
+    batch = dict(videos=vid, latent_actions=action_batch, rng=_rng)
+    generated_vid = genie.apply(
+        params,
+        batch,
+        args.seq_len,
+        args.maskgit_steps,
+        args.temperature,
+        args.sample_argmax,
+        method=Genie.sample,
+    )
+    return generated_vid
 
 # --- Get video + latent actions ---
 tfrecord_files = [
@@ -124,8 +120,8 @@ dataloader = get_dataloader(
     seed=args.seed,
 )
 video_batch = next(iter(dataloader))
-# Get latent actions from first video only
-first_video = video_batch[:1]
+# Get latent actions from first video only; clip them down to the specified seq_len
+first_video = video_batch[:1, :args.seq_len]
 batch = dict(videos=first_video)
 action_batch = genie.apply(params, batch, False, method=Genie.vq_encode)
 action_batch = action_batch.reshape(1, args.seq_len - 1, 1)
