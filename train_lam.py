@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 import os
 import time
+import shutil
 
 import einops
 from flax.training import orbax_utils
@@ -8,7 +9,6 @@ from flax.training.train_state import TrainState
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.mesh_utils import create_device_mesh
 import optax
-import orbax
 from orbax.checkpoint import PyTreeCheckpointer
 import numpy as np
 import dm_pix as pix
@@ -60,6 +60,7 @@ class Args:
     log_interval: int = 5
     log_image_interval: int = 250
     ckpt_dir: str = ""
+    tmp_ckpt_dir: str = ""
     log_checkpoint_interval: int = 10000
 
 
@@ -189,6 +190,7 @@ if __name__ == "__main__":
     train_state = TrainState.create(apply_fn=lam.apply, params=init_params, tx=tx)
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
+    # FIXME: we should create a 2D mesh for runs spanning multiple nodes
     device_mesh_arr = create_device_mesh((num_devices,))
     mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
 
@@ -270,12 +272,17 @@ if __name__ == "__main__":
                         wandb.log(log_images)
             if step % args.log_checkpoint_interval == 0:
                 ckpt = {"model": train_state}
-                orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+                orbax_checkpointer = PyTreeCheckpointer()
                 save_args = orbax_utils.save_args_from_target(ckpt)
                 orbax_checkpointer.save(
-                    os.path.join(os.getcwd(), args.ckpt_dir, f"lam_{ts}_{step}"),
+                    os.path.join(args.tmp_ckpt_dir, f"lam_{ts}_{step}"),
                     ckpt,
                     save_args=save_args,
                 )
+                if args.ckpt_dir:
+                    shutil.move(
+                            os.path.join(args.tmp_ckpt_dir, f"lam_{ts}_{step}"),
+                            os.path.join(args.ckpt_dir, f"lam_{ts}_{step}"),
+                        )
             if step >= args.num_steps:
                 break

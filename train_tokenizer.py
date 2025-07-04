@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 import os
 import time
+import shutil
 
 import einops
 from flax.training import orbax_utils
@@ -59,6 +60,7 @@ class Args:
     log_interval: int = 5
     log_image_interval: int = 250
     ckpt_dir: str = ""
+    tmp_ckpt_dir: str = ""
     log_checkpoint_interval: int = 10000
     log_gradients: bool = False
 
@@ -183,6 +185,7 @@ if __name__ == "__main__":
     train_state = TrainState.create(apply_fn=tokenizer.apply, params=init_params, tx=tx)
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
+    # FIXME: we should create a 2D mesh for runs spanning multiple nodes
     device_mesh_arr = create_device_mesh((num_devices,))
     mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
 
@@ -265,12 +268,17 @@ if __name__ == "__main__":
                         wandb.log(log_images)
             if step % args.log_checkpoint_interval == 0:
                 ckpt = {"model": train_state}
-                orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+                orbax_checkpointer = PyTreeCheckpointer()
                 save_args = orbax_utils.save_args_from_target(ckpt)
                 orbax_checkpointer.save(
-                    os.path.join(os.getcwd(), args.ckpt_dir, f"tokenizer_{ts}_{step}"),
+                    os.path.join(args.tmp_ckpt_dir, f"tokenizer_{ts}_{step}"),
                     ckpt,
                     save_args=save_args,
                 )
+                if jax.process_index() == 0 and args.ckpt_dir:
+                    shutil.move(
+                            os.path.join(args.tmp_ckpt_dir, f"tokenizer_{ts}_{step}"),
+                            os.path.join(args.ckpt_dir, f"tokenizer_{ts}_{step}"),
+                        )
             if step >= args.num_steps:
                 break
