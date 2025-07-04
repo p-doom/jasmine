@@ -193,9 +193,7 @@ if __name__ == "__main__":
     mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
 
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
-    videos_sharding = NamedSharding(
-        mesh, PartitionSpec("data", None, None, None, None)
-    )
+    videos_sharding = NamedSharding(mesh, PartitionSpec("data", None, None, None, None))
     train_state = jax.device_put(train_state, replicated_sharding)
     action_last_active = jax.device_put(action_last_active, replicated_sharding)
 
@@ -204,13 +202,11 @@ if __name__ == "__main__":
     if args.checkpoint:
         restore_target = {"model": train_state}
         restore_args = orbax_utils.restore_args_from_target(restore_target)
-        train_state.params["params"].update(
-            PyTreeCheckpointer()
-            .restore(args.checkpoint, item=restore_target, restore_args=restore_args)[
-                "model"
-            ]
-            .params["params"]
+        restored_ckpt = PyTreeCheckpointer().restore(
+            args.checkpoint, item=restore_target, restore_args=restore_args
         )
+        # Restore the complete train_state
+        train_state = restored_ckpt["model"]
         # Assume checkpoint is of the form tokenizer_<timestamp>_<step>
         step += int(args.checkpoint.split("_")[-1])
 
@@ -228,7 +224,7 @@ if __name__ == "__main__":
         args.batch_size,
         *image_shape,
     )
-    dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in dataloader) # type: ignore
+    dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in dataloader)  # type: ignore
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
