@@ -97,20 +97,25 @@ class Genie(nn.Module):
         sample_argmax: bool = False,
     ) -> Any:
         """
-        Autoregressively samples up to `seq_len` frames, as in Figure 8 of the paper.
+        Autoregressively samples up to `seq_len` future frames, following Figure 8 of the paper.
 
-        Input frames are tokenized once, new frames are autoregressively generated in token space and all are detokenized in a single pass.
-        For stepwise interactive sampling, detokenization would need to occur after each action.
+        - Input frames are tokenized once.
+        - Future frames are generated autoregressively in token space.
+        - All frames are detokenized in a single pass.
 
-        Note, we decode all (current and future) frames each step to maintain tensor shapes. 
-        By reapplying the mask before each decoding step we don't hurt the temporal causal structure. 
+        Note:
+        - For interactive or stepwise sampling, detokenization should occur after each action.
+        - To maintain consistent tensor shapes across timesteps, all current and future frames are decoded at every step.
+        - Temporal causal structure is preserved by 
+            a) reapplying the mask before each decoding step.
+            b) a temporal causal mask is applied within each ST-transformer block.
 
         Dimension keys:
-            B: batch size
-            T: number of input (conditioning) frames
-            N: patches per frame
-            S: sequence length
-            A: action space
+            B: batch size  
+            T: number of input (conditioning) frames  
+            N: patches per frame  
+            S: sequence length  
+            A: action space  
             D: model latent dimension
         """
         # --- Encode videos and actions ---
