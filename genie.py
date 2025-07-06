@@ -75,9 +75,14 @@ class Genie(nn.Module):
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
         tokenizer_outputs = self.tokenizer.vq_encode(batch["videos"], training=False)
         lam_outputs = self.lam.vq_encode(batch["videos"], training=False)
+        latent_actions = jax.lax.cond(
+            self.lam_co_train,
+            lambda: lam_outputs["z_q"],
+            lambda: jax.lax.stop_gradient(lam_outputs["z_q"])
+        )
         outputs = dict(
             video_tokens=jax.lax.stop_gradient(tokenizer_outputs["indices"]),
-            latent_actions=lam_outputs["z_q"] if self.lam_co_train else jax.lax.stop_gradient(lam_outputs["z_q"]),
+            latent_actions=latent_actions,
         )
         outputs["mask_rng"] = batch["mask_rng"]
         dyna_outputs = self.dynamics(outputs, training)
