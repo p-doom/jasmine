@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 import os
-import time
 
 import einops
 from flax.training import orbax_utils
@@ -20,8 +19,6 @@ import wandb
 from models.tokenizer import TokenizerVQVAE
 from utils.dataloader import get_dataloader
 from utils.parameter_utils import count_parameters_by_component
-
-ts = int(time.time())
 
 
 @dataclass
@@ -268,7 +265,7 @@ if __name__ == "__main__":
                 orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
                 save_args = orbax_utils.save_args_from_target(ckpt)
                 orbax_checkpointer.save(
-                    os.path.join(os.getcwd(), args.ckpt_dir, f"tokenizer_{ts}_{step}"),
+                    os.path.join(os.getcwd(), args.ckpt_dir, f"tokenizer_{step}"),
                     ckpt,
                     save_args=save_args,
                 )
