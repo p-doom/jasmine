@@ -35,7 +35,7 @@ class Args:
     # Optimization
     batch_size: int = 36
     vq_beta: float = 0.25
-    min_lr: float = 3e-6
+    min_lr: float = 0.0
     max_lr: float = 3e-5
     warmup_steps: int = 5000
     vq_reset_thresh: int = 50
