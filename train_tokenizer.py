@@ -198,7 +198,6 @@ if __name__ == "__main__":
         restored_ckpt = PyTreeCheckpointer().restore(
             args.checkpoint, item=restore_target, restore_args=restore_args
         )
-        # Restore the complete train_state
         train_state = restored_ckpt["model"]
         # Assume checkpoint is of the form tokenizer_<timestamp>_<step>
         step += int(args.checkpoint.split("_")[-1])
