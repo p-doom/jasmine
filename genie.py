@@ -130,10 +130,10 @@ class Genie(nn.Module):
         for step_t in range(T, seq_len):
             print(f"Sampling Frame {step_t}...")
             # mask current and future frames (i.e., t >= step_t)
-            mask = jnp.arange(seq_len) < step_t # (S,)
+            mask = jnp.arange(seq_len) >= step_t # (S,)
             mask = jnp.broadcast_to(mask[None, :, None], (B, seq_len, N)) # (B, S, N)
             mask = mask.astype(bool)
-            token_idxs *= mask
+            token_idxs *= ~mask
 
             # --- Initialize MaskGIT ---
             init_carry = (
@@ -186,7 +186,7 @@ class MaskGITStep(nn.Module):
     def __call__(self, carry, x):
         rng, token_idxs, mask, action_tokens = carry
         step = x
-        _, _, N = token_idxs.shape[:3]
+        N = token_idxs.shape[2]
 
         # --- Construct + encode video ---
         vid_embed = self.dynamics.patch_embed(token_idxs) # (B, S, N, D)
