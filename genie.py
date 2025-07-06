@@ -104,7 +104,7 @@ class Genie(nn.Module):
         - All frames are detokenized in a single pass.
 
         Note:
-        - For interactive or stepwise sampling, detokenization should occur after each action.
+        - For interactive or step-wise sampling, detokenization should occur after each action.
         - To maintain consistent tensor shapes across timesteps, all current and future frames are decoded at every step.
         - Temporal causal structure is preserved by 
             a) reapplying the mask before each decoding step.
@@ -124,22 +124,22 @@ class Genie(nn.Module):
         B, T, N = token_idxs.shape
         pad_shape = (B, seq_len - T, N)
         pad = jnp.zeros(pad_shape, dtype=token_idxs.dtype)
-        token_idxs = jnp.concatenate([token_idxs, pad], axis=1) # shape (B, S, N)
+        token_idxs = jnp.concatenate([token_idxs, pad], axis=1) # (B, S, N)
         action_tokens = self.lam.vq.get_codes(batch["latent_actions"])
 
         for step_t in range(T, seq_len):
             print(f"Sampling Frame {step_t}...")
             # mask current and future frames (i.e., t >= step_t)
-            mask = (jnp.arange(seq_len)[None, :, None] >= step_t)  # shape (1, S, 1)
-            mask = jnp.broadcast_to(mask, (B, seq_len, N))    # shape (B, S, N)
-            init_mask = mask.astype(bool)
-            token_idxs *= ~init_mask # zeroing future token_idxs (since all are generated each step)
+            mask = jnp.arange(seq_len) < step_t # (S,)
+            mask = jnp.broadcast_to(mask[None, :, None], (B, seq_len, N)) # (B, S, N)
+            mask = mask.astype(bool)
+            token_idxs *= mask
 
             # --- Initialize MaskGIT ---
             init_carry = (
                 batch["rng"],
                 token_idxs,
-                init_mask,
+                mask,
                 action_tokens,
             )
 
