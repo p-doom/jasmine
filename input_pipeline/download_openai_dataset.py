@@ -15,7 +15,7 @@ import time
 class DownloadVideos:
     index_file_path: str = "data/openai_index_files/all_6xx_Jun_29.json"
     num_workers: int = 100
-    output_dir: str = "data/open_ai_minecraft/"
+    output_dir: str = "data/minecraft_videos/"
 
 
 def download_single_file(args):
