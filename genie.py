@@ -127,47 +127,61 @@ class Genie(nn.Module):
         token_idxs = jnp.concatenate([token_idxs, pad], axis=1) # (B, S, N)
         action_tokens = self.lam.vq.get_codes(batch["latent_actions"])
 
-        for step_t in range(T, seq_len):
-            print(f"Sampling Frame {step_t}...")
-            # mask current and future frames (i.e., t >= step_t)
+        MaskGITLoop = nn.scan(
+            MaskGITStep,
+            variable_broadcast="params",
+            split_rngs={"params": False},
+            in_axes=0,
+            out_axes=0,
+            length=steps,
+        )
+    
+        loop_fn = MaskGITLoop(
+            dynamics=self.dynamics,
+            tokenizer=self.tokenizer,
+            temperature=temperature,
+            sample_argmax=sample_argmax,
+            steps=steps,
+        )
+
+        def generation_step_fn(carry, step_t):
+            rng, current_token_idxs = carry
+            rng, step_rng = jax.random.split(rng)
+
+            # Mask current and future frames (i.e., t >= step_t)
             mask = jnp.arange(seq_len) >= step_t # (S,)
             mask = jnp.broadcast_to(mask[None, :, None], (B, seq_len, N)) # (B, S, N)
             mask = mask.astype(bool)
-            token_idxs *= ~mask
+            masked_token_idxs = current_token_idxs * ~mask
 
-            # --- Initialize MaskGIT ---
-            init_carry = (
-                batch["rng"],
-                token_idxs,
+            # --- Initialize and run MaskGIT loop ---
+            init_carry_maskgit = (
+                step_rng,
+                masked_token_idxs,
                 mask,
                 action_tokens,
             )
+            final_carry_maskgit, _ = loop_fn(init_carry_maskgit, jnp.arange(steps))
+            updated_token_idxs = final_carry_maskgit[1]
+            new_carry = (rng, updated_token_idxs)
+            return new_carry, None
 
-            MaskGITLoop = nn.scan(
-                MaskGITStep,
-                variable_broadcast="params",
-                split_rngs={"params": False},
-                in_axes=0,
-                out_axes=0,
-                length=steps,
-            )
+        # --- Run the autoregressive generation using scan ---
+        initial_carry = (batch["rng"], token_idxs)
+        timesteps_to_scan = jnp.arange(T, seq_len)
+        final_carry, _ = jax.lax.scan(
+            generation_step_fn,
+            initial_carry,
+            timesteps_to_scan
+        )
+        final_token_idxs = final_carry[1]
 
-            # --- Run MaskGIT loop ---
-            loop_fn = MaskGITLoop(
-                dynamics=self.dynamics,
-                tokenizer=self.tokenizer,
-                temperature=temperature,
-                sample_argmax=sample_argmax,
-                steps=steps,
-            )
-            final_carry, _ = loop_fn(init_carry, jnp.arange(steps))
-            token_idxs = final_carry[1]
-
+        # --- Decode all tokens at once at the end ---
         final_frames = self.tokenizer.decode(
-            token_idxs,
+            final_token_idxs,
             video_hw=batch["videos"].shape[2:4],
         )
-        return final_frames 
+        return final_frames
 
     def vq_encode(self, batch, training) -> Dict[str, Any]:
         # --- Preprocess videos ---
