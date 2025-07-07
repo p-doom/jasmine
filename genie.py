@@ -184,11 +184,7 @@ class MaskGITStep(nn.Module):
             sampled_token_idxs = jnp.argmax(final_logits, axis=-1)
         else:
             rng, _rng = jax.random.split(rng)
-            sampled_token_idxs = jnp.where(
-                step == self.steps - 1,
-                jnp.argmax(final_logits, axis=-1),
-                jax.random.categorical(_rng, final_logits),
-            )
+            sampled_token_idxs = jax.random.categorical(_rng, final_logits)
         gather_fn = jax.vmap(jax.vmap(lambda x, y: x[y]))
         final_token_probs = gather_fn(jax.nn.softmax(final_logits), sampled_token_idxs)
         final_token_probs += ~mask
