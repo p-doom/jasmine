@@ -32,6 +32,7 @@ class Genie(nn.Module):
     lam_patch_size: int
     lam_num_blocks: int
     lam_num_heads: int
+    lam_co_train: bool
     # --- Dynamics ---
     dyna_dim: int
     dyna_num_blocks: int
@@ -74,9 +75,14 @@ class Genie(nn.Module):
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
         tokenizer_outputs = self.tokenizer.vq_encode(batch["videos"], training=False)
         lam_outputs = self.lam.vq_encode(batch["videos"], training=False)
+        latent_actions = jax.lax.cond(
+            self.lam_co_train,
+            lambda: lam_outputs["z_q"],
+            lambda: jax.lax.stop_gradient(lam_outputs["z_q"])
+        )
         outputs = dict(
             video_tokens=jax.lax.stop_gradient(tokenizer_outputs["indices"]),
-            latent_actions=jax.lax.stop_gradient(lam_outputs["z_q"]),
+            latent_actions=latent_actions,
         )
         outputs["mask_rng"] = batch["mask_rng"]
         dyna_outputs = self.dynamics(outputs, training)
@@ -220,11 +226,7 @@ class MaskGITStep(nn.Module):
             sampled_token_idxs = jnp.argmax(final_logits, axis=-1)
         else:
             rng, _rng = jax.random.split(rng)
-            sampled_token_idxs = jnp.where(
-                step == self.steps - 1,
-                jnp.argmax(final_logits, axis=-1),
-                jax.random.categorical(_rng, final_logits),
-            )
+            sampled_token_idxs = jax.random.categorical(_rng, final_logits)
         gather_fn = jax.vmap(jax.vmap(jax.vmap(lambda x, y: x[y])))
         final_token_probs = gather_fn(jax.nn.softmax(final_logits), sampled_token_idxs)
         final_token_probs += ~mask
@@ -251,6 +253,14 @@ def restore_genie_components(
     """Restore pre-trained Genie components"""
     rng, _rng = jax.random.split(rng)
 
+    # dummy values since we only use tx to initialize the dummy train states
+    dummy_tx = optax.adamw(
+        learning_rate=optax.constant_schedule(args.max_lr),
+        b1=0.9,
+        b2=0.9,
+        weight_decay=1e-4,
+    )
+
     dummy_tokenizer = TokenizerVQVAE(
         in_dim=args.image_channels,
         model_dim=args.tokenizer_dim,
@@ -262,62 +272,17 @@ def restore_genie_components(
         dropout=args.dropout,
         codebook_dropout=args.dropout,
     )
-    dummy_lam = LatentActionModel(
-        in_dim=args.image_channels,
-        model_dim=args.lam_dim,
-        latent_dim=args.latent_patch_dim,
-        num_latents=args.num_latent_actions,
-        patch_size=args.lam_patch_size,
-        num_blocks=args.lam_num_blocks,
-        num_heads=args.lam_num_heads,
-        dropout=args.dropout,
-        codebook_dropout=args.dropout,
-    )
     tokenizer_init_params = dummy_tokenizer.init(_rng, inputs)
-    lam_init_params = dummy_lam.init(_rng, inputs)
-
-    # dummy values since we only use tx to initialize the dummy train states
-    dummy_tx = optax.adamw(
-        learning_rate=optax.constant_schedule(args.max_lr),
-        b1=0.9,
-        b2=0.9,
-        weight_decay=1e-4,
-    )
-
     dummy_tokenizer_train_state = TrainState.create(
         apply_fn=dummy_tokenizer.apply, params=tokenizer_init_params, tx=dummy_tx
     )
-    dummy_lam_train_state = TrainState.create(
-        apply_fn=dummy_lam.apply, params=lam_init_params, tx=dummy_tx
-    )
-
-    def create_abstract_sharded_pytree(pytree_template, sharding_spec):
-        """Replaces arrays in a pytree with ShapeDtypeStructs having the given sharding."""
-
-        def map_fn(leaf_template):
-            if hasattr(leaf_template, "shape") and hasattr(leaf_template, "dtype"):
-                return jax.ShapeDtypeStruct(
-                    leaf_template.shape, leaf_template.dtype, sharding=sharding_spec
-                )
-            return leaf_template
-
-        return jax.tree_util.tree_map(map_fn, pytree_template)
-
-    abstract_sharded_tokenizer_state = create_abstract_sharded_pytree(
+    abstract_sharded_tokenizer_state = _create_abstract_sharded_pytree(
         dummy_tokenizer_train_state, sharding
     )
-    abstract_sharded_lam_state = create_abstract_sharded_pytree(
-        dummy_lam_train_state, sharding
-    )
-
     tokenizer_restore_target = {"model": abstract_sharded_tokenizer_state}
-    lam_restore_target = {"model": abstract_sharded_lam_state}
-
     tokenizer_restore_args = orbax_utils.restore_args_from_target(
         tokenizer_restore_target
     )
-    lam_restore_args = orbax_utils.restore_args_from_target(lam_restore_target)
-
     restored_tokenizer_params = (
         PyTreeCheckpointer()
         .restore(
@@ -327,23 +292,57 @@ def restore_genie_components(
         )["model"]
         .params["params"]
     )
-    restored_lam_params = (
-        PyTreeCheckpointer()
-        .restore(
-            args.lam_checkpoint, item=lam_restore_target, restore_args=lam_restore_args
-        )["model"]
-        .params["params"]
-    )
-    # Genie does not initialize all LAM modules, thus we omit those extra modules during restoration
-    # (f.srambical) FIXME: Currently, this is a small HBM memory crunch since the LAM's decoder is loaded into HBM and immediately dicarded.
-    # A workaround would be to restore to host memory first, and only move the weights to HBM after pruning the decoder
-    restored_lam_params = {
-        k: v
-        for k, v in restored_lam_params.items()
-        if k in train_state.params["params"]["lam"]
-    }
-
     train_state.params["params"]["tokenizer"].update(restored_tokenizer_params)
-    train_state.params["params"]["lam"].update(restored_lam_params)
+
+    if args.lam_checkpoint:
+        dummy_lam = LatentActionModel(
+            in_dim=args.image_channels,
+            model_dim=args.lam_dim,
+            latent_dim=args.latent_patch_dim,
+            num_latents=args.num_latent_actions,
+            patch_size=args.lam_patch_size,
+            num_blocks=args.lam_num_blocks,
+            num_heads=args.lam_num_heads,
+            dropout=args.dropout,
+            codebook_dropout=args.dropout,
+        )
+        lam_init_params = dummy_lam.init(_rng, inputs)
+        dummy_lam_train_state = TrainState.create(
+            apply_fn=dummy_lam.apply, params=lam_init_params, tx=dummy_tx
+        )
+        abstract_sharded_lam_state = _create_abstract_sharded_pytree(
+            dummy_lam_train_state, sharding
+        )
+        lam_restore_target = {"model": abstract_sharded_lam_state}
+        lam_restore_args = orbax_utils.restore_args_from_target(lam_restore_target)
+        restored_lam_params = (
+            PyTreeCheckpointer()
+            .restore(
+                args.lam_checkpoint, item=lam_restore_target, restore_args=lam_restore_args
+            )["model"]
+            .params["params"]
+        )
+        # Genie does not initialize all LAM modules, thus we omit those extra modules during restoration
+        # (f.srambical) FIXME: Currently, this is a small HBM memory crunch since the LAM's decoder is loaded into HBM and immediately dicarded.
+        # A workaround would be to restore to host memory first, and only move the weights to HBM after pruning the decoder
+        restored_lam_params = {
+            k: v
+            for k, v in restored_lam_params.items()
+            if k in train_state.params["params"]["lam"]
+        }
+        train_state.params["params"]["lam"].update(restored_lam_params)
 
     return train_state
+
+
+def _create_abstract_sharded_pytree(pytree_template, sharding_spec):
+    """Replaces arrays in a pytree with ShapeDtypeStructs having the given sharding."""
+
+    def map_fn(leaf_template):
+        if hasattr(leaf_template, "shape") and hasattr(leaf_template, "dtype"):
+            return jax.ShapeDtypeStruct(
+                leaf_template.shape, leaf_template.dtype, sharding=sharding_spec
+            )
+        return leaf_template
+
+    return jax.tree_util.tree_map(map_fn, pytree_template)
