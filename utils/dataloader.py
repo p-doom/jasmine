@@ -72,6 +72,12 @@ def _create_processed_dataset_from_file(file_path, image_h, image_w, image_c, se
     )
     dataset = dataset.map(parse_fn, num_parallel_calls=num_parallel_calls)
 
+    # Filter out episodes that are too short
+    def filter_short_episodes(episode_tensor):
+        return tf.shape(episode_tensor)[0] >= seq_len
+    
+    dataset = dataset.filter(filter_short_episodes)
+
     tf_process_fn = functools.partial(
         _tf_process_episode,
         seq_len=seq_len,
