@@ -4,6 +4,7 @@ import tyro
 import multiprocessing as mp
 from dataclasses import dataclass
 import json
+import ffmpeg
 
 
 @dataclass

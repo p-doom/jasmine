@@ -13,8 +13,8 @@ import time
 
 @dataclass
 class DownloadVideos:
-    index_file_path: str = "data/openai_index_files/all_6xx_Jun_29.json"
-    num_workers: int = 100
+    index_file_path: str = "data/open_ai_index_files/all_6xx_Jun_29.json"
+    num_workers: int = -1
     output_dir: str = "data/minecraft_videos/"
 
 
@@ -119,6 +119,9 @@ def download_dataset(index_file_path, output_dir, num_workers=64):
 if __name__ == "__main__":
     args = tyro.cli(DownloadVideos)
     os.makedirs(args.output_dir, exist_ok=True)
+
+    if args.num_workers == -1:
+        args.num_workers = cpu_count()
 
     print(f"Index file path: {args.index_file_path}")
     print(f"Output directory: {args.output_dir}")

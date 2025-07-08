@@ -1,5 +1,5 @@
 # Create output directory
-output_dir="data/openai_index_files"
+output_dir="data/open_ai_index_files"
 mkdir -p $output_dir
 
 # Index files
