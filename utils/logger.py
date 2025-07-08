@@ -248,10 +248,10 @@ class CompositeLogger(BaseLogger):
             metrics (dict): Dictionary of metric names and values.
             step (int): The current step or epoch.
         """
+        metrics = jax.tree.map(
+            lambda x: x.item() if isinstance(x, (jax.Array, np.ndarray)) else x, metrics
+        )
         for logger in self.loggers:
-            metrics = jax.tree.map(
-                lambda x: x.item() if isinstance(x, (jax.Array, np.ndarray)) else x, metrics
-                )
             logger.log_metrics(metrics, step)
 
     def log_images(self, images, step):
