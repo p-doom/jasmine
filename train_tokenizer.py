@@ -14,7 +14,6 @@ import dm_pix as pix
 import jax
 import jax.numpy as jnp
 import tyro
-import wandb
 
 from models.tokenizer import TokenizerVQVAE
 from utils.dataloader import get_dataloader
@@ -50,7 +49,7 @@ class Args:
     codebook_dropout: float = 0.01
     # Logging
     log_dir: str = "logs/" 
-    loggers: list[str] = field(default_factory=lambda: ["console"])
+    loggers: list[str] = field(default_factory=lambda: ["console"]) # options: console, local, tb, wandb
     entity: str = ""
     project: str = ""
     name: str = "train_tokenizer"
@@ -164,6 +163,7 @@ if __name__ == "__main__":
         cfg = vars(args).copy()
         cfg["model_param_count"] = param_counts
         logger = CompositeLogger(args.loggers, cfg)
+        print(f"Training Tokenizer Model with {param_counts["total"]} parameters")
 
     print("Parameter counts:")
     print(param_counts)
@@ -247,8 +247,8 @@ if __name__ == "__main__":
                 # sections that lead to cross-accelerator communication.
                 if jax.process_index() == 0:
                     log_images = dict(
-                        image=np.asarray(gt_seq[0]).astype(np.uint8),
-                        recon=np.asarray(recon_seq[0]).astype(np.uint8),
+                        image=np.asarray(gt_seq[0] * 255.).astype(np.uint8),
+                        recon=np.asarray(recon_seq[0] * 255.).astype(np.uint8),
                         true_vs_recon=np.asarray(comparison_seq.astype(np.uint8)
                         ),
                     )
