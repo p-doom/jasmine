@@ -5,6 +5,41 @@ from typing import Any
 import pickle
 
 
+class EpisodeLengthFilter(grain.transforms.Filter):
+    """
+    A Grain Filter that keeps only episodes with sufficient length.
+    """
+    
+    def __init__(self, seq_len: int, image_h: int, image_w: int, image_c: int):
+        """Initializes the filter with sequence length requirements."""
+        self.seq_len = seq_len
+        self.image_h = image_h
+        self.image_w = image_w
+        self.image_c = image_c
+    
+    def filter(self, element: Any) -> bool:
+        """
+        Filters episodes based on length.
+        
+        Args:
+            element: A dictionary representing one record from the DataSource.
+                     Expected to contain 'raw_video' (bytes) and 'sequence_length' (int)
+        
+        Returns:
+            True if the episode has sufficient length, False otherwise.
+        """
+        assert isinstance(element, bytes)
+        element = pickle.loads(element)
+        
+        current_episode_len = element["sequence_length"]
+        if current_episode_len < self.seq_len:
+            print(f"Filtering out episode with length {current_episode_len}, which is "
+                f"shorter than the requested sequence length {self.seq_len}.")
+            return False
+        
+        return True
+
+
 class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
     """
     A Grain Transformation that combines parsing, slicing, and normalizing.
@@ -44,8 +79,9 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
 
         current_episode_len = episode_tensor.shape[0]
         if current_episode_len < self.seq_len:
-             raise ValueError(f"An episode has length {current_episode_len}, which is "
-                              f"shorter than the requested sequence length {self.seq_len}.")
+            raise ValueError(f"Episode length {current_episode_len} is shorter than "
+                           f"requested sequence length {self.seq_len}. This should "
+                           f"have been filtered out.")
         
         max_start_idx = current_episode_len - self.seq_len
         
@@ -90,11 +126,14 @@ def get_dataloader(
         num_records=len(source),
         shard_options=grain.sharding.ShardByJaxProcess(drop_remainder=True),
         shuffle=True,
-        num_epochs=100,
+        num_epochs=None,
         seed=seed,
     )
 
     operations = [
+        EpisodeLengthFilter(
+            seq_len=seq_len, image_h=image_h, image_w=image_w, image_c=image_c
+        ),
         ProcessEpisodeAndSlice(
             seq_len=seq_len, image_h=image_h, image_w=image_w, image_c=image_c
         ),
