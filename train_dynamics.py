@@ -178,7 +178,7 @@ if __name__ == "__main__":
         cfg = vars(args).copy()
         cfg["model_param_count"] = param_counts
         logger = CompositeLogger(args.loggers, cfg)
-        print(f"Training Dynamics Model with {param_counts["total"]} parameters")
+        print(f"Training Dynamics Model with {param_counts['total']} parameters")
 
     # --- Initialize optimizer ---
     lr_schedule = optax.warmup_cosine_decay_schedule(

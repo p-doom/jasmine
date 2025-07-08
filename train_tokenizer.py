@@ -163,7 +163,7 @@ if __name__ == "__main__":
         cfg = vars(args).copy()
         cfg["model_param_count"] = param_counts
         logger = CompositeLogger(args.loggers, cfg)
-        print(f"Training Tokenizer Model with {param_counts["total"]} parameters")
+        print(f"Training Tokenizer Model with {param_counts['total']} parameters")
 
     print("Parameter counts:")
     print(param_counts)
