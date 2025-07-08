@@ -235,7 +235,7 @@ class CompositeLogger(BaseLogger):
                             "console": ConsoleLogger}
         self.loggers = []
         for logger in loggers:
-            assert logger in available_loggers.keys(), f"Logger \"{logger}\" not known. Available loggers are: {available_loggers.keys()}" 
+            assert logger in available_loggers.keys(), f"Logger \"{logger}\" not known. Available loggers are: {', '.join(available_loggers.keys())}" 
             logger_class = available_loggers[logger]
             self.loggers.append(logger_class(cfg))
 
