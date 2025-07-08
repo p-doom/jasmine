@@ -39,17 +39,19 @@ def preprocess_video(
 
         frame_size = target_height * target_width * 3
         n_frames = len(out) // frame_size
-        frames = np.frombuffer(out, np.uint8).reshape()
+        frames = np.frombuffer(out, np.uint8).reshape(
+            n_frames, target_height, target_width, 3
+        )
 
         print(f"Saving video {idx} to {output_path}")
         record = {"raw_video": frames.tobytes(), "sequence_length": n_frames}
         writer.write(pickle.dumps(record))
         writer.close()
 
-        return in_filename, True
+        return in_filename, n_frames
     except Exception as e:
         print(f"Error processing video {idx} ({in_filename}): {e}")
-        return in_filename, False
+        return in_filename, 0
 
 
 def main():
@@ -82,13 +84,17 @@ def main():
     print("Done converting mp4 to npy files")
 
     # count the number of failed videos
-    failed_videos = [result for result in results if not result[1]]
+    failed_videos = [result for result in results if result[1] == 0]
+    short_episodes = [result for result in results if result[1] < 1600]
     print(f"Number of failed videos: {len(failed_videos)}")
-    print(f"Number of successful videos: {len(results) - len(failed_videos)}")
+    print(f"Number of short episodes: {len(short_episodes)}")
+    print(
+        f"Number of successful videos: {len(results) - len(failed_videos) - len(short_episodes)}"
+    )
     print(f"Number of total videos: {len(results)}")
 
-    with open(os.path.join(args.output_path, "failed_videos.json"), "w") as f:
-        json.dump(failed_videos, f)
+    with open(os.path.join(args.output_path, "meta_data.json"), "w") as f:
+        json.dump(results, f)
 
 
 if __name__ == "__main__":
