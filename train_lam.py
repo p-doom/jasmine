@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 import os
-import time
 
 import einops
 from flax.training import orbax_utils
@@ -21,8 +20,6 @@ from models.lam import LatentActionModel
 from utils.dataloader import get_dataloader
 from utils.parameter_utils import count_parameters_by_component
 
-ts = int(time.time())
-
 
 @dataclass
 class Args:
@@ -38,7 +35,7 @@ class Args:
     # Optimization
     batch_size: int = 36
     vq_beta: float = 0.25
-    min_lr: float = 3e-6
+    min_lr: float = 0.0
     max_lr: float = 3e-5
     warmup_steps: int = 5000
     vq_reset_thresh: int = 50
@@ -268,7 +265,7 @@ if __name__ == "__main__":
                 orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
                 save_args = orbax_utils.save_args_from_target(ckpt)
                 orbax_checkpointer.save(
-                    os.path.join(os.getcwd(), args.ckpt_dir, f"lam_{ts}_{step}"),
+                    os.path.join(os.getcwd(), args.ckpt_dir, f"lam_{step}"),
                     ckpt,
                     save_args=save_args,
                 )
