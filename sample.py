@@ -6,6 +6,7 @@ import dm_pix as pix
 import einops
 import jax
 import jax.numpy as jnp
+import flax.linen as nn
 import numpy as np
 from orbax.checkpoint import PyTreeCheckpointer
 from PIL import Image, ImageDraw
@@ -88,25 +89,20 @@ ckpt = PyTreeCheckpointer().restore(args.checkpoint)["model"]["params"]["params"
 params["params"].update(ckpt)
 
 
+def _sampling_wrapper(module, batch):
+    return module.sample(batch, args.seq_len, args.maskgit_steps, args.temperature, args.sample_argmax)
+
 # --- Define autoregressive sampling loop ---
 def _autoreg_sample(rng, video_batch, action_batch):
     vid = video_batch[:, : args.start_frame + 1]
-    for frame_idx in range(args.start_frame + 1, args.seq_len):
-        # --- Sample next frame ---
-        print("Frame", frame_idx)
-        rng, _rng = jax.random.split(rng)
-        batch = dict(videos=vid, latent_actions=action_batch[:, :frame_idx], rng=_rng)
-        new_frame = genie.apply(
-            params,
-            batch,
-            args.maskgit_steps,
-            args.temperature,
-            args.sample_argmax,
-            method=Genie.sample,
-        )
-        vid = jnp.concatenate([vid, new_frame], axis=1)
-    return vid
-
+    sampling_fn = jax.jit(nn.apply(_sampling_wrapper, genie)) 
+    rng, _rng = jax.random.split(rng)
+    batch = dict(videos=vid, latent_actions=action_batch, rng=_rng)
+    generated_vid = sampling_fn(
+        params,
+        batch
+    )
+    return generated_vid
 
 # --- Get video + latent actions ---
 array_record_files = [
@@ -126,13 +122,10 @@ dataloader = get_dataloader(
     seed=args.seed,
 )
 video_batch = next(iter(dataloader))
-# Get latent actions from first video only
-first_video = video_batch[:1]
-batch = dict(videos=first_video)
+# Get latent actions for all videos in the batch
+batch = dict(videos=video_batch)
 action_batch = genie.apply(params, batch, False, method=Genie.vq_encode)
-action_batch = action_batch.reshape(1, args.seq_len - 1, 1)
-# Use actions from first video for all videos
-action_batch = jnp.repeat(action_batch, video_batch.shape[0], axis=0)
+action_batch = action_batch.reshape(video_batch.shape[0], args.seq_len - 1, 1)
 
 # --- Sample + evaluate video ---
 vid = _autoreg_sample(rng, video_batch, action_batch)
@@ -142,22 +135,22 @@ ssim = pix.ssim(gt[:, args.start_frame + 1 :], recon[:, args.start_frame + 1 :])
 print(f"SSIM: {ssim}")
 
 # --- Construct video ---
-first_true = (video_batch[0:1] * 255).astype(np.uint8)
-first_pred = (vid[0:1] * 255).astype(np.uint8)
-first_video_comparison = np.zeros((2, *vid.shape[1:5]), dtype=np.uint8)
-first_video_comparison[0] = first_true[:, : vid.shape[1]]
-first_video_comparison[1] = first_pred
-# For other videos, only show generated video
-other_preds = (vid[1:] * 255).astype(np.uint8)
-all_frames = np.concatenate([first_video_comparison, other_preds], axis=0)
-flat_vid = einops.rearrange(all_frames, "n t h w c -> t h (n w) c")
+true_videos = (video_batch * 255).astype(np.uint8)
+pred_videos = (vid * 255).astype(np.uint8)
+video_comparison = np.zeros((2, *vid.shape), dtype=np.uint8)
+video_comparison[0] = true_videos[:, :args.seq_len]
+video_comparison[1] = pred_videos
+frames = einops.rearrange(video_comparison, "n b t h w c -> t (b h) (n w) c")
 
-# --- Save video ---
-imgs = [Image.fromarray(img) for img in flat_vid]
-# Write actions on each frame
-for img, action in zip(imgs[1:], action_batch[0, :, 0]):
+# --- Save video --- 
+imgs = [Image.fromarray(img) for img in frames]
+# Write actions on each frame, on each row (i.e., for each video in the batch, on the GT row)
+for t, img in enumerate(imgs[1:]):
     d = ImageDraw.Draw(img)
-    d.text((2, 2), f"{action}", fill=255)
+    for row in range(action_batch.shape[0]):
+        action = action_batch[row, t, 0]
+        y_offset = row * video_batch.shape[2] + 2
+        d.text((2, y_offset), f"{action}", fill=255)
 imgs[0].save(
     f"generation_{time.time()}.gif",
     save_all=True,

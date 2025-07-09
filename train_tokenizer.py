@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 import os
-import time
 
 import einops
 from flax.training import orbax_utils
@@ -21,8 +20,6 @@ from models.tokenizer import TokenizerVQVAE
 from utils.dataloader import get_dataloader
 from utils.parameter_utils import count_parameters_by_component
 
-ts = int(time.time())
-
 
 @dataclass
 class Args:
@@ -39,7 +36,7 @@ class Args:
     # Optimization
     vq_beta: float = 0.25
     batch_size: int = 48
-    min_lr: float = 3e-4
+    min_lr: float = 0.0
     max_lr: float = 3e-4
     warmup_steps: int = 10000
     # Tokenizer

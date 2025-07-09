@@ -32,6 +32,7 @@ class Genie(nn.Module):
     lam_patch_size: int
     lam_num_blocks: int
     lam_num_heads: int
+    lam_co_train: bool
     # --- Dynamics ---
     dyna_dim: int
     dyna_num_blocks: int
@@ -74,9 +75,14 @@ class Genie(nn.Module):
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
         tokenizer_outputs = self.tokenizer.vq_encode(batch["videos"], training=False)
         lam_outputs = self.lam.vq_encode(batch["videos"], training=False)
+        latent_actions = jax.lax.cond(
+            self.lam_co_train,
+            lambda: lam_outputs["z_q"],
+            lambda: jax.lax.stop_gradient(lam_outputs["z_q"])
+        )
         outputs = dict(
             video_tokens=jax.lax.stop_gradient(tokenizer_outputs["indices"]),
-            latent_actions=jax.lax.stop_gradient(lam_outputs["z_q"]),
+            latent_actions=latent_actions,
         )
         outputs["mask_rng"] = batch["mask_rng"]
         dyna_outputs = self.dynamics(outputs, training)
@@ -91,25 +97,42 @@ class Genie(nn.Module):
     def sample(
         self,
         batch: Dict[str, Any],
+        seq_len: int,
         steps: int = 25,
-        temperature: int = 1,
+        temperature: float = 1,
         sample_argmax: bool = False,
     ) -> Any:
+        """
+        Autoregressively samples up to `seq_len` future frames, following Figure 8 of the paper.
+
+        - Input frames are tokenized once.
+        - Future frames are generated autoregressively in token space.
+        - All frames are detokenized in a single pass.
+
+        Note:
+        - For interactive or step-wise sampling, detokenization should occur after each action.
+        - To maintain consistent tensor shapes across timesteps, all current and future frames are decoded at every step.
+        - Temporal causal structure is preserved by 
+            a) reapplying the mask before each decoding step.
+            b) a temporal causal mask is applied within each ST-transformer block.
+
+        Dimension keys:
+            B: batch size  
+            T: number of input (conditioning) frames  
+            N: patches per frame  
+            S: sequence length  
+            A: action space  
+            D: model latent dimension
+        """
         # --- Encode videos and actions ---
         tokenizer_out = self.tokenizer.vq_encode(batch["videos"], training=False)
-        token_idxs = tokenizer_out["indices"]
-        new_frame_idxs = jnp.zeros_like(token_idxs)[:, 0]
+        token_idxs = tokenizer_out["indices"] # (B, T, N)
+        B, T, N = token_idxs.shape
+        pad_shape = (B, seq_len - T, N)
+        pad = jnp.zeros(pad_shape, dtype=token_idxs.dtype)
+        token_idxs = jnp.concatenate([token_idxs, pad], axis=1) # (B, S, N)
         action_tokens = self.lam.vq.get_codes(batch["latent_actions"])
 
-        # --- Initialize MaskGIT ---
-        init_mask = jnp.ones_like(token_idxs, dtype=bool)[:, 0]
-        init_carry = (
-            batch["rng"],
-            new_frame_idxs,
-            init_mask,
-            token_idxs,
-            action_tokens,
-        )
         MaskGITLoop = nn.scan(
             MaskGITStep,
             variable_broadcast="params",
@@ -118,8 +141,7 @@ class Genie(nn.Module):
             out_axes=0,
             length=steps,
         )
-
-        # --- Run MaskGIT loop ---
+    
         loop_fn = MaskGITLoop(
             dynamics=self.dynamics,
             tokenizer=self.tokenizer,
@@ -127,13 +149,45 @@ class Genie(nn.Module):
             sample_argmax=sample_argmax,
             steps=steps,
         )
-        final_carry, _ = loop_fn(init_carry, jnp.arange(steps))
-        new_frame_idxs = final_carry[1]
-        new_frame_pixels = self.tokenizer.decode(
-            jnp.expand_dims(new_frame_idxs, 1),
+
+        def generation_step_fn(carry, step_t):
+            rng, current_token_idxs = carry
+            rng, step_rng = jax.random.split(rng)
+
+            # Mask current and future frames (i.e., t >= step_t)
+            mask = jnp.arange(seq_len) >= step_t # (S,)
+            mask = jnp.broadcast_to(mask[None, :, None], (B, seq_len, N)) # (B, S, N)
+            mask = mask.astype(bool)
+            masked_token_idxs = current_token_idxs * ~mask
+
+            # --- Initialize and run MaskGIT loop ---
+            init_carry_maskgit = (
+                step_rng,
+                masked_token_idxs,
+                mask,
+                action_tokens,
+            )
+            final_carry_maskgit, _ = loop_fn(init_carry_maskgit, jnp.arange(steps))
+            updated_token_idxs = final_carry_maskgit[1]
+            new_carry = (rng, updated_token_idxs)
+            return new_carry, None
+
+        # --- Run the autoregressive generation using scan ---
+        initial_carry = (batch["rng"], token_idxs)
+        timesteps_to_scan = jnp.arange(T, seq_len)
+        final_carry, _ = jax.lax.scan(
+            generation_step_fn,
+            initial_carry,
+            timesteps_to_scan
+        )
+        final_token_idxs = final_carry[1]
+
+        # --- Decode all tokens at once at the end ---
+        final_frames = self.tokenizer.decode(
+            final_token_idxs,
             video_hw=batch["videos"].shape[2:4],
         )
-        return new_frame_pixels
+        return final_frames
 
     def vq_encode(self, batch, training) -> Dict[str, Any]:
         # --- Preprocess videos ---
@@ -150,44 +204,34 @@ class MaskGITStep(nn.Module):
 
     @nn.compact
     def __call__(self, carry, x):
-        rng, final_token_idxs, mask, token_idxs, action_tokens = carry
+        rng, token_idxs, mask, action_tokens = carry
         step = x
-        B, T, N = token_idxs.shape[:3]
+        N = token_idxs.shape[2]
 
         # --- Construct + encode video ---
-        vid_token_idxs = jnp.concatenate(
-            (token_idxs, jnp.expand_dims(final_token_idxs, 1)), axis=1
-        )
-        vid_embed = self.dynamics.patch_embed(vid_token_idxs)
-        curr_masked_frame = jnp.where(
-            jnp.expand_dims(mask, -1),
-            self.dynamics.mask_token[0],
-            vid_embed[:, -1],
-        )
-        vid_embed = vid_embed.at[:, -1].set(curr_masked_frame)
+        vid_embed = self.dynamics.patch_embed(token_idxs) # (B, S, N, D)
+        mask_token = self.dynamics.mask_token  # (1, 1, 1, D,)
+        mask_expanded = mask[..., None] # (B, S, N, 1) 
+        vid_embed = jnp.where(mask_expanded, mask_token, vid_embed)
 
         # --- Predict transition ---
         act_embed = self.dynamics.action_up(action_tokens)
         vid_embed += jnp.pad(act_embed, ((0, 0), (1, 0), (0, 0), (0, 0)))
         unmasked_ratio = jnp.cos(jnp.pi * (step + 1) / (self.steps * 2))
         step_temp = self.temperature * (1.0 - unmasked_ratio)
-        final_logits = self.dynamics.dynamics(vid_embed)[:, -1] / step_temp
+        final_logits = self.dynamics.dynamics(vid_embed) / step_temp
 
         # --- Sample new tokens for final frame ---
         if self.sample_argmax:
             sampled_token_idxs = jnp.argmax(final_logits, axis=-1)
         else:
             rng, _rng = jax.random.split(rng)
-            sampled_token_idxs = jnp.where(
-                step == self.steps - 1,
-                jnp.argmax(final_logits, axis=-1),
-                jax.random.categorical(_rng, final_logits),
-            )
-        gather_fn = jax.vmap(jax.vmap(lambda x, y: x[y]))
+            sampled_token_idxs = jax.random.categorical(_rng, final_logits)
+        gather_fn = jax.vmap(jax.vmap(jax.vmap(lambda x, y: x[y])))
         final_token_probs = gather_fn(jax.nn.softmax(final_logits), sampled_token_idxs)
         final_token_probs += ~mask
         # Update masked tokens only
-        new_token_idxs = jnp.where(mask, sampled_token_idxs, final_token_idxs)
+        token_idxs = jnp.where(mask, sampled_token_idxs, token_idxs)
 
         # --- Update mask ---
         num_unmasked_tokens = jnp.round(N * (1.0 - unmasked_ratio)).astype(int)
@@ -196,9 +240,8 @@ class MaskGITStep(nn.Module):
         mask_update_fn = jax.vmap(lambda msk, ids: msk.at[ids].set(idx_mask))
         new_mask = mask_update_fn(mask, sorted_idxs)
 
-        new_carry = (rng, new_token_idxs, new_mask, token_idxs, action_tokens)
+        new_carry = (rng, token_idxs, new_mask, action_tokens)
         return new_carry, None
-
 
 def restore_genie_components(
     train_state: TrainState,
@@ -209,6 +252,14 @@ def restore_genie_components(
 ):
     """Restore pre-trained Genie components"""
     rng, _rng = jax.random.split(rng)
+
+    # dummy values since we only use tx to initialize the dummy train states
+    dummy_tx = optax.adamw(
+        learning_rate=optax.constant_schedule(args.max_lr),
+        b1=0.9,
+        b2=0.9,
+        weight_decay=1e-4,
+    )
 
     dummy_tokenizer = TokenizerVQVAE(
         in_dim=args.image_channels,
@@ -221,62 +272,17 @@ def restore_genie_components(
         dropout=args.dropout,
         codebook_dropout=args.dropout,
     )
-    dummy_lam = LatentActionModel(
-        in_dim=args.image_channels,
-        model_dim=args.lam_dim,
-        latent_dim=args.latent_patch_dim,
-        num_latents=args.num_latent_actions,
-        patch_size=args.lam_patch_size,
-        num_blocks=args.lam_num_blocks,
-        num_heads=args.lam_num_heads,
-        dropout=args.dropout,
-        codebook_dropout=args.dropout,
-    )
     tokenizer_init_params = dummy_tokenizer.init(_rng, inputs)
-    lam_init_params = dummy_lam.init(_rng, inputs)
-
-    # dummy values since we only use tx to initialize the dummy train states
-    dummy_tx = optax.adamw(
-        learning_rate=optax.constant_schedule(args.max_lr),
-        b1=0.9,
-        b2=0.9,
-        weight_decay=1e-4,
-    )
-
     dummy_tokenizer_train_state = TrainState.create(
         apply_fn=dummy_tokenizer.apply, params=tokenizer_init_params, tx=dummy_tx
     )
-    dummy_lam_train_state = TrainState.create(
-        apply_fn=dummy_lam.apply, params=lam_init_params, tx=dummy_tx
-    )
-
-    def create_abstract_sharded_pytree(pytree_template, sharding_spec):
-        """Replaces arrays in a pytree with ShapeDtypeStructs having the given sharding."""
-
-        def map_fn(leaf_template):
-            if hasattr(leaf_template, "shape") and hasattr(leaf_template, "dtype"):
-                return jax.ShapeDtypeStruct(
-                    leaf_template.shape, leaf_template.dtype, sharding=sharding_spec
-                )
-            return leaf_template
-
-        return jax.tree_util.tree_map(map_fn, pytree_template)
-
-    abstract_sharded_tokenizer_state = create_abstract_sharded_pytree(
+    abstract_sharded_tokenizer_state = _create_abstract_sharded_pytree(
         dummy_tokenizer_train_state, sharding
     )
-    abstract_sharded_lam_state = create_abstract_sharded_pytree(
-        dummy_lam_train_state, sharding
-    )
-
     tokenizer_restore_target = {"model": abstract_sharded_tokenizer_state}
-    lam_restore_target = {"model": abstract_sharded_lam_state}
-
     tokenizer_restore_args = orbax_utils.restore_args_from_target(
         tokenizer_restore_target
     )
-    lam_restore_args = orbax_utils.restore_args_from_target(lam_restore_target)
-
     restored_tokenizer_params = (
         PyTreeCheckpointer()
         .restore(
@@ -286,23 +292,57 @@ def restore_genie_components(
         )["model"]
         .params["params"]
     )
-    restored_lam_params = (
-        PyTreeCheckpointer()
-        .restore(
-            args.lam_checkpoint, item=lam_restore_target, restore_args=lam_restore_args
-        )["model"]
-        .params["params"]
-    )
-    # Genie does not initialize all LAM modules, thus we omit those extra modules during restoration
-    # (f.srambical) FIXME: Currently, this is a small HBM memory crunch since the LAM's decoder is loaded into HBM and immediately dicarded.
-    # A workaround would be to restore to host memory first, and only move the weights to HBM after pruning the decoder
-    restored_lam_params = {
-        k: v
-        for k, v in restored_lam_params.items()
-        if k in train_state.params["params"]["lam"]
-    }
-
     train_state.params["params"]["tokenizer"].update(restored_tokenizer_params)
-    train_state.params["params"]["lam"].update(restored_lam_params)
+
+    if args.lam_checkpoint:
+        dummy_lam = LatentActionModel(
+            in_dim=args.image_channels,
+            model_dim=args.lam_dim,
+            latent_dim=args.latent_patch_dim,
+            num_latents=args.num_latent_actions,
+            patch_size=args.lam_patch_size,
+            num_blocks=args.lam_num_blocks,
+            num_heads=args.lam_num_heads,
+            dropout=args.dropout,
+            codebook_dropout=args.dropout,
+        )
+        lam_init_params = dummy_lam.init(_rng, inputs)
+        dummy_lam_train_state = TrainState.create(
+            apply_fn=dummy_lam.apply, params=lam_init_params, tx=dummy_tx
+        )
+        abstract_sharded_lam_state = _create_abstract_sharded_pytree(
+            dummy_lam_train_state, sharding
+        )
+        lam_restore_target = {"model": abstract_sharded_lam_state}
+        lam_restore_args = orbax_utils.restore_args_from_target(lam_restore_target)
+        restored_lam_params = (
+            PyTreeCheckpointer()
+            .restore(
+                args.lam_checkpoint, item=lam_restore_target, restore_args=lam_restore_args
+            )["model"]
+            .params["params"]
+        )
+        # Genie does not initialize all LAM modules, thus we omit those extra modules during restoration
+        # (f.srambical) FIXME: Currently, this is a small HBM memory crunch since the LAM's decoder is loaded into HBM and immediately dicarded.
+        # A workaround would be to restore to host memory first, and only move the weights to HBM after pruning the decoder
+        restored_lam_params = {
+            k: v
+            for k, v in restored_lam_params.items()
+            if k in train_state.params["params"]["lam"]
+        }
+        train_state.params["params"]["lam"].update(restored_lam_params)
 
     return train_state
+
+
+def _create_abstract_sharded_pytree(pytree_template, sharding_spec):
+    """Replaces arrays in a pytree with ShapeDtypeStructs having the given sharding."""
+
+    def map_fn(leaf_template):
+        if hasattr(leaf_template, "shape") and hasattr(leaf_template, "dtype"):
+            return jax.ShapeDtypeStruct(
+                leaf_template.shape, leaf_template.dtype, sharding=sharding_spec
+            )
+        return leaf_template
+
+    return jax.tree_util.tree_map(map_fn, pytree_template)

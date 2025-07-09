@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import tensorflow as tf
+import concurrent.futures
 import numpy as np
 import logging
 import tyro
@@ -40,6 +41,20 @@ def create_tfrecord_example(episode_numpy_array):
     }
     return tf.train.Example(features=tf.train.Features(feature=feature))
 
+def process_shard(shard_idx, episode_paths, output_filename):
+    """Process a single shard: load episodes, write to one TFRecord file."""
+    with tf.io.TFRecordWriter(output_filename) as writer:
+        for npy_path in tqdm(
+            episode_paths,
+            desc=f"Shard {shard_idx:03d}",
+            leave=False,
+        ):
+            try:
+                episode_data = np.load(npy_path)
+                tf_example = create_tfrecord_example(episode_data)
+                writer.write(tf_example.SerializeToString())
+            except Exception as e:
+                logging.error(f"Shard {shard_idx}: Skipping {npy_path} due to error: {e}")
 
 def main_preprocess(data_dir_str, output_dir_str, num_shards):
     data_dir = Path(data_dir_str)
@@ -67,35 +82,27 @@ def main_preprocess(data_dir_str, output_dir_str, num_shards):
         str(output_dir / f"shard-{i:05d}-of-{num_shards:05d}.tfrecord")
         for i in range(num_shards)
     ]
-    writers = [tf.io.TFRecordWriter(filename) for filename in output_filenames]
 
-    writer_idx_for_episode = 0
-    try:
-        for i, npy_path in tqdm(
-            enumerate(episode_source_paths),
-            total=num_total_episodes,
-            desc="Processing episodes",
-        ):
-            try:
-                episode_data = np.load(npy_path)
-                tf_example = create_tfrecord_example(episode_data)
+    # Split episode paths into shards
+    shards = [[] for _ in range(num_shards)]
+    for idx, npy_path in enumerate(episode_source_paths):
+        shards[idx % num_shards].append(npy_path)
 
-                current_writer = writers[writer_idx_for_episode]
-                current_writer.write(tf_example.SerializeToString())
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_shards) as executor:
+        futures = []
+        for shard_idx, (shard_paths, out_fname) in enumerate(zip(shards, output_filenames)):
+            futures.append(
+                executor.submit(process_shard, shard_idx, shard_paths, out_fname)
+            )
+        for f in tqdm(concurrent.futures.as_completed(futures), total=num_shards, desc="Shards"):
+            f.result()  # Propagate exceptions
 
-                writer_idx_for_episode = (writer_idx_for_episode + 1) % num_shards
-
-            except Exception as e:
-                logging.error(f"Skipping {npy_path} due to error: {e}")
-    finally:
-        for writer in writers:
-            writer.close()
-        logging.info(
-            f"TFRecord sharding complete. {num_shards} shards written to {output_dir}."
-        )
-        logging.info("Generated shard files:")
-        for fname in output_filenames:
-            logging.info(f"  {fname}")
+    logging.info(
+        f"TFRecord sharding complete. {num_shards} shards written to {output_dir}."
+    )
+    logging.info("Generated shard files:")
+    for fname in output_filenames:
+        logging.info(f"  {fname}")
 
 
 if __name__ == "__main__":
