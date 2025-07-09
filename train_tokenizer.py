@@ -14,11 +14,11 @@ import dm_pix as pix
 import jax
 import jax.numpy as jnp
 import tyro
-import wandb
 
 from models.tokenizer import TokenizerVQVAE
 from utils.dataloader import get_dataloader
 from utils.parameter_utils import count_parameters_by_component
+from utils.logger import CompositeLogger
 
 
 @dataclass
@@ -48,7 +48,8 @@ class Args:
     dropout: float = 0.0
     codebook_dropout: float = 0.01
     # Logging
-    log: bool = False
+    log_dir: str = "logs/" 
+    loggers: list[str] = field(default_factory=lambda: ["console"]) # options: console, local, tb, wandb
     entity: str = ""
     project: str = ""
     name: str = "train_tokenizer"
@@ -158,16 +159,11 @@ if __name__ == "__main__":
 
     param_counts = count_parameters_by_component(init_params)
 
-    if args.log and jax.process_index() == 0:
-        wandb.init(
-            entity=args.entity,
-            project=args.project,
-            name=args.name,
-            tags=args.tags,
-            group="debug",
-            config=args,
-        )
-        wandb.config.update({"model_param_count": param_counts})
+    if jax.process_index() == 0:
+        cfg = vars(args).copy()
+        cfg["model_param_count"] = param_counts
+        logger = CompositeLogger(args.loggers, cfg)
+        print(f"Training Tokenizer Model with {param_counts['total']} parameters")
 
     print("Parameter counts:")
     print(param_counts)
@@ -228,38 +224,35 @@ if __name__ == "__main__":
 
             inputs = dict(videos=videos, rng=_rng, dropout_rng=_rng_dropout)
             train_state, loss, recon, metrics = train_step(train_state, inputs)
-            print(f"Step {step}, loss: {loss}")
             step += 1
 
             # --- Logging ---
-            if args.log:
-                if step % args.log_interval == 0 and jax.process_index() == 0:
-                    wandb.log(
-                        {
-                            "loss": loss,
-                            "step": step,
-                            **metrics,
-                        }
+            if step % args.log_interval == 0 and jax.process_index() == 0:
+                logger.log_metrics(
+                    {
+                        "loss": loss,
+                        **metrics,
+                    },
+                    step
+                )
+            if step % args.log_image_interval == 0:
+                gt_seq = inputs["videos"][0]
+                recon_seq = recon[0].clip(0, 1)
+                comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
+                comparison_seq = einops.rearrange(
+                    comparison_seq * 255, "t h w c -> h (t w) c"
+                )
+                # NOTE: Process-dependent control flow deliberately happens
+                # after indexing operation since it must not contain code
+                # sections that lead to cross-accelerator communication.
+                if jax.process_index() == 0:
+                    log_images = dict(
+                        image=np.asarray(gt_seq[0] * 255.).astype(np.uint8),
+                        recon=np.asarray(recon_seq[0] * 255.).astype(np.uint8),
+                        true_vs_recon=np.asarray(comparison_seq.astype(np.uint8)
+                        ),
                     )
-                if step % args.log_image_interval == 0:
-                    gt_seq = inputs["videos"][0]
-                    recon_seq = recon[0].clip(0, 1)
-                    comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
-                    comparison_seq = einops.rearrange(
-                        comparison_seq * 255, "t h w c -> h (t w) c"
-                    )
-                    # NOTE: Process-dependent control flow deliberately happens
-                    # after indexing operation since it must not contain code
-                    # sections that lead to cross-accelerator communication.
-                    if jax.process_index() == 0:
-                        log_images = dict(
-                            image=wandb.Image(np.asarray(gt_seq[0])),
-                            recon=wandb.Image(np.asarray(recon_seq[0])),
-                            true_vs_recon=wandb.Image(
-                                np.asarray(comparison_seq.astype(np.uint8))
-                            ),
-                        )
-                        wandb.log(log_images)
+                    logger.log_images(log_images, step)
             if step % args.log_checkpoint_interval == 0:
                 ckpt = {"model": train_state}
                 orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
