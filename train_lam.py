@@ -8,14 +8,14 @@ from flax.training.train_state import TrainState
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.mesh_utils import create_device_mesh
 import optax
-import orbax
-from orbax.checkpoint import PyTreeCheckpointer
+import orbax.checkpoint as ocp
 import numpy as np
 import dm_pix as pix
 import jax
 import jax.numpy as jnp
 import tyro
 import wandb
+import grain
 
 from models.lam import LatentActionModel
 from utils.dataloader import get_dataloader
@@ -34,7 +34,8 @@ class Args:
     image_height: int = 90
     image_width: int = 160
     data_dir: str = ""
-    checkpoint: str = ""
+    save_ckpt: bool = False
+    restore_ckpt: bool = False
     # Optimization
     batch_size: int = 36
     vq_beta: float = 0.25
@@ -82,8 +83,8 @@ def lam_loss_fn(params, state, inputs):
     # --- Compute validation metrics ---
     gt = gt_future_frames.clip(0, 1).reshape(-1, *gt_future_frames.shape[2:])
     recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
-    psnr = pix.psnr(gt, recon).mean()
-    ssim = pix.ssim(gt, recon).mean()
+    psnr = pix.psnr(gt, recon).mean() # type: ignore
+    ssim = pix.ssim(gt, recon).mean() # type: ignore
     count_fn = jax.vmap(lambda i: (outputs["indices"] == i).sum())
     index_counts = count_fn(jnp.arange(args.num_latents))
     metrics = dict(
@@ -199,39 +200,64 @@ if __name__ == "__main__":
     train_state = jax.device_put(train_state, replicated_sharding)
     action_last_active = jax.device_put(action_last_active, replicated_sharding)
 
-    # --- Load checkpoint ---
+    # --- Initialize checkpoint manager ---
     step = 0
-    if args.checkpoint:
-        restore_target = {"model": train_state}
-        restore_args = orbax_utils.restore_args_from_target(restore_target)
-        train_state.params["params"].update(
-            PyTreeCheckpointer()
-            .restore(args.checkpoint, item=restore_target, restore_args=restore_args)[
-                "model"
-            ]
-            .params["params"]
-        )
-        # Assume checkpoint is of the form tokenizer_<timestamp>_<step>
-        step += int(args.checkpoint.split("_")[-1])
+    handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
+    handler_registry.add('model_state', ocp.args.StandardSave, ocp.handlers.StandardCheckpointHandler)
+    handler_registry.add('model_state', ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler)
+    handler_registry.add('dataloader_state', grain.checkpoint.CheckpointSave, grain.checkpoint.CheckpointHandler) # type: ignore
+    handler_registry.add('dataloader_state', grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler) # type: ignore
+    
+    checkpoint_options = ocp.CheckpointManagerOptions(
+        save_interval_steps=args.log_checkpoint_interval,
+        max_to_keep=3,
+        step_format_fixed_length=6,
+        cleanup_tmp_directories=True,
+    )
+    
+    checkpoint_manager = ocp.CheckpointManager(
+        os.path.abspath(args.ckpt_dir),
+        options=checkpoint_options,
+        handler_registry=handler_registry,
+    )
 
-    # --- TRAIN LOOP ---
+    # --- Create DataLoaderIterator from dataloader ---
     array_record_files = [
         os.path.join(args.data_dir, x)
         for x in os.listdir(args.data_dir)
         if x.endswith(".array_record")
     ]
-    dataloader = get_dataloader(
-        # NOTE: We deliberately pass the global batch size
-        # The dataloader shards the dataset across all processes
+    grain_dataloader = get_dataloader(
         array_record_files,
         args.seq_len,
+        # NOTE: We deliberately pass the global batch size
+        # The dataloader shards the dataset across all processes
         args.batch_size,
         *image_shape,
         num_workers=8,
         prefetch_buffer_size=1,
         seed=args.seed,
     )
-    dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in dataloader) # type: ignore
+    initial_state = grain_dataloader._create_initial_state()
+    grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
+    
+    # --- Restore checkpoint ---
+    if args.restore_ckpt:
+        abstract_train_state = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, train_state)
+        restored = checkpoint_manager.restore(
+            checkpoint_manager.latest_step(),
+            args=ocp.args.Composite(
+                model_state=ocp.args.StandardRestore(abstract_train_state),
+                dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
+            )
+        )
+        train_state = restored["model_state"]
+        grain_iterator = restored["dataloader_state"]
+        step = checkpoint_manager.latest_step() or 0
+        print(f"Restored dataloader and model state from step {step}")
+
+    # --- TRAIN LOOP ---
+    dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in grain_iterator) # type: ignore
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
@@ -271,14 +297,17 @@ if __name__ == "__main__":
                             ),
                         )
                         wandb.log(log_images)
-            if step % args.log_checkpoint_interval == 0:
-                ckpt = {"model": train_state}
-                orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-                save_args = orbax_utils.save_args_from_target(ckpt)
-                orbax_checkpointer.save(
-                    os.path.join(os.getcwd(), args.ckpt_dir, f"lam_{ts}_{step}"),
-                    ckpt,
-                    save_args=save_args,
+            # --- Checkpointing ---
+            if args.save_ckpt and step % args.log_checkpoint_interval == 0:
+                checkpoint_manager.save(
+                    step,
+                    args=ocp.args.Composite(
+                        model_state=ocp.args.StandardSave(train_state),
+                        dataloader_state=grain.checkpoint.CheckpointSave(grain_iterator),
+                    )
                 )
+                print(f"Saved checkpoint at step {step}")
             if step >= args.num_steps:
                 break
+
+    checkpoint_manager.close()
