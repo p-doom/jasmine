@@ -213,7 +213,7 @@ if __name__ == "__main__":
     )
     
     checkpoint_manager = ocp.CheckpointManager(
-        os.path.abspath(args.ckpt_dir),
+        args.ckpt_dir,
         options=checkpoint_options,
         handler_registry=handler_registry,
     )
