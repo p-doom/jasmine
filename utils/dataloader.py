@@ -1,121 +1,157 @@
-import functools
 import jax
+import numpy as np
+import grain
+from typing import Any
+import pickle
 
-import tensorflow as tf
 
-# reserve GPU memory for JAX only if tensorflow is built with GPU support
-tf.config.experimental.set_visible_devices([], "GPU")
-
-
-# --- TensorFlow function for processing: slicing, normalization ---
-def _tf_process_episode(episode_tensor, seq_len, image_h, image_w, image_c):
+class EpisodeLengthFilter(grain.transforms.Filter):
     """
-    Processes a raw episode tensor in TensorFlow.
-    Takes a full episode, extracts a random sequence, and normalizes it.
-    Args:
-        episode_tensor: A TensorFlow tensor representing a full video episode.
-                        Expected shape: (dynamic_length, image_h, image_w, image_c)
-                        Expected dtype: e.g., tf.uint8 (raw pixel values)
-        seq_len: The desired length of the sub-sequence to extract.
-        image_h: The height of each frame.
-        image_w: The width of each frame.
-        image_c: The number of channels in each frame.
-    Returns:
-        A TensorFlow tensor representing the processed video sequence.
-        Shape: (seq_len, image_h, image_w, image_c)
-        Dtype: tf.float32 (normalized pixel values)
+    A Grain Filter that keeps only episodes with sufficient length.
     """
-    current_episode_len = tf.shape(episode_tensor)[0]
+    
+    def __init__(self, seq_len: int, image_h: int, image_w: int, image_c: int):
+        """Initializes the filter with sequence length requirements."""
+        self.seq_len = seq_len
+        self.image_h = image_h
+        self.image_w = image_w
+        self.image_c = image_c
+    
+    def filter(self, element: Any) -> bool:
+        """
+        Filters episodes based on length.
+        
+        Args:
+            element: A dictionary representing one record from the DataSource.
+                     Expected to contain 'raw_video' (bytes) and 'sequence_length' (int)
+        
+        Returns:
+            True if the episode has sufficient length, False otherwise.
+        """
+        assert isinstance(element, bytes)
+        element = pickle.loads(element)
+        
+        current_episode_len = element["sequence_length"]
+        if current_episode_len < self.seq_len:
+            print(f"Filtering out episode with length {current_episode_len}, which is "
+                f"shorter than the requested sequence length {self.seq_len}.")
+            return False
+        
+        return True
 
-    max_start_idx = current_episode_len - seq_len
 
-    start_idx = tf.random.uniform(
-        shape=(), minval=0, maxval=max_start_idx + 1, dtype=tf.int32
-    )
+class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
+    """
+    A Grain Transformation that combines parsing, slicing, and normalizing.
+    """
 
-    seq = episode_tensor[start_idx : start_idx + seq_len]
+    def __init__(self, seq_len: int, image_h: int, image_w: int, image_c: int):
+        """Initializes the transformation with processing parameters."""
+        self.seq_len = seq_len
+        self.image_h = image_h
+        self.image_w = image_w
+        self.image_c = image_c
 
-    seq = tf.cast(seq, tf.float32) / 255.0
+    def random_map(self, element: dict, rng: np.random.Generator) -> Any:
+        """
+        Processes a single raw episode from the data source.
 
-    # Ensure the final shape is statically known for batching.
-    # tf.reshape is robust, but tf.ensure_shape or set_shape can also be used if confident.
-    processed_sequence = tf.reshape(seq, [seq_len, image_h, image_w, image_c])
+        Args:
+            element: A dictionary representing one record from the DataSource.
+                     Expected to contain 'raw_video' (bytes) and 'sequence_length' (int)
+            rng: A per-record random number generator provided by the Grain sampler.
 
-    return processed_sequence
+        Returns:
+            A processed video sequence as a NumPy array with shape
+            (seq_len, height, width, channels) and dtype float32.
+        """
+        assert isinstance(element, bytes)
+        element = pickle.loads(element)
+        
+        video_shape = (
+            element["sequence_length"],
+            self.image_h,
+            self.image_w,
+            self.image_c,
+        )
+        episode_tensor = np.frombuffer(element["raw_video"], dtype=np.uint8)
+        episode_tensor = episode_tensor.reshape(video_shape)
 
+        current_episode_len = episode_tensor.shape[0]
+        if current_episode_len < self.seq_len:
+            raise ValueError(f"Episode length {current_episode_len} is shorter than "
+                           f"requested sequence length {self.seq_len}. This should "
+                           f"have been filtered out.")
+        
+        max_start_idx = current_episode_len - self.seq_len
+        
+        start_idx = rng.integers(0, max_start_idx + 1)
 
-def _parse_tfrecord_fn(example_proto, image_h, image_w, image_c):
-    feature_description = {
-        "height": tf.io.FixedLenFeature([], tf.int64),
-        "width": tf.io.FixedLenFeature([], tf.int64),
-        "channels": tf.io.FixedLenFeature([], tf.int64),
-        "sequence_length": tf.io.FixedLenFeature([], tf.int64),
-        "raw_video": tf.io.FixedLenFeature([], tf.string),
-    }
-    example = tf.io.parse_single_example(example_proto, feature_description)
+        seq = episode_tensor[start_idx : start_idx + self.seq_len]
 
-    video_shape = (example["sequence_length"], image_h, image_w, image_c)
+        processed_sequence = seq.astype(np.float32) / 255.0
 
-    episode_tensor = tf.io.decode_raw(example["raw_video"], out_type=tf.uint8)
-    episode_tensor = tf.reshape(episode_tensor, video_shape)
-
-    episode_tensor = tf.ensure_shape(episode_tensor, [None, image_h, image_w, image_c])
-    return episode_tensor
+        return processed_sequence
 
 
 def get_dataloader(
-    tfrecord_paths: list[str],  # List of TFRecord file paths
+    array_record_paths: list[str],
     seq_len: int,
     global_batch_size: int,
     image_h: int,
     image_w: int,
     image_c: int,
-    shuffle_buffer_size: int = 1000,
-    num_parallel_calls: int = tf.data.AUTOTUNE,
+    num_workers: int = 1,
+    prefetch_buffer_size: int = 1,
     seed: int = 42,
 ):
     """
-    Creates a tf.data.Dataset pipeline from TFRecord files.
+    Creates a data loading pipeline using Grain.
     """
-    if not tfrecord_paths:
-        raise ValueError("tfrecord_paths list cannot be empty.")
+    if not array_record_paths:
+        raise ValueError("array_record_paths list cannot be empty.")
 
-    process_id = jax.process_index()
     num_processes = jax.process_count()
 
-    assert (
-        global_batch_size % num_processes == 0
-    ), "Global batch size {global_batch_size} \
-        must be divisible by the number of JAX processes {num_processes} for proper sharding."
+    if global_batch_size % num_processes != 0:
+        raise ValueError(
+            f"Global batch size {global_batch_size} must be divisible by "
+            f"the number of JAX processes {num_processes} for proper sharding."
+        )
     per_process_batch_size = global_batch_size // num_processes
 
-    dataset = tf.data.TFRecordDataset(
-        tfrecord_paths, num_parallel_reads=tf.data.AUTOTUNE
+    source = grain.sources.ArrayRecordDataSource(array_record_paths)
+    
+    sampler = grain.samplers.IndexSampler(
+        num_records=len(source),
+        shard_options=grain.sharding.ShardByJaxProcess(drop_remainder=True),
+        shuffle=True,
+        num_epochs=None,
+        seed=seed,
     )
 
-    dataset = dataset.shard(num_shards=num_processes, index=process_id)
+    operations = [
+        EpisodeLengthFilter(
+            seq_len=seq_len, image_h=image_h, image_w=image_w, image_c=image_c
+        ),
+        ProcessEpisodeAndSlice(
+            seq_len=seq_len, image_h=image_h, image_w=image_w, image_c=image_c
+        ),
+        grain.transforms.Batch(batch_size=per_process_batch_size, drop_remainder=True),
+    ]
 
-    # (f.srambical) NOTE: For TFRecords, it's often good to have a large shuffle buffer.
-    if shuffle_buffer_size > 0:
-        dataset = dataset.shuffle(
-            buffer_size=shuffle_buffer_size, seed=seed, reshuffle_each_iteration=True
-        )
-    parse_fn = functools.partial(
-        _parse_tfrecord_fn, image_h=image_h, image_w=image_w, image_c=image_c
+    read_options = grain.ReadOptions(
+        prefetch_buffer_size=prefetch_buffer_size,
+        num_threads=1,
     )
-    dataset = dataset.map(parse_fn, num_parallel_calls=num_parallel_calls)
-
-    tf_process_fn = functools.partial(
-        _tf_process_episode,
-        seq_len=seq_len,
-        image_h=image_h,
-        image_w=image_w,
-        image_c=image_c,
+    dataloader = grain.DataLoader(
+        data_source=source,
+        sampler=sampler,
+        operations=operations,
+        worker_count=num_workers,
+        worker_buffer_size=1,
+        read_options=read_options,
     )
-    dataset = dataset.map(tf_process_fn, num_parallel_calls=num_parallel_calls)
 
-    dataset = dataset.repeat(None)
-    dataset = dataset.batch(per_process_batch_size, drop_remainder=True)
-    dataset = dataset.prefetch(tf.data.AUTOTUNE)
+    return dataloader
 
-    return dataset.as_numpy_iterator()

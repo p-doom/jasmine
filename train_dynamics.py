@@ -3,25 +3,21 @@ import os
 import time
 
 import einops
-from flax.training import orbax_utils
 from flax.training.train_state import TrainState
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.mesh_utils import create_device_mesh
 import optax
-import orbax
-from orbax.checkpoint import PyTreeCheckpointer
+import orbax.checkpoint as ocp
 import numpy as np
 import jax
 import jax.numpy as jnp
 import tyro
 import wandb
+import grain
 
 from genie import Genie, restore_genie_components
-from models.tokenizer import TokenizerVQVAE
-from models.lam import LatentActionModel
 from utils.dataloader import get_dataloader
-
-ts = int(time.time())
+from utils.parameter_utils import count_parameters_by_component
 
 
 @dataclass
@@ -33,10 +29,12 @@ class Args:
     image_channels: int = 3
     image_height: int = 90
     image_width: int = 160
-    data_dir: str = "data_tfrecords/coinrun"
+    data_dir: str = ""
+    save_ckpt: bool = False
+    restore_ckpt: bool = False
     # Optimization
     batch_size: int = 36
-    min_lr: float = 3e-6
+    min_lr: float = 0.0
     max_lr: float = 3e-5
     warmup_steps: int = 5000
     # Tokenizer
@@ -71,6 +69,7 @@ class Args:
     log_image_interval: int = 250
     ckpt_dir: str = ""
     log_checkpoint_interval: int = 25000
+    log_checkpoint_keep_period: int = 20000
     log_gradients: bool = False
     time_measurement_interval: int = 50
 
@@ -133,15 +132,6 @@ if __name__ == "__main__":
     per_device_batch_size_for_init = args.batch_size // num_devices
 
     rng = jax.random.PRNGKey(args.seed)
-    if args.log and jax.process_index() == 0:
-        wandb.init(
-            entity=args.entity,
-            project=args.project,
-            name=args.name,
-            tags=args.tags,
-            group="debug",
-            config=args
-        )
 
     # --- Initialize model ---
     genie = Genie(
@@ -160,6 +150,7 @@ if __name__ == "__main__":
         lam_patch_size=args.lam_patch_size,
         lam_num_blocks=args.lam_num_blocks,
         lam_num_heads=args.lam_num_heads,
+        lam_co_train=not args.lam_checkpoint,
         # Dynamics
         dyna_dim=args.dyna_dim,
         dyna_num_blocks=args.dyna_num_blocks,
@@ -182,6 +173,22 @@ if __name__ == "__main__":
     rng, _rng = jax.random.split(rng)
     init_params = genie.init(_rng, dummy_inputs)
 
+    param_counts = count_parameters_by_component(init_params)
+
+    if args.log and jax.process_index() == 0:
+        wandb.init(
+            entity=args.entity,
+            project=args.project,
+            name=args.name,
+            tags=args.tags,
+            group="debug",
+            config=args,
+        )
+        wandb.config.update({"model_param_count": param_counts})
+
+    print("Parameter counts:")
+    print(param_counts)
+
     # --- Initialize optimizer ---
     lr_schedule = optax.warmup_cosine_decay_schedule(
         args.min_lr, args.max_lr, args.warmup_steps, args.num_steps
@@ -193,38 +200,82 @@ if __name__ == "__main__":
     mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
 
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
+    videos_sharding = NamedSharding(
+        mesh, PartitionSpec("data", None, None, None, None)
+    )
     train_state = jax.device_put(train_state, replicated_sharding)
 
-    # --- Restore checkpoint ---
-    train_state = restore_genie_components(
-        train_state, replicated_sharding, dummy_inputs, rng, args
+    # --- Initialize checkpoint manager ---
+    step = 0
+    handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
+    handler_registry.add('model_state', ocp.args.StandardSave, ocp.handlers.StandardCheckpointHandler)
+    handler_registry.add('model_state', ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler)
+    handler_registry.add('dataloader_state', grain.checkpoint.CheckpointSave, grain.checkpoint.CheckpointHandler) # type: ignore
+    handler_registry.add('dataloader_state', grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler) # type: ignore
+    
+    checkpoint_options = ocp.CheckpointManagerOptions(
+        save_interval_steps=args.log_checkpoint_interval,
+        max_to_keep=3,
+        keep_period=args.log_checkpoint_keep_period,
+        step_format_fixed_length=6,
+        cleanup_tmp_directories=True,
+    )
+    
+    checkpoint_manager = ocp.CheckpointManager(
+        args.ckpt_dir,
+        options=checkpoint_options,
+        handler_registry=handler_registry,
     )
 
-    # --- TRAIN LOOP ---
-    tfrecord_files = [
+    # --- Create DataLoaderIterator from dataloader ---
+    array_record_files = [
         os.path.join(args.data_dir, x)
         for x in os.listdir(args.data_dir)
-        if x.endswith(".tfrecord")
+        if x.endswith(".array_record")
     ]
-    dataloader = get_dataloader(
+    grain_dataloader = get_dataloader(
+        array_record_files,
+        args.seq_len,
         # NOTE: We deliberately pass the global batch size
         # The dataloader shards the dataset across all processes
-        tfrecord_files,
-        args.seq_len,
         args.batch_size,
         *image_shape,
+        num_workers=8,
+        prefetch_buffer_size=1,
+        seed=args.seed,
     )
     step = 0
+    initial_state = grain_dataloader._create_initial_state()
+    grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
+    
+    # --- Restore checkpoint ---
+    if args.restore_ckpt:
+        # Restore full dynamics model
+        abstract_train_state = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, train_state)
+        restored = checkpoint_manager.restore(
+            checkpoint_manager.latest_step(),
+            args=ocp.args.Composite(
+                model_state=ocp.args.StandardRestore(abstract_train_state),
+                dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
+            )
+        )
+        train_state = restored["model_state"]
+        grain_iterator = restored["dataloader_state"]
+        step = checkpoint_manager.latest_step() or 0
+        print(f"Restored dataloader and model state from step {step}")
+    else:
+        # Restore from pre-trained tokenizer (and LAM)
+        train_state = restore_genie_components(
+            train_state, replicated_sharding, grain_iterator, dummy_inputs, rng, args
+        )
+
+    # --- TRAIN LOOP ---
+    dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in grain_iterator) # type: ignore
     start_time = time.time()
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
             rng, _rng, _rng_dropout, _rng_mask = jax.random.split(rng, 4)
-
-            videos_sharding = NamedSharding(
-                mesh, PartitionSpec("data", None, None, None, None)
-            )
-            videos = jax.make_array_from_process_local_data(videos_sharding, videos)
 
             inputs = dict(
                 videos=videos,
@@ -243,7 +294,6 @@ if __name__ == "__main__":
                 start_time = time.time()
             else:
                 print(f"Step {step}, loss: {loss}")
-            
             step += 1
 
             # --- Logging ---
@@ -272,14 +322,17 @@ if __name__ == "__main__":
                             ),
                         )
                         wandb.log(log_images)
-            if step % args.log_checkpoint_interval == 0:
-                ckpt = {"model": train_state}
-                orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-                save_args = orbax_utils.save_args_from_target(ckpt)
-                orbax_checkpointer.save(
-                    os.path.join(os.getcwd(), args.ckpt_dir, f"genie_{ts}_{step}"),
-                    ckpt,
-                    save_args=save_args,
+            # --- Checkpointing ---
+            if args.save_ckpt and step % args.log_checkpoint_interval == 0:
+                checkpoint_manager.save(
+                    step,
+                    args=ocp.args.Composite(
+                        model_state=ocp.args.StandardSave(train_state),
+                        dataloader_state=grain.checkpoint.CheckpointSave(grain_iterator),
+                    )
                 )
+                print(f"Saved checkpoint at step {step}")
             if step >= args.num_steps:
                 break
+
+    checkpoint_manager.close()
