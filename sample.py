@@ -105,18 +105,20 @@ def _autoreg_sample(rng, video_batch, action_batch):
     return generated_vid
 
 # --- Get video + latent actions ---
-tfrecord_files = [
+array_record_files = [
     os.path.join(args.data_dir, x)
     for x in os.listdir(args.data_dir)
-    if x.endswith(".tfrecord")
+    if x.endswith(".array_record")
 ]
 dataloader = get_dataloader(
-    tfrecord_files,
+    array_record_files,
     args.seq_len,
     args.batch_size,
     args.image_height,
     args.image_width,
     args.image_channels,
+    num_workers=8,
+    prefetch_buffer_size=1,
     seed=args.seed,
 )
 video_batch = next(iter(dataloader))

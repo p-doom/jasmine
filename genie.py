@@ -4,14 +4,15 @@ import optax
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
-from jax import NamedSharding
 from flax.training.train_state import TrainState
-from flax.training import orbax_utils
-from orbax.checkpoint import PyTreeCheckpointer
+import orbax.checkpoint as ocp
 
 from models.dynamics import DynamicsMaskGIT
 from models.lam import LatentActionModel
 from models.tokenizer import TokenizerVQVAE
+
+import os
+import grain
 
 
 class Genie(nn.Module):
@@ -245,7 +246,8 @@ class MaskGITStep(nn.Module):
 
 def restore_genie_components(
     train_state: TrainState,
-    sharding: NamedSharding,
+    sharding: jax.sharding.NamedSharding,
+    grain_iterator: grain.DataLoaderIterator,
     inputs: Dict[str, jax.Array],
     rng: jax.Array,
     args,
@@ -260,7 +262,19 @@ def restore_genie_components(
         b2=0.9,
         weight_decay=1e-4,
     )
+    handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
+    handler_registry.add('model_state', ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler)
+    handler_registry.add('dataloader_state', grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler)
+    
 
+    checkpoint_options = ocp.CheckpointManagerOptions(
+        step_format_fixed_length=6,
+    )
+    tokenizer_checkpoint_manager = ocp.CheckpointManager(
+        directory=args.tokenizer_checkpoint,
+        options=checkpoint_options,
+        handler_registry=handler_registry,
+    )
     dummy_tokenizer = TokenizerVQVAE(
         in_dim=args.image_channels,
         model_dim=args.tokenizer_dim,
@@ -279,22 +293,23 @@ def restore_genie_components(
     abstract_sharded_tokenizer_state = _create_abstract_sharded_pytree(
         dummy_tokenizer_train_state, sharding
     )
-    tokenizer_restore_target = {"model": abstract_sharded_tokenizer_state}
-    tokenizer_restore_args = orbax_utils.restore_args_from_target(
-        tokenizer_restore_target
-    )
-    restored_tokenizer_params = (
-        PyTreeCheckpointer()
-        .restore(
-            args.tokenizer_checkpoint,
-            item=tokenizer_restore_target,
-            restore_args=tokenizer_restore_args,
-        )["model"]
-        .params["params"]
-    )
+    restored_tokenizer = tokenizer_checkpoint_manager.restore(
+        step=tokenizer_checkpoint_manager.latest_step(),
+        args=ocp.args.Composite(
+            model_state=ocp.args.StandardRestore(abstract_sharded_tokenizer_state),
+            dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
+        ),
+    )["model_state"]
+    restored_tokenizer_params = restored_tokenizer.params["params"]
     train_state.params["params"]["tokenizer"].update(restored_tokenizer_params)
+    tokenizer_checkpoint_manager.close()
 
     if args.lam_checkpoint:
+        lam_checkpoint_manager = ocp.CheckpointManager(
+            directory=args.lam_checkpoint,
+            options=checkpoint_options,
+            handler_registry=handler_registry,
+        )
         dummy_lam = LatentActionModel(
             in_dim=args.image_channels,
             model_dim=args.lam_dim,
@@ -313,15 +328,14 @@ def restore_genie_components(
         abstract_sharded_lam_state = _create_abstract_sharded_pytree(
             dummy_lam_train_state, sharding
         )
-        lam_restore_target = {"model": abstract_sharded_lam_state}
-        lam_restore_args = orbax_utils.restore_args_from_target(lam_restore_target)
-        restored_lam_params = (
-            PyTreeCheckpointer()
-            .restore(
-                args.lam_checkpoint, item=lam_restore_target, restore_args=lam_restore_args
-            )["model"]
-            .params["params"]
-        )
+        restored_lam = lam_checkpoint_manager.restore(
+            step=lam_checkpoint_manager.latest_step(),
+            args=ocp.args.Composite(
+                model_state=ocp.args.StandardRestore(abstract_sharded_lam_state),
+                dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
+            ),
+        )["model_state"]
+        restored_lam_params = restored_lam.params["params"]
         # Genie does not initialize all LAM modules, thus we omit those extra modules during restoration
         # (f.srambical) FIXME: Currently, this is a small HBM memory crunch since the LAM's decoder is loaded into HBM and immediately dicarded.
         # A workaround would be to restore to host memory first, and only move the weights to HBM after pruning the decoder
@@ -331,9 +345,9 @@ def restore_genie_components(
             if k in train_state.params["params"]["lam"]
         }
         train_state.params["params"]["lam"].update(restored_lam_params)
+        lam_checkpoint_manager.close()
 
     return train_state
-
 
 def _create_abstract_sharded_pytree(pytree_template, sharding_spec):
     """Replaces arrays in a pytree with ShapeDtypeStructs having the given sharding."""
