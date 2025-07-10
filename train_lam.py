@@ -59,6 +59,7 @@ class Args:
     log_image_interval: int = 250
     ckpt_dir: str = ""
     log_checkpoint_interval: int = 10000
+    log_checkpoint_keep_period: int = 20000
 
 
 args = tyro.cli(Args)
@@ -208,6 +209,7 @@ if __name__ == "__main__":
     checkpoint_options = ocp.CheckpointManagerOptions(
         save_interval_steps=args.log_checkpoint_interval,
         max_to_keep=3,
+        keep_period=args.log_checkpoint_keep_period,
         step_format_fixed_length=6,
         cleanup_tmp_directories=True,
     )
