@@ -41,6 +41,7 @@ def create_tfrecord_example(episode_numpy_array):
     }
     return tf.train.Example(features=tf.train.Features(feature=feature))
 
+
 def process_shard(shard_idx, episode_paths, output_filename):
     """Process a single shard: load episodes, write to one TFRecord file."""
     with tf.io.TFRecordWriter(output_filename) as writer:
@@ -54,7 +55,10 @@ def process_shard(shard_idx, episode_paths, output_filename):
                 tf_example = create_tfrecord_example(episode_data)
                 writer.write(tf_example.SerializeToString())
             except Exception as e:
-                logging.error(f"Shard {shard_idx}: Skipping {npy_path} due to error: {e}")
+                logging.error(
+                    f"Shard {shard_idx}: Skipping {npy_path} due to error: {e}"
+                )
+
 
 def main_preprocess(data_dir_str, output_dir_str, num_shards):
     data_dir = Path(data_dir_str)
@@ -90,11 +94,15 @@ def main_preprocess(data_dir_str, output_dir_str, num_shards):
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_shards) as executor:
         futures = []
-        for shard_idx, (shard_paths, out_fname) in enumerate(zip(shards, output_filenames)):
+        for shard_idx, (shard_paths, out_fname) in enumerate(
+            zip(shards, output_filenames)
+        ):
             futures.append(
                 executor.submit(process_shard, shard_idx, shard_paths, out_fname)
             )
-        for f in tqdm(concurrent.futures.as_completed(futures), total=num_shards, desc="Shards"):
+        for f in tqdm(
+            concurrent.futures.as_completed(futures), total=num_shards, desc="Shards"
+        ):
             f.result()  # Propagate exceptions
 
     logging.info(

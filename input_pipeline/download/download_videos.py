@@ -14,7 +14,7 @@ import time
 @dataclass
 class DownloadVideos:
     index_file_path: str = "data/open_ai_index_files/all_6xx_Jun_29.json"
-    num_workers: int = -1
+    num_workers: int = -1  # -1 means use all available cores
     output_dir: str = "data/minecraft_videos/"
 
 
