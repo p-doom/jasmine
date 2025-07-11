@@ -6,6 +6,7 @@ import dm_pix as pix
 import einops
 import jax
 import jax.numpy as jnp
+import flax.linen as nn
 import numpy as np
 from orbax.checkpoint import PyTreeCheckpointer
 from PIL import Image, ImageDraw
@@ -88,39 +89,36 @@ ckpt = PyTreeCheckpointer().restore(args.checkpoint)["model"]["params"]["params"
 params["params"].update(ckpt)
 
 
+def _sampling_wrapper(module, batch):
+    return module.sample(batch, args.seq_len, args.maskgit_steps, args.temperature, args.sample_argmax)
+
 # --- Define autoregressive sampling loop ---
 def _autoreg_sample(rng, video_batch, action_batch):
     vid = video_batch[:, : args.start_frame + 1]
-    for frame_idx in range(args.start_frame + 1, args.seq_len):
-        # --- Sample next frame ---
-        print("Frame", frame_idx)
-        rng, _rng = jax.random.split(rng)
-        batch = dict(videos=vid, latent_actions=action_batch[:, :frame_idx], rng=_rng)
-        new_frame = genie.apply(
-            params,
-            batch,
-            args.maskgit_steps,
-            args.temperature,
-            args.sample_argmax,
-            method=Genie.sample,
-        )
-        vid = jnp.concatenate([vid, new_frame], axis=1)
-    return vid
-
+    sampling_fn = jax.jit(nn.apply(_sampling_wrapper, genie)) 
+    rng, _rng = jax.random.split(rng)
+    batch = dict(videos=vid, latent_actions=action_batch, rng=_rng)
+    generated_vid = sampling_fn(
+        params,
+        batch
+    )
+    return generated_vid
 
 # --- Get video + latent actions ---
-tfrecord_files = [
+array_record_files = [
     os.path.join(args.data_dir, x)
     for x in os.listdir(args.data_dir)
-    if x.endswith(".tfrecord")
+    if x.endswith(".array_record")
 ]
 dataloader = get_dataloader(
-    tfrecord_files,
+    array_record_files,
     args.seq_len,
     args.batch_size,
     args.image_height,
     args.image_width,
     args.image_channels,
+    num_workers=8,
+    prefetch_buffer_size=1,
     seed=args.seed,
 )
 video_batch = next(iter(dataloader))
