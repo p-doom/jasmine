@@ -67,6 +67,7 @@ args = tyro.cli(Args)
 
 def lam_loss_fn(params, state, inputs):
     # --- Compute loss ---
+    inputs["videos"] = inputs["videos"].astype(jnp.float32) / 255.0
     outputs = state.apply_fn(
         params, inputs, training=True, rngs={"dropout": inputs["rng"]}
     )
