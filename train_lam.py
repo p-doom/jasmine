@@ -49,6 +49,8 @@ class Args:
     num_heads: int = 8
     dropout: float = 0.0
     codebook_dropout: float = 0.0
+    param_dtype: jnp.dtype = jnp.float32
+    dtype: jnp.dtype = jnp.bfloat16
     # Logging
     log: bool = False
     entity: str = ""
@@ -67,6 +69,7 @@ args = tyro.cli(Args)
 
 def lam_loss_fn(params, state, inputs):
     # --- Compute loss ---
+    inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
     outputs = state.apply_fn(
         params, inputs, training=True, rngs={"dropout": inputs["rng"]}
     )
@@ -149,6 +152,8 @@ if __name__ == "__main__":
         num_heads=args.num_heads,
         dropout=args.dropout,
         codebook_dropout=args.codebook_dropout,
+        param_dtype=args.param_dtype,
+        dtype=args.dtype,
     )
     # Track when each action was last sampled
     action_last_active = jnp.zeros(args.num_latents)
@@ -157,7 +162,7 @@ if __name__ == "__main__":
     inputs = dict(
         videos=jnp.zeros(
             (per_device_batch_size_for_init, args.seq_len, *image_shape),
-            dtype=jnp.float32,
+            dtype=args.dtype,
         ),
         rng=_rng,
     )
@@ -184,7 +189,7 @@ if __name__ == "__main__":
     lr_schedule = optax.warmup_cosine_decay_schedule(
         args.min_lr, args.max_lr, args.warmup_steps, args.num_steps
     )
-    tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
+    tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
     train_state = TrainState.create(apply_fn=lam.apply, params=init_params, tx=tx)
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes

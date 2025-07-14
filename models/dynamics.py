@@ -16,6 +16,8 @@ class DynamicsMaskGIT(nn.Module):
     num_heads: int
     dropout: float
     mask_limit: float
+    param_dtype: jnp.dtype
+    dtype: jnp.dtype
 
     def setup(self):
         self.dynamics = STTransformer(
@@ -24,6 +26,8 @@ class DynamicsMaskGIT(nn.Module):
             self.num_blocks,
             self.num_heads,
             self.dropout,
+            self.param_dtype,
+            self.dtype,
         )
         self.patch_embed = nn.Embed(self.num_latents, self.model_dim)
         self.mask_token = self.param(
@@ -31,7 +35,11 @@ class DynamicsMaskGIT(nn.Module):
             nn.initializers.lecun_uniform(),
             (1, 1, 1, self.model_dim),
         )
-        self.action_up = nn.Dense(self.model_dim)
+        self.action_up = nn.Dense(
+            self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+        )
 
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
         # --- Mask videos ---

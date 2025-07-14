@@ -31,36 +31,56 @@ class STBlock(nn.Module):
     dim: int
     num_heads: int
     dropout: float
+    param_dtype: jnp.dtype
+    dtype: jnp.dtype
 
     @nn.remat
     @nn.compact
     def __call__(self, x: jax.Array) -> jax.Array:
         # --- Spatial attention ---
         z = PositionalEncoding(self.dim)(x)
-        z = nn.LayerNorm()(z)
+        z = nn.LayerNorm(
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+        )(z)
         z = nn.MultiHeadAttention(
             num_heads=self.num_heads,
             qkv_features=self.dim,
             dropout_rate=self.dropout,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
         )(z)
         x = x + z
 
         # --- Temporal attention ---
         x = x.swapaxes(1, 2)
         z = PositionalEncoding(self.dim)(x)
-        z = nn.LayerNorm()(z)
+        z = nn.LayerNorm(
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+        )(z)
         causal_mask = jnp.tri(z.shape[-2])
         z = nn.MultiHeadAttention(
             num_heads=self.num_heads,
             qkv_features=self.dim,
             dropout_rate=self.dropout,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
         )(z, mask=causal_mask)
         x = x + z
         x = x.swapaxes(1, 2)
 
         # --- Feedforward ---
-        z = nn.LayerNorm()(x)
-        z = nn.Dense(self.dim)(z)
+        z = nn.LayerNorm(
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+        )(x)
+        # FIXME (f.srambical): Here, the attention hidden dimension is the same as the FFN's. Usually, FFN hidden dimension is 4x model_dim
+        z = nn.Dense(
+            self.dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+        )(z)
         z = nn.gelu(z)
         x = x + z
 
@@ -73,14 +93,25 @@ class STTransformer(nn.Module):
     num_blocks: int
     num_heads: int
     dropout: float
+    param_dtype: jnp.dtype
+    dtype: jnp.dtype
 
     @nn.compact
     def __call__(self, x: jax.Array) -> jax.Array:
         x = nn.Sequential(
             [
-                nn.LayerNorm(),
-                nn.Dense(self.model_dim),
-                nn.LayerNorm(),
+                nn.LayerNorm(
+                    param_dtype=self.param_dtype,
+                    dtype=self.dtype,
+                ),
+                nn.Dense(self.model_dim,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+                ),
+                nn.LayerNorm(
+                    param_dtype=self.param_dtype,
+                    dtype=self.dtype,
+                ),
             ]
         )(x)
         for _ in range(self.num_blocks):
@@ -88,8 +119,14 @@ class STTransformer(nn.Module):
                 dim=self.model_dim,
                 num_heads=self.num_heads,
                 dropout=self.dropout,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
             )(x)
-        x = nn.Dense(self.out_dim)(x)
+        x = nn.Dense(
+            self.out_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+        )(x)
         return x  # (B, T, E)
 
 

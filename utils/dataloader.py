@@ -89,9 +89,7 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
 
         seq = episode_tensor[start_idx : start_idx + self.seq_len]
 
-        processed_sequence = seq.astype(np.float32) / 255.0
-
-        return processed_sequence
+        return seq
 
 
 def get_dataloader(
