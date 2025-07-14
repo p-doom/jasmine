@@ -29,7 +29,7 @@ class Args:
     image_width: int = 160
     data_dir: str = "data/coinrun_episodes"
     checkpoint: str = ""
-    checkpoint_step: int = None
+    checkpoint_step: Optional[int] = None
     # Sampling
     batch_size: int = 1
     maskgit_steps: int = 25
