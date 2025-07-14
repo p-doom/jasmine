@@ -50,7 +50,7 @@ class Args:
     lam_patch_size: int = 16
     lam_num_blocks: int = 8
     lam_num_heads: int = 8
-    lam_co_train: bool = True,
+    lam_co_train: bool = True
     # Dynamics checkpoint
     dyna_dim: int = 512
     dyna_num_blocks: int = 12
