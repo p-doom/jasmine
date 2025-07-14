@@ -8,6 +8,7 @@ from jax.experimental.mesh_utils import create_device_mesh
 import optax
 import orbax.checkpoint as ocp
 import numpy as np
+import dm_pix as pix
 import jax
 import jax.numpy as jnp
 import tyro
@@ -91,12 +92,28 @@ def dynamics_loss_fn(params, state, inputs):
     acc = outputs["token_logits"].argmax(-1) == outputs["video_tokens"]
     acc = (mask * acc).sum() / mask.sum()
     select_probs = jax.nn.softmax(outputs["token_logits"])
+    gt = inputs["videos"].clip(0, 1).reshape(-1, *inputs["videos"].shape[2:])
+    recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
+    psnr = pix.psnr(gt, recon).mean() # type: ignore
+    ssim = pix.ssim(gt, recon).mean() # type: ignore
+    _, index_counts_lam = jnp.unique_counts(
+        jnp.ravel(outputs["lam_indices"]), size=args.num_latent_actions, fill_value=0
+    )
+    _, index_counts_tokenizer = jnp.unique_counts(
+        jnp.ravel(outputs["video_tokens"]), size=args.num_patch_latents, fill_value=0
+    )
+    codebook_usage_lam = (index_counts_lam != 0).mean()
+    codebook_usage_tokenizer = (index_counts_tokenizer != 0).mean()
     metrics = dict(
         cross_entropy_loss=ce_loss,
         masked_token_accuracy=acc,
         select_logit=outputs["token_logits"].max(-1).mean(),
         select_p=select_probs.max(-1).mean(),
         entropy=jax.scipy.special.entr(select_probs).sum(-1).mean(),
+        psnr=psnr,
+        ssim=ssim,
+        codebook_usage_lam=codebook_usage_lam,
+        codebook_usage_tokenizer=codebook_usage_tokenizer,
     )
     return ce_loss, (outputs["recon"], metrics)
 
