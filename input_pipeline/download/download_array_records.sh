@@ -6,10 +6,6 @@
 # 1. Downloads compressed array records from a Hugging Face dataset repository
 # 2. Extracts the compressed tar files in parallel for better performance
 #
-# Prerequisites:
-# - huggingface-cli must be installed and configured
-# - Sufficient disk space for both compressed and uncompressed data
-#
 # Usage:
 #   ./download_array_records.sh [hf_download_dir] [final_dataset_dir]
 #
