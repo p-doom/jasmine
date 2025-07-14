@@ -58,7 +58,6 @@ class Args:
     dyna_num_heads: int = 8
     dropout: float = 0.0
     mask_limit: float = 0.5
-    # FIXME (f.srambical): still need to implement mixed precision
     param_dtype: jnp.dtype = jnp.float32
     dtype: jnp.dtype = jnp.bfloat16
     # Logging
