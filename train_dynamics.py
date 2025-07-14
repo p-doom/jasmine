@@ -77,6 +77,7 @@ args = tyro.cli(Args)
 
 def dynamics_loss_fn(params, state, inputs):
     """Compute masked dynamics loss"""
+    inputs["videos"] = inputs["videos"].astype(jnp.float32) / 255.0
     outputs = state.apply_fn(
         params,
         inputs,
