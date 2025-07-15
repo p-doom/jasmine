@@ -92,6 +92,7 @@ class Genie(nn.Module):
         outputs["recon"] = self.tokenizer.decode(
             mle_indices, batch["videos"].shape[2:4]
         )
+        outputs["lam_indices"] = lam_outputs["indices"]
         return outputs
 
     @nn.compact
