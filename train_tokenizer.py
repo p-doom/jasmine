@@ -41,7 +41,7 @@ class Args:
     max_lr: float = 3e-4
     decay_end: float = 0.0
     wsd_decay_steps: int = 20000 # Note: wsd_decay_steps will only be used when using a wsd-schedule
-    lr_schedule : str = "wsd" # supported options: wsd, cos 
+    lr_schedule: str = "wsd" # supported options: wsd, cos 
     warmup_steps: int = 10000
     # Tokenizer
     model_dim: int = 512
