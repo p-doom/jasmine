@@ -4,6 +4,7 @@ from typing import Tuple
 from flax import linen as nn
 import jax
 import jax.numpy as jnp
+import einops
 
 
 class PositionalEncoding(nn.Module):
@@ -179,18 +180,44 @@ class VectorQuantizer(nn.Module):
 
 
 def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool):
-    """Create an attention function that uses flash attention if enabled."""
+    """
+    Create an attention function that uses flash attention if enabled.
+
+    Flax MultiHeadAttention provides tensors with shape (batch..., length, num_heads, head_dim)
+    jax.nn.dot_product_attention expects (batch, length, num_heads, head_dim) after _ensure_4d
+    We need to reshape to ensure compatibility
+    """
+        
     def attention_fn(query, key, value, bias=None, mask=None, **kwargs):
         implementation = 'cudnn' if use_flash_attention else None
-        return jax.nn.dot_product_attention(
-            query=query,
-            key=key,
-            value=value,
-            bias=bias,
-            mask=mask,
+        
+        original_shape = query.shape
+        
+        query_4d = einops.rearrange(query, '... l h d -> (...) l h d')
+        key_4d = einops.rearrange(key, '... l h d -> (...) l h d')
+        value_4d = einops.rearrange(value, '... l h d -> (...) l h d')
+        
+        bias_4d = None
+        if bias is not None:
+            bias_4d = einops.rearrange(bias, '... l h d -> (...) l h d')
+        
+        mask_4d = None
+        if mask is not None:
+            mask_4d = mask[jnp.newaxis, jnp.newaxis, :, :]  # (1, 1, seq_len, seq_len)
+            
+            mask_4d = mask_4d.astype(jnp.bool_)
+        
+        output_4d = jax.nn.dot_product_attention(
+            query=query_4d,
+            key=key_4d,
+            value=value_4d,
+            bias=bias_4d,
+            mask=mask_4d,
             implementation=implementation,
             is_causal=is_causal,
             **kwargs
         )
+        return output_4d.reshape(original_shape)
+    
     return attention_fn
 
