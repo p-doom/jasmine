@@ -64,6 +64,7 @@ class Args:
     mask_limit: float = 0.5
     param_dtype: jnp.dtype = jnp.float32
     dtype: jnp.dtype = jnp.bfloat16
+    use_flash_attention: bool = True
     # Logging
     log: bool = False
     entity: str = ""
@@ -182,6 +183,7 @@ if __name__ == "__main__":
         mask_limit=args.mask_limit,
         param_dtype=args.param_dtype,
         dtype=args.dtype,
+        use_flash_attention=args.use_flash_attention,
     )
     rng, _rng = jax.random.split(rng)
     image_shape = (args.image_height, args.image_width, args.image_channels)

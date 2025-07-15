@@ -18,6 +18,7 @@ class DynamicsMaskGIT(nn.Module):
     mask_limit: float
     param_dtype: jnp.dtype
     dtype: jnp.dtype
+    use_flash_attention: bool
 
     def setup(self):
         self.dynamics = STTransformer(
@@ -28,6 +29,7 @@ class DynamicsMaskGIT(nn.Module):
             self.dropout,
             self.param_dtype,
             self.dtype,
+            use_flash_attention=self.use_flash_attention,
         )
         self.patch_embed = nn.Embed(self.num_latents, self.model_dim)
         self.mask_token = self.param(
