@@ -1,5 +1,5 @@
 import math
-from typing import Dict, Tuple
+from typing import Tuple
 
 from flax import linen as nn
 import jax
@@ -31,6 +31,7 @@ class STBlock(nn.Module):
     dim: int
     num_heads: int
     dropout: float
+    use_flash_attention: bool
 
     @nn.remat
     @nn.compact
@@ -42,6 +43,7 @@ class STBlock(nn.Module):
             num_heads=self.num_heads,
             qkv_features=self.dim,
             dropout_rate=self.dropout,
+            attention_fn=_create_flash_attention_fn(self.use_flash_attention, is_causal=False),
         )(z)
         x = x + z
 
@@ -54,6 +56,8 @@ class STBlock(nn.Module):
             num_heads=self.num_heads,
             qkv_features=self.dim,
             dropout_rate=self.dropout,
+            attention_fn=_create_flash_attention_fn(self.use_flash_attention, is_causal=True),
+        # FIXME (f.srambical): check whether we should still pass the mask if we set is_causal=True
         )(z, mask=causal_mask)
         x = x + z
         x = x.swapaxes(1, 2)
@@ -73,6 +77,7 @@ class STTransformer(nn.Module):
     num_blocks: int
     num_heads: int
     dropout: float
+    use_flash_attention: bool
 
     @nn.compact
     def __call__(self, x: jax.Array) -> jax.Array:
@@ -88,6 +93,7 @@ class STTransformer(nn.Module):
                 dim=self.model_dim,
                 num_heads=self.num_heads,
                 dropout=self.dropout,
+                use_flash_attention=self.use_flash_attention,
             )(x)
         x = nn.Dense(self.out_dim)(x)
         return x  # (B, T, E)
@@ -133,3 +139,21 @@ class VectorQuantizer(nn.Module):
 
     def get_codes(self, indices: jax.Array):
         return self.codebook[indices]
+
+
+def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool):
+    """Create an attention function that uses flash attention if enabled."""
+    def attention_fn(query, key, value, bias=None, mask=None, **kwargs):
+        implementation = 'cudnn' if use_flash_attention else None
+        return jax.nn.dot_product_attention(
+            query=query,
+            key=key,
+            value=value,
+            bias=bias,
+            mask=mask,
+            implementation=implementation,
+            is_causal=is_causal,
+            **kwargs
+        )
+    return attention_fn
+

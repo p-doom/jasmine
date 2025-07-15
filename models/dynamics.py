@@ -16,6 +16,7 @@ class DynamicsMaskGIT(nn.Module):
     num_heads: int
     dropout: float
     mask_limit: float
+    use_flash_attention: bool
 
     def setup(self):
         self.dynamics = STTransformer(
@@ -24,6 +25,7 @@ class DynamicsMaskGIT(nn.Module):
             self.num_blocks,
             self.num_heads,
             self.dropout,
+            use_flash_attention=self.use_flash_attention,
         )
         self.patch_embed = nn.Embed(self.num_latents, self.model_dim)
         self.mask_token = self.param(

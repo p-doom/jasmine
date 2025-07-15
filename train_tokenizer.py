@@ -61,6 +61,7 @@ class Args:
     log_checkpoint_keep_period: int = 20000
     log_gradients: bool = False
     wandb_id: str = ""
+    use_flash_attention: bool = True
 
 
 args = tyro.cli(Args)
@@ -149,6 +150,7 @@ if __name__ == "__main__":
         num_heads=args.num_heads,
         dropout=args.dropout,
         codebook_dropout=args.codebook_dropout,
+        use_flash_attention=args.use_flash_attention,
     )
     rng, _rng = jax.random.split(rng)
     image_shape = (args.image_height, args.image_width, args.image_channels)

@@ -58,6 +58,7 @@ class Args:
     dyna_num_heads: int = 8
     dropout: float = 0.0
     mask_limit: float = 0.5
+    use_flash_attention: bool = True
     # Logging
     log: bool = False
     entity: str = ""
@@ -157,6 +158,7 @@ if __name__ == "__main__":
         dyna_num_heads=args.dyna_num_heads,
         dropout=args.dropout,
         mask_limit=args.mask_limit,
+        use_flash_attention=args.use_flash_attention,
     )
     rng, _rng = jax.random.split(rng)
     image_shape = (args.image_height, args.image_width, args.image_channels)

@@ -18,6 +18,7 @@ class TokenizerVQVAE(nn.Module):
     num_heads: int
     dropout: float
     codebook_dropout: float
+    use_flash_attention: bool
 
     def setup(self):
         self.encoder = STTransformer(
@@ -26,6 +27,7 @@ class TokenizerVQVAE(nn.Module):
             self.num_blocks,
             self.num_heads,
             self.dropout,
+            use_flash_attention=self.use_flash_attention,
         )
         self.vq = VectorQuantizer(
             self.latent_dim,
@@ -39,6 +41,7 @@ class TokenizerVQVAE(nn.Module):
             self.num_blocks,
             self.num_heads,
             self.dropout,
+            use_flash_attention=self.use_flash_attention,
         )
 
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:

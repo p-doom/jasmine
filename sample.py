@@ -50,6 +50,7 @@ class Args:
     dyna_dim: int = 512
     dyna_num_blocks: int = 12
     dyna_num_heads: int = 8
+    use_flash_attention: bool = True
 
 
 args = tyro.cli(Args)
@@ -72,10 +73,12 @@ genie = Genie(
     lam_patch_size=args.lam_patch_size,
     lam_num_blocks=args.lam_num_blocks,
     lam_num_heads=args.lam_num_heads,
+    lam_co_train=False,
     # Dynamics
     dyna_dim=args.dyna_dim,
     dyna_num_blocks=args.dyna_num_blocks,
     dyna_num_heads=args.dyna_num_heads,
+    use_flash_attention=args.use_flash_attention,
 )
 rng, _rng = jax.random.split(rng)
 image_shape = (args.image_height, args.image_width, args.image_channels)

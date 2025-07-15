@@ -60,6 +60,7 @@ class Args:
     ckpt_dir: str = ""
     log_checkpoint_interval: int = 10000
     log_checkpoint_keep_period: int = 20000
+    use_flash_attention: bool = True
     wandb_id: str = ""
 
 
@@ -151,6 +152,7 @@ if __name__ == "__main__":
         num_heads=args.num_heads,
         dropout=args.dropout,
         codebook_dropout=args.codebook_dropout,
+        use_flash_attention=args.use_flash_attention,
     )
     # Track when each action was last sampled
     action_last_active = jnp.zeros(args.num_latents)
