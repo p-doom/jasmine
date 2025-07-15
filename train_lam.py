@@ -60,6 +60,7 @@ class Args:
     ckpt_dir: str = ""
     log_checkpoint_interval: int = 10000
     log_checkpoint_keep_period: int = 20000
+    wandb_id: str = ""
 
 
 args = tyro.cli(Args)
@@ -168,14 +169,22 @@ if __name__ == "__main__":
     param_counts = count_parameters_by_component(init_params)
 
     if args.log and jax.process_index() == 0:
-        wandb.init(
-            entity=args.entity,
-            project=args.project,
-            name=args.name,
-            tags=args.tags,
-            group="debug",
-            config=args,
-        )
+        wandb_init_kwargs = {
+            "entity": args.entity,
+            "project": args.project,
+            "name": args.name,
+            "tags": args.tags,
+            "group": "debug",
+            "config": args,
+        }
+
+        if args.wandb_id:
+            wandb_init_kwargs.update(
+                {
+                    "id": args.wandb_id,
+                    "resume": "allow",
+                }
+            )
         wandb.config.update({"model_param_count": param_counts})
 
     print("Parameter counts:")
