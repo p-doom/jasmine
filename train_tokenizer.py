@@ -40,7 +40,7 @@ class Args:
     max_lr: float = 3e-4
     final_lr: float = 0.0
     wsd_decay_steps: int = 20000
-    lr_schedule : str = "wsd" # supported options: wsd, cos, const 
+    lr_schedule: str = "wsd" # supported options: wsd, cos, const 
     warmup_steps: int = 10000
     # Tokenizer
     model_dim: int = 512
