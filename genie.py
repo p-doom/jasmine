@@ -11,7 +11,6 @@ from models.dynamics import DynamicsMaskGIT
 from models.lam import LatentActionModel
 from models.tokenizer import TokenizerVQVAE
 
-import os
 import grain
 
 
@@ -40,6 +39,7 @@ class Genie(nn.Module):
     dyna_num_heads: int
     param_dtype: jnp.dtype
     dtype: jnp.dtype
+    use_flash_attention: bool
     dropout: float = 0.0
     mask_limit: float = 0.0
 
@@ -56,6 +56,7 @@ class Genie(nn.Module):
             codebook_dropout=0.0,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
+            use_flash_attention=self.use_flash_attention,
         )
         self.lam = LatentActionModel(
             in_dim=self.in_dim,
@@ -69,6 +70,7 @@ class Genie(nn.Module):
             codebook_dropout=0.0,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
+            use_flash_attention=self.use_flash_attention,
         )
         self.dynamics = DynamicsMaskGIT(
             model_dim=self.dyna_dim,
@@ -79,6 +81,7 @@ class Genie(nn.Module):
             mask_limit=self.mask_limit,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
+            use_flash_attention=self.use_flash_attention,
         )
 
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
@@ -295,6 +298,7 @@ def restore_genie_components(
         codebook_dropout=args.dropout,
         param_dtype=args.param_dtype,
         dtype=args.dtype,
+        use_flash_attention=args.use_flash_attention,
     )
     tokenizer_init_params = dummy_tokenizer.init(_rng, inputs)
     dummy_tokenizer_train_state = TrainState.create(
@@ -332,6 +336,7 @@ def restore_genie_components(
             codebook_dropout=args.dropout,
             param_dtype=args.param_dtype,
             dtype=args.dtype,
+            use_flash_attention=args.use_flash_attention,
         )
         lam_init_params = dummy_lam.init(_rng, inputs)
         dummy_lam_train_state = TrainState.create(
