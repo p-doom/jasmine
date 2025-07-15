@@ -185,6 +185,8 @@ if __name__ == "__main__":
                     "resume": "allow",
                 }
             )
+        wandb.init(**wandb_init_kwargs)
+
         wandb.config.update({"model_param_count": param_counts})
 
     print("Parameter counts:")
