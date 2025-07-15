@@ -69,9 +69,9 @@ args = tyro.cli(Args)
 
 def tokenizer_loss_fn(params, state, inputs):
     # --- Compute loss ---
-    # FIXME (f.srambical): cast in8 to bf16 instead?
-    # FIXME (f.srambical): or, can we even do native int8 training without casting the video at all?
-    # FIXME (f.srambical): if the tokenizer is the reason for the dynamics model being memory-bound, should we at least train the tokenizer natively in int8?
+    # FIXME (f.srambical): Can we even do native int8 training without casting the video at all?
+    # FIXME (f.srambical): If the tokenizer is the reason for the dynamics model being memory-bound,
+    # should we at least train the tokenizer natively in int8?
     inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
     outputs = state.apply_fn(
         params,
