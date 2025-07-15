@@ -84,8 +84,8 @@ def tokenizer_loss_fn(params, state, inputs):
     # --- Compute validation metrics ---
     gt = inputs["videos"].clip(0, 1).reshape(-1, *inputs["videos"].shape[2:])
     recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
-    psnr = pix.psnr(gt, recon).mean() # type: ignore
-    ssim = pix.ssim(gt, recon).mean() # type: ignore
+    psnr = pix.psnr(gt, recon).mean()  # type: ignore
+    ssim = pix.ssim(gt, recon).mean()  # type: ignore
     _, index_counts = jnp.unique_counts(
         jnp.ravel(outputs["indices"]), size=args.num_latents, fill_value=0
     )
@@ -187,19 +187,21 @@ if __name__ == "__main__":
     mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
 
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
-    videos_sharding = NamedSharding(
-        mesh, PartitionSpec("data", None, None, None, None)
-    )
+    videos_sharding = NamedSharding(mesh, PartitionSpec("data", None, None, None, None))
     train_state = jax.device_put(train_state, replicated_sharding)
 
     # --- Initialize checkpoint manager ---
     step = 0
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
-    handler_registry.add('model_state', ocp.args.StandardSave, ocp.handlers.StandardCheckpointHandler)
-    handler_registry.add('model_state', ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler)
-    handler_registry.add('dataloader_state', grain.checkpoint.CheckpointSave, grain.checkpoint.CheckpointHandler) # type: ignore
-    handler_registry.add('dataloader_state', grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler) # type: ignore
-    
+    handler_registry.add(
+        "model_state", ocp.args.StandardSave, ocp.handlers.StandardCheckpointHandler
+    )
+    handler_registry.add(
+        "model_state", ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler
+    )
+    handler_registry.add("dataloader_state", grain.checkpoint.CheckpointSave, grain.checkpoint.CheckpointHandler)  # type: ignore
+    handler_registry.add("dataloader_state", grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler)  # type: ignore
+
     checkpoint_options = ocp.CheckpointManagerOptions(
         save_interval_steps=args.log_checkpoint_interval,
         max_to_keep=3,
@@ -207,7 +209,7 @@ if __name__ == "__main__":
         step_format_fixed_length=6,
         cleanup_tmp_directories=True,
     )
-    
+
     checkpoint_manager = ocp.CheckpointManager(
         args.ckpt_dir,
         options=checkpoint_options,
@@ -233,16 +235,18 @@ if __name__ == "__main__":
     )
     initial_state = grain_dataloader._create_initial_state()
     grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
-    
+
     # --- Restore checkpoint ---
     if args.restore_ckpt:
-        abstract_train_state = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, train_state)
+        abstract_train_state = jax.tree_util.tree_map(
+            ocp.utils.to_shape_dtype_struct, train_state
+        )
         restored = checkpoint_manager.restore(
             checkpoint_manager.latest_step(),
             args=ocp.args.Composite(
                 model_state=ocp.args.StandardRestore(abstract_train_state),
                 dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
-            )
+            ),
         )
         train_state = restored["model_state"]
         grain_iterator = restored["dataloader_state"]
@@ -250,7 +254,7 @@ if __name__ == "__main__":
         print(f"Restored dataloader and model state from step {step}")
 
     # --- TRAIN LOOP ---
-    dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in grain_iterator) # type: ignore
+    dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in grain_iterator)  # type: ignore
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
@@ -297,8 +301,10 @@ if __name__ == "__main__":
                     step,
                     args=ocp.args.Composite(
                         model_state=ocp.args.StandardSave(train_state),
-                        dataloader_state=grain.checkpoint.CheckpointSave(grain_iterator),
-                    )
+                        dataloader_state=grain.checkpoint.CheckpointSave(
+                            grain_iterator
+                        ),
+                    ),
                 )
                 print(f"Saved checkpoint at step {step}")
             if step >= args.num_steps:
