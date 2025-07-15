@@ -18,7 +18,7 @@ import grain
 
 from models.lam import LatentActionModel
 from utils.dataloader import get_dataloader
-from utils.parameter_utils import count_parameters_by_component
+from utils.misc_utils import count_parameters_by_component, get_lr_schedule
 
 
 @dataclass
@@ -36,9 +36,12 @@ class Args:
     # Optimization
     batch_size: int = 36
     vq_beta: float = 0.25
-    min_lr: float = 0.0
+    init_lr: float = 0.0
     max_lr: float = 3e-5
+    final_lr: float = 0.0
+    wsd_decay_steps: int = 10000
     warmup_steps: int = 5000
+    lr_schedule : str = "wsd" # supported options: wsd, cos, const 
     vq_reset_thresh: int = 50
     # LAM
     model_dim: int = 512
@@ -182,9 +185,14 @@ if __name__ == "__main__":
     print(param_counts)
 
     # --- Initialize optimizer ---
-    lr_schedule = optax.warmup_cosine_decay_schedule(
-        args.min_lr, args.max_lr, args.warmup_steps, args.num_steps
-    )
+    lr_schedule = get_lr_schedule(args.lr_schedule, 
+                                  args.init_lr, 
+                                  args.max_lr, 
+                                  args.final_lr, 
+                                  args.num_steps, 
+                                  args.warmup_steps, 
+                                  args.wsd_decay_steps)
+
     tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
     train_state = TrainState.create(apply_fn=lam.apply, params=init_params, tx=tx)
 
@@ -268,6 +276,7 @@ if __name__ == "__main__":
             train_state, loss, recon, action_last_active, metrics = train_step(
                 train_state, inputs, action_last_active
             )
+            metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1
 
