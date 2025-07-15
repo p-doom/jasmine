@@ -21,6 +21,7 @@ class TokenizerVQVAE(nn.Module):
     codebook_dropout: float
     param_dtype: jnp.dtype
     dtype: jnp.dtype
+    use_flash_attention: bool
 
     def setup(self):
         self.encoder = STTransformer(
@@ -31,6 +32,7 @@ class TokenizerVQVAE(nn.Module):
             self.dropout,
             self.param_dtype,
             self.dtype,
+            use_flash_attention=self.use_flash_attention,
         )
         self.vq = VectorQuantizer(
             self.latent_dim,
@@ -46,6 +48,7 @@ class TokenizerVQVAE(nn.Module):
             self.dropout,
             self.param_dtype,
             self.dtype,
+            use_flash_attention=self.use_flash_attention,
         )
 
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
