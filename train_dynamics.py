@@ -16,8 +16,8 @@ import grain
 
 from genie import Genie, restore_genie_components
 from utils.dataloader import get_dataloader
-from utils.misc_utils import count_parameters_by_component, get_lr_schedule
-
+from utils.lr_utils import get_lr_schedule
+from utils.parameter_utils import count_parameters_by_component
 
 @dataclass
 class Args:
@@ -35,10 +35,10 @@ class Args:
     batch_size: int = 36
     init_lr: float = 0.0
     max_lr: float = 3e-5
-    final_lr: float = 0.0
-    wsd_decay_steps: int = 10000
+    decay_end: float = 0.0
+    wsd_decay_steps: int = 10000 # Note: wsd_decay_steps will only be used when using a wsd-schedule
     warmup_steps: int = 5000
-    lr_schedule : str = "wsd" # supported options: wsd, cos, const 
+    lr_schedule : str = "wsd" # supported options: wsd, cos
     # Tokenizer
     tokenizer_dim: int = 512
     latent_patch_dim: int = 32
@@ -195,7 +195,7 @@ if __name__ == "__main__":
     lr_schedule = get_lr_schedule(args.lr_schedule, 
                                   args.init_lr, 
                                   args.max_lr, 
-                                  args.final_lr, 
+                                  args.decay_end, 
                                   args.num_steps, 
                                   args.warmup_steps, 
                                   args.wsd_decay_steps)
