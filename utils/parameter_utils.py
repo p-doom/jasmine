@@ -1,17 +1,17 @@
 from jax.tree_util import tree_map, tree_reduce
 
 
-def count_leaf(x):
+def _count_leaf(x):
     """Count parameters in a single leaf node."""
     if hasattr(x, "size"):
         return x.size
     return 0
 
 
-def count_component(component_params):
+def _count_component(component_params):
     """Count total parameters in a component."""
     return tree_reduce(
-        lambda x, y: x + y, tree_map(count_leaf, component_params), initializer=0
+        lambda x, y: x + y, tree_map(_count_leaf, component_params), initializer=0
     )
 
 
@@ -38,7 +38,7 @@ def count_parameters_by_component(params):
         else:
             component_params = params
 
-        count = count_component(component_params)
+        count = _count_component(component_params)
         counts[name] = count
         total_params += count
 

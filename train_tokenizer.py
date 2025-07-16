@@ -18,6 +18,7 @@ import grain
 
 from models.tokenizer import TokenizerVQVAE
 from utils.dataloader import get_dataloader
+from utils.lr_utils import get_lr_schedule
 from utils.parameter_utils import count_parameters_by_component
 
 
@@ -36,8 +37,11 @@ class Args:
     # Optimization
     vq_beta: float = 0.25
     batch_size: int = 48
-    min_lr: float = 0.0
+    init_lr: float = 0.0
     max_lr: float = 3e-4
+    decay_end: float = 0.0
+    wsd_decay_steps: int = 20000 # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
+    lr_schedule: str = "wsd" # supported options: wsd, cos 
     warmup_steps: int = 10000
     # Tokenizer
     model_dim: int = 512
@@ -62,6 +66,7 @@ class Args:
     log_checkpoint_interval: int = 10000
     log_checkpoint_keep_period: int = 20000
     log_gradients: bool = False
+    wandb_id: str = ""
 
 
 args = tyro.cli(Args)
@@ -89,8 +94,8 @@ def tokenizer_loss_fn(params, state, inputs):
     # --- Compute validation metrics ---
     gt = inputs["videos"].clip(0, 1).reshape(-1, *inputs["videos"].shape[2:])
     recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
-    psnr = pix.psnr(gt, recon).mean() # type: ignore
-    ssim = pix.ssim(gt, recon).mean() # type: ignore
+    psnr = pix.psnr(gt, recon).mean()  # type: ignore
+    ssim = pix.ssim(gt, recon).mean()  # type: ignore
     _, index_counts = jnp.unique_counts(
         jnp.ravel(outputs["indices"]), size=args.num_latents, fill_value=0
     )
@@ -169,23 +174,37 @@ if __name__ == "__main__":
     param_counts = count_parameters_by_component(init_params)
 
     if args.log and jax.process_index() == 0:
-        wandb.init(
-            entity=args.entity,
-            project=args.project,
-            name=args.name,
-            tags=args.tags,
-            group="debug",
-            config=args,
-        )
+        wandb_init_kwargs = {
+            "entity": args.entity,
+            "project": args.project,
+            "name": args.name,
+            "tags": args.tags,
+            "group": "debug",
+            "config": args,
+        }
+
+        if args.wandb_id:
+            wandb_init_kwargs.update(
+                {
+                    "id": args.wandb_id,
+                    "resume": "allow",
+                }
+            )
+        wandb.init(**wandb_init_kwargs)
+
         wandb.config.update({"model_param_count": param_counts})
 
     print("Parameter counts:")
     print(param_counts)
 
     # --- Initialize optimizer ---
-    lr_schedule = optax.warmup_cosine_decay_schedule(
-        args.min_lr, args.max_lr, args.warmup_steps, args.num_steps
-    )
+    lr_schedule = get_lr_schedule(args.lr_schedule, 
+                                  args.init_lr, 
+                                  args.max_lr, 
+                                  args.decay_end, 
+                                  args.num_steps, 
+                                  args.warmup_steps, 
+                                  args.wsd_decay_steps)
     tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
     train_state = TrainState.create(apply_fn=tokenizer.apply, params=init_params, tx=tx)
 
@@ -194,19 +213,21 @@ if __name__ == "__main__":
     mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
 
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
-    videos_sharding = NamedSharding(
-        mesh, PartitionSpec("data", None, None, None, None)
-    )
+    videos_sharding = NamedSharding(mesh, PartitionSpec("data", None, None, None, None))
     train_state = jax.device_put(train_state, replicated_sharding)
 
     # --- Initialize checkpoint manager ---
     step = 0
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
-    handler_registry.add('model_state', ocp.args.StandardSave, ocp.handlers.StandardCheckpointHandler)
-    handler_registry.add('model_state', ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler)
-    handler_registry.add('dataloader_state', grain.checkpoint.CheckpointSave, grain.checkpoint.CheckpointHandler) # type: ignore
-    handler_registry.add('dataloader_state', grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler) # type: ignore
-    
+    handler_registry.add(
+        "model_state", ocp.args.StandardSave, ocp.handlers.StandardCheckpointHandler
+    )
+    handler_registry.add(
+        "model_state", ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler
+    )
+    handler_registry.add("dataloader_state", grain.checkpoint.CheckpointSave, grain.checkpoint.CheckpointHandler)  # type: ignore
+    handler_registry.add("dataloader_state", grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler)  # type: ignore
+
     checkpoint_options = ocp.CheckpointManagerOptions(
         save_interval_steps=args.log_checkpoint_interval,
         max_to_keep=3,
@@ -214,7 +235,7 @@ if __name__ == "__main__":
         step_format_fixed_length=6,
         cleanup_tmp_directories=True,
     )
-    
+
     checkpoint_manager = ocp.CheckpointManager(
         args.ckpt_dir,
         options=checkpoint_options,
@@ -240,16 +261,18 @@ if __name__ == "__main__":
     )
     initial_state = grain_dataloader._create_initial_state()
     grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
-    
+
     # --- Restore checkpoint ---
     if args.restore_ckpt:
-        abstract_train_state = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, train_state)
+        abstract_train_state = jax.tree_util.tree_map(
+            ocp.utils.to_shape_dtype_struct, train_state
+        )
         restored = checkpoint_manager.restore(
             checkpoint_manager.latest_step(),
             args=ocp.args.Composite(
                 model_state=ocp.args.StandardRestore(abstract_train_state),
                 dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
-            )
+            ),
         )
         train_state = restored["model_state"]
         grain_iterator = restored["dataloader_state"]
@@ -257,7 +280,7 @@ if __name__ == "__main__":
         print(f"Restored dataloader and model state from step {step}")
 
     # --- TRAIN LOOP ---
-    dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in grain_iterator) # type: ignore
+    dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in grain_iterator)  # type: ignore
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
@@ -266,6 +289,7 @@ if __name__ == "__main__":
 
             inputs = dict(videos=videos, rng=_rng, dropout_rng=_rng_dropout)
             train_state, loss, recon, metrics = train_step(train_state, inputs)
+            metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1
 
@@ -304,8 +328,10 @@ if __name__ == "__main__":
                     step,
                     args=ocp.args.Composite(
                         model_state=ocp.args.StandardSave(train_state),
-                        dataloader_state=grain.checkpoint.CheckpointSave(grain_iterator),
-                    )
+                        dataloader_state=grain.checkpoint.CheckpointSave(
+                            grain_iterator
+                        ),
+                    ),
                 )
                 print(f"Saved checkpoint at step {step}")
             if step >= args.num_steps:
