@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 import os
+from typing import Optional
 
 import einops
 from flax.training.train_state import TrainState
@@ -36,6 +37,7 @@ class Args:
     min_lr: float = 0.0
     max_lr: float = 3e-5
     warmup_steps: int = 5000
+    grad_clip_threshold: Optional[float] = None
     # Tokenizer
     tokenizer_dim: int = 512
     latent_patch_dim: int = 32
@@ -108,6 +110,10 @@ def train_step(state, inputs):
     """Update state and compute metrics"""
     grad_fn = jax.value_and_grad(dynamics_loss_fn, has_aux=True, allow_int=True)
     (loss, (recon, metrics)), grads = grad_fn(state.params, state, inputs)
+    # extract and manually clip grad norm for logging (actual clipping is done in the optax.chain)
+    raw_grad_norm = optax.global_norm(grads)
+    metrics["grad_norm"] = jnp.minimum(raw_grad_norm, args.grad_clip_threshold) if args.grad_clip_threshold else raw_grad_norm
+    
     state = state.apply_gradients(grads=grads)
     if args.log_gradients:
         metrics["gradients_std/"] = jax.tree.map(
@@ -201,7 +207,13 @@ if __name__ == "__main__":
     lr_schedule = optax.warmup_cosine_decay_schedule(
         args.min_lr, args.max_lr, args.warmup_steps, args.num_steps
     )
-    tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
+    if args.grad_clip_threshold:
+        tx = optax.chain(
+            optax.clip_by_global_norm(args.grad_clip_threshold),
+            optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
+        )
+    else:
+        tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
     train_state = TrainState.create(apply_fn=genie.apply, params=init_params, tx=tx)
 
     device_mesh_arr = create_device_mesh((num_devices,))
