@@ -20,6 +20,7 @@ class Genie(nn.Module):
     # --- Tokenizer ---
     in_dim: int
     tokenizer_dim: int
+    tokenizer_ffn_dim: int
     latent_patch_dim: int
     num_patch_latents: int
     patch_size: int
@@ -27,6 +28,7 @@ class Genie(nn.Module):
     tokenizer_num_heads: int
     # --- LAM ---
     lam_dim: int
+    lam_ffn_dim: int
     latent_action_dim: int
     num_latent_actions: int
     lam_patch_size: int
@@ -35,6 +37,7 @@ class Genie(nn.Module):
     lam_co_train: bool
     # --- Dynamics ---
     dyna_dim: int
+    dyna_ffn_dim: int
     dyna_num_blocks: int
     dyna_num_heads: int
     param_dtype: jnp.dtype
@@ -47,6 +50,7 @@ class Genie(nn.Module):
         self.tokenizer = TokenizerVQVAE(
             in_dim=self.in_dim,
             model_dim=self.tokenizer_dim,
+            ffn_dim=self.tokenizer_ffn_dim,
             latent_dim=self.latent_patch_dim,
             num_latents=self.num_patch_latents,
             patch_size=self.patch_size,
@@ -61,6 +65,7 @@ class Genie(nn.Module):
         self.lam = LatentActionModel(
             in_dim=self.in_dim,
             model_dim=self.lam_dim,
+            ffn_dim=self.lam_ffn_dim,
             latent_dim=self.latent_patch_dim,
             num_latents=self.num_latent_actions,
             patch_size=self.lam_patch_size,
@@ -74,6 +79,7 @@ class Genie(nn.Module):
         )
         self.dynamics = DynamicsMaskGIT(
             model_dim=self.dyna_dim,
+            ffn_dim=self.dyna_ffn_dim,
             num_latents=self.num_patch_latents,
             num_blocks=self.dyna_num_blocks,
             num_heads=self.dyna_num_heads,
@@ -290,6 +296,7 @@ def restore_genie_components(
     dummy_tokenizer = TokenizerVQVAE(
         in_dim=args.image_channels,
         model_dim=args.tokenizer_dim,
+        ffn_dim=args.tokenizer_ffn_dim,
         latent_dim=args.latent_patch_dim,
         num_latents=args.num_patch_latents,
         patch_size=args.patch_size,
@@ -328,6 +335,7 @@ def restore_genie_components(
         dummy_lam = LatentActionModel(
             in_dim=args.image_channels,
             model_dim=args.lam_dim,
+            ffn_dim=args.lam_ffn_dim,
             latent_dim=args.latent_patch_dim,
             num_latents=args.num_latent_actions,
             patch_size=args.lam_patch_size,

@@ -45,10 +45,11 @@ class Args:
     warmup_steps: int = 10000
     # Tokenizer
     model_dim: int = 512
+    ffn_dim: int = 2048
     latent_dim: int = 32
     num_latents: int = 1024
     patch_size: int = 4
-    num_blocks: int = 8
+    num_blocks: int = 4
     num_heads: int = 8
     dropout: float = 0.0
     codebook_dropout: float = 0.01
@@ -152,6 +153,7 @@ if __name__ == "__main__":
     tokenizer = TokenizerVQVAE(
         in_dim=args.image_channels,
         model_dim=args.model_dim,
+        ffn_dim=args.ffn_dim,
         latent_dim=args.latent_dim,
         num_latents=args.num_latents,
         patch_size=args.patch_size,

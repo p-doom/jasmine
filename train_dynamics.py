@@ -42,23 +42,26 @@ class Args:
     lr_schedule : str = "wsd" # supported options: wsd, cos
     # Tokenizer
     tokenizer_dim: int = 512
+    tokenizer_ffn_dim: int = 2048
     latent_patch_dim: int = 32
     num_patch_latents: int = 1024
     patch_size: int = 4
-    tokenizer_num_blocks: int = 8
+    tokenizer_num_blocks: int = 4
     tokenizer_num_heads: int = 8
     tokenizer_checkpoint: str = ""
     # LAM
     lam_dim: int = 512
+    lam_ffn_dim: int = 2048
     latent_action_dim: int = 32
     num_latent_actions: int = 6
     lam_patch_size: int = 16
-    lam_num_blocks: int = 8
+    lam_num_blocks: int = 4
     lam_num_heads: int = 8
     lam_checkpoint: str = ""
     # Dynamics
     dyna_dim: int = 512
-    dyna_num_blocks: int = 12
+    dyna_ffn_dim: int = 2048
+    dyna_num_blocks: int = 6
     dyna_num_heads: int = 8
     dropout: float = 0.0
     mask_limit: float = 0.5
@@ -162,6 +165,7 @@ if __name__ == "__main__":
         # Tokenizer
         in_dim=args.image_channels,
         tokenizer_dim=args.tokenizer_dim,
+        tokenizer_ffn_dim=args.tokenizer_ffn_dim,
         latent_patch_dim=args.latent_patch_dim,
         num_patch_latents=args.num_patch_latents,
         patch_size=args.patch_size,
@@ -169,6 +173,7 @@ if __name__ == "__main__":
         tokenizer_num_heads=args.tokenizer_num_heads,
         # LAM
         lam_dim=args.lam_dim,
+        lam_ffn_dim=args.lam_ffn_dim,
         latent_action_dim=args.latent_action_dim,
         num_latent_actions=args.num_latent_actions,
         lam_patch_size=args.lam_patch_size,
@@ -177,6 +182,7 @@ if __name__ == "__main__":
         lam_co_train=not args.lam_checkpoint,
         # Dynamics
         dyna_dim=args.dyna_dim,
+        dyna_ffn_dim=args.dyna_ffn_dim,
         dyna_num_blocks=args.dyna_num_blocks,
         dyna_num_heads=args.dyna_num_heads,
         dropout=args.dropout,
