@@ -184,28 +184,47 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool):
     Create an attention function that uses flash attention if enabled.
 
     Flax MultiHeadAttention provides tensors with shape (batch..., length, num_heads, head_dim)
-    jax.nn.dot_product_attention expects (batch, length, num_heads, head_dim) after _ensure_4d
-    We need to reshape to ensure compatibility
+    jax.nn.dot_product_attention expects (batch, length, num_heads, head_dim).
+
+    We need to reshape to ensure compatibility. cuDNN's flash attention additionally
+    requires a sequence length that is a multiple of 4. We pad the sequence length to the nearest
+    multiple of 4 and mask accordingly.
     """
         
     def attention_fn(query, key, value, bias=None, mask=None, **kwargs):
         implementation = 'cudnn' if use_flash_attention else None
-        
+
         original_shape = query.shape
+        original_seq_len = query.shape[-3]
         
+        # Pad to nearest multiple of 4
+        target_seq_len = ((original_seq_len + 3) // 4) * 4
+        pad_size = target_seq_len - original_seq_len
+
         query_4d = einops.rearrange(query, '... l h d -> (...) l h d')
         key_4d = einops.rearrange(key, '... l h d -> (...) l h d')
         value_4d = einops.rearrange(value, '... l h d -> (...) l h d')
+
+        query_4d = jnp.pad(query_4d, ((0, 0), (0, pad_size), (0, 0), (0, 0)))
+        key_4d = jnp.pad(key_4d, ((0, 0), (0, pad_size), (0, 0), (0, 0)))
+        value_4d = jnp.pad(value_4d, ((0, 0), (0, pad_size), (0, 0), (0, 0)))
+        
+        attention_mask = jnp.ones((target_seq_len, target_seq_len), dtype=jnp.bool_)
+        attention_mask = attention_mask.at[original_seq_len:, :].set(False)
+        attention_mask = attention_mask.at[:, original_seq_len:].set(False)
+
+        if mask is not None:
+            mask_bool = mask.astype(jnp.bool_)
+            expanded_mask = jnp.pad(mask_bool, ((0, pad_size), (0, pad_size)), constant_values=False)
+            mask_4d = jnp.logical_and(attention_mask, expanded_mask)
+        else:
+            mask_4d = attention_mask
+        mask_4d = mask_4d[jnp.newaxis, jnp.newaxis, :, :]  # (1, 1, seq_len, seq_len)
         
         bias_4d = None
         if bias is not None:
             bias_4d = einops.rearrange(bias, '... l h d -> (...) l h d')
-        
-        mask_4d = None
-        if mask is not None:
-            mask_4d = mask[jnp.newaxis, jnp.newaxis, :, :]  # (1, 1, seq_len, seq_len)
-            
-            mask_4d = mask_4d.astype(jnp.bool_)
+            bias_4d = jnp.pad(bias_4d, ((0, 0), (0, pad_size), (0, 0), (0, 0)))
         
         output_4d = jax.nn.dot_product_attention(
             query=query_4d,
@@ -217,7 +236,7 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool):
             is_causal=is_causal,
             **kwargs
         )
-        return output_4d.reshape(original_shape)
+        return output_4d[..., :original_seq_len, :, :].reshape(original_shape)
     
     return attention_fn
 
