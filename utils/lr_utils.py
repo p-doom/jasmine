@@ -2,7 +2,6 @@ import optax
 
 def get_lr_schedule(lr_schedule: str, init_lr: float, max_lr: float, decay_end: float, total_steps: int, warmup_steps: int, wsd_decay_steps: int) -> optax.Schedule:
     supported_schedules = ["wsd", "cos"]
-    assert lr_schedule in supported_schedules, f"Learning rate schedule not supported. Please use one of {supported_schedules}"
     if lr_schedule == "cos":
         assert warmup_steps <= total_steps, "Warmup steps can't be greater than total steps."
         return optax.warmup_cosine_decay_schedule(
