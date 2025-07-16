@@ -19,6 +19,8 @@ class LatentActionModel(nn.Module):
     num_heads: int
     dropout: float
     codebook_dropout: float
+    param_dtype: jnp.dtype
+    dtype: jnp.dtype
 
     def setup(self):
         self.patch_token_dim = self.in_dim * self.patch_size**2
@@ -28,6 +30,8 @@ class LatentActionModel(nn.Module):
             self.num_blocks,
             self.num_heads,
             self.dropout,
+            self.param_dtype,
+            self.dtype,
         )
         self.action_in = self.param(
             "action_in",
@@ -39,14 +43,24 @@ class LatentActionModel(nn.Module):
             self.num_latents,
             self.codebook_dropout,
         )
-        self.patch_up = nn.Dense(self.model_dim)
-        self.action_up = nn.Dense(self.model_dim)
+        self.patch_up = nn.Dense(
+            self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+        )
+        self.action_up = nn.Dense(
+            self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+        )
         self.decoder = STTransformer(
             self.model_dim,
             self.patch_token_dim,
             self.num_blocks,
             self.num_heads,
             self.dropout,
+            self.param_dtype,
+            self.dtype,
         )
 
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
@@ -60,7 +74,9 @@ class LatentActionModel(nn.Module):
 
         # --- Decode ---
         video_recon = self.decoder(video_action_patches)
+        video_recon = video_recon.astype(jnp.float32)
         video_recon = nn.sigmoid(video_recon)
+        video_recon = video_recon.astype(self.dtype)
         outputs["recon"] = unpatchify(video_recon, self.patch_size, H, W)
         return outputs
 

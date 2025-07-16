@@ -1,6 +1,7 @@
 from typing import Dict, Any, Tuple
 
 import flax.linen as nn
+import jax.numpy as jnp
 
 from utils.preprocess import patchify, unpatchify
 from utils.nn import STTransformer, VectorQuantizer
@@ -18,6 +19,8 @@ class TokenizerVQVAE(nn.Module):
     num_heads: int
     dropout: float
     codebook_dropout: float
+    param_dtype: jnp.dtype
+    dtype: jnp.dtype
 
     def setup(self):
         self.encoder = STTransformer(
@@ -26,6 +29,8 @@ class TokenizerVQVAE(nn.Module):
             self.num_blocks,
             self.num_heads,
             self.dropout,
+            self.param_dtype,
+            self.dtype,
         )
         self.vq = VectorQuantizer(
             self.latent_dim,
@@ -39,13 +44,17 @@ class TokenizerVQVAE(nn.Module):
             self.num_blocks,
             self.num_heads,
             self.dropout,
+            self.param_dtype,
+            self.dtype,
         )
 
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
         H, W = batch["videos"].shape[2:4]
         outputs = self.vq_encode(batch["videos"], training)
         recon = self.decoder(outputs["z_q"])  # (B, T, H_down * W_down, C)
+        recon = recon.astype(jnp.float32)
         recon = nn.sigmoid(recon)
+        recon = recon.astype(self.dtype)
         outputs["recon"] = unpatchify(recon, self.patch_size, H, W)
         return outputs
 
@@ -66,5 +75,7 @@ class TokenizerVQVAE(nn.Module):
     def decode(self, indices: Any, video_hw: Tuple[int, int]):
         z = self.vq.codebook[indices]
         recon = self.decoder(z)
+        recon = recon.astype(jnp.float32)
         recon = nn.sigmoid(recon)
+        recon = recon.astype(self.dtype)
         return unpatchify(recon, self.patch_size, *video_hw)

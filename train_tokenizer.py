@@ -52,6 +52,8 @@ class Args:
     num_heads: int = 8
     dropout: float = 0.0
     codebook_dropout: float = 0.01
+    param_dtype: jnp.dtype = jnp.float32
+    dtype: jnp.dtype = jnp.bfloat16
     # Logging
     log: bool = False
     entity: str = ""
@@ -72,7 +74,10 @@ args = tyro.cli(Args)
 
 def tokenizer_loss_fn(params, state, inputs):
     # --- Compute loss ---
-    inputs["videos"] = inputs["videos"].astype(jnp.float32) / 255.0
+    # FIXME (f.srambical): Can we even do native int8 training without casting the video at all?
+    # FIXME (f.srambical): If the tokenizer is the reason for the dynamics model being memory-bound,
+    # should we at least train the tokenizer natively in int8?
+    inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
     outputs = state.apply_fn(
         params,
         inputs,
@@ -153,13 +158,15 @@ if __name__ == "__main__":
         num_heads=args.num_heads,
         dropout=args.dropout,
         codebook_dropout=args.codebook_dropout,
+        param_dtype=args.param_dtype,
+        dtype=args.dtype,
     )
     rng, _rng = jax.random.split(rng)
     image_shape = (args.image_height, args.image_width, args.image_channels)
     inputs = dict(
         videos=jnp.zeros(
             (per_device_batch_size_for_init, args.seq_len, *image_shape),
-            dtype=jnp.float32,
+            dtype=args.dtype,
         ),
     )
     init_params = tokenizer.init(_rng, inputs)
@@ -198,7 +205,7 @@ if __name__ == "__main__":
                                   args.num_steps, 
                                   args.warmup_steps, 
                                   args.wsd_decay_steps)
-    tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
+    tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
     train_state = TrainState.create(apply_fn=tokenizer.apply, params=init_params, tx=tx)
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes

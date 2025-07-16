@@ -62,6 +62,8 @@ class Args:
     dyna_num_heads: int = 8
     dropout: float = 0.0
     mask_limit: float = 0.5
+    param_dtype: jnp.dtype = jnp.float32
+    dtype: jnp.dtype = jnp.bfloat16
     # Logging
     log: bool = False
     entity: str = ""
@@ -82,7 +84,7 @@ args = tyro.cli(Args)
 
 def dynamics_loss_fn(params, state, inputs):
     """Compute masked dynamics loss"""
-    inputs["videos"] = inputs["videos"].astype(jnp.float32) / 255.0
+    inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
     outputs = state.apply_fn(
         params,
         inputs,
@@ -90,6 +92,7 @@ def dynamics_loss_fn(params, state, inputs):
         rngs={"params": inputs["rng"], "dropout": inputs["dropout_rng"]},
     )
     mask = outputs["mask"]
+    outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
     ce_loss = optax.softmax_cross_entropy_with_integer_labels(
         outputs["token_logits"], outputs["video_tokens"]
     )
@@ -177,16 +180,18 @@ if __name__ == "__main__":
         dyna_num_heads=args.dyna_num_heads,
         dropout=args.dropout,
         mask_limit=args.mask_limit,
+        param_dtype=args.param_dtype,
+        dtype=args.dtype,
     )
     rng, _rng = jax.random.split(rng)
     image_shape = (args.image_height, args.image_width, args.image_channels)
     dummy_inputs = dict(
         videos=jnp.zeros(
             (per_device_batch_size_for_init, args.seq_len, *image_shape),
-            dtype=jnp.float32,
+            dtype=args.dtype,
         ),
         action=jnp.zeros(
-            (per_device_batch_size_for_init, args.seq_len), dtype=jnp.float32
+            (per_device_batch_size_for_init, args.seq_len), dtype=args.dtype
         ),
         mask_rng=_rng,
     )
@@ -227,7 +232,7 @@ if __name__ == "__main__":
                                   args.num_steps, 
                                   args.warmup_steps, 
                                   args.wsd_decay_steps)
-    tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
+    tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
     train_state = TrainState.create(apply_fn=genie.apply, params=init_params, tx=tx)
 
     device_mesh_arr = create_device_mesh((num_devices,))

@@ -38,6 +38,8 @@ class Genie(nn.Module):
     dyna_dim: int
     dyna_num_blocks: int
     dyna_num_heads: int
+    param_dtype: jnp.dtype
+    dtype: jnp.dtype
     dropout: float = 0.0
     mask_limit: float = 0.0
 
@@ -52,6 +54,8 @@ class Genie(nn.Module):
             num_heads=self.tokenizer_num_heads,
             dropout=0.0,
             codebook_dropout=0.0,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
         )
         self.lam = LatentActionModel(
             in_dim=self.in_dim,
@@ -63,6 +67,8 @@ class Genie(nn.Module):
             num_heads=self.lam_num_heads,
             dropout=0.0,
             codebook_dropout=0.0,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
         )
         self.dynamics = DynamicsMaskGIT(
             model_dim=self.dyna_dim,
@@ -71,6 +77,8 @@ class Genie(nn.Module):
             num_heads=self.dyna_num_heads,
             dropout=self.dropout,
             mask_limit=self.mask_limit,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
         )
 
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
@@ -286,6 +294,8 @@ def restore_genie_components(
         num_heads=args.tokenizer_num_heads,
         dropout=args.dropout,
         codebook_dropout=args.dropout,
+        param_dtype=args.param_dtype,
+        dtype=args.dtype,
     )
     tokenizer_init_params = dummy_tokenizer.init(_rng, inputs)
     dummy_tokenizer_train_state = TrainState.create(
@@ -321,6 +331,8 @@ def restore_genie_components(
             num_heads=args.lam_num_heads,
             dropout=args.dropout,
             codebook_dropout=args.dropout,
+            param_dtype=args.param_dtype,
+            dtype=args.dtype,
         )
         lam_init_params = dummy_lam.init(_rng, inputs)
         dummy_lam_train_state = TrainState.create(
