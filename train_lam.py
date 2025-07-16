@@ -40,7 +40,7 @@ class Args:
     init_lr: float = 0.0
     max_lr: float = 3e-5
     decay_end: float = 0.0
-    wsd_decay_steps: int = 10000 # Note: wsd_decay_steps will only be used when using a wsd-schedule
+    wsd_decay_steps: int = 10000 # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
     warmup_steps: int = 5000
     lr_schedule : str = "wsd" # supported options: wsd, cos
     vq_reset_thresh: int = 50
