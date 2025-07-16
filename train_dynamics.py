@@ -9,6 +9,7 @@ from jax.experimental.mesh_utils import create_device_mesh
 import optax
 import orbax.checkpoint as ocp
 import numpy as np
+import dm_pix as pix
 import jax
 import jax.numpy as jnp
 import tyro
@@ -17,8 +18,8 @@ import grain
 
 from genie import Genie, restore_genie_components
 from utils.dataloader import get_dataloader
+from utils.lr_utils import get_lr_schedule
 from utils.parameter_utils import count_parameters_by_component
-
 
 @dataclass
 class Args:
@@ -34,9 +35,12 @@ class Args:
     restore_ckpt: bool = False
     # Optimization
     batch_size: int = 36
-    min_lr: float = 0.0
+    init_lr: float = 0.0
     max_lr: float = 3e-5
+    decay_end: float = 0.0
+    wsd_decay_steps: int = 10000 # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
     warmup_steps: int = 5000
+    lr_schedule : str = "wsd" # supported options: wsd, cos
     grad_clip_threshold: Optional[float] = None
     # Tokenizer
     tokenizer_dim: int = 512
@@ -60,6 +64,8 @@ class Args:
     dyna_num_heads: int = 8
     dropout: float = 0.0
     mask_limit: float = 0.5
+    param_dtype: jnp.dtype = jnp.float32
+    dtype: jnp.dtype = jnp.bfloat16
     # Logging
     log: bool = False
     entity: str = ""
@@ -80,7 +86,7 @@ args = tyro.cli(Args)
 
 def dynamics_loss_fn(params, state, inputs):
     """Compute masked dynamics loss"""
-    inputs["videos"] = inputs["videos"].astype(jnp.float32) / 255.0
+    inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
     outputs = state.apply_fn(
         params,
         inputs,
@@ -88,6 +94,7 @@ def dynamics_loss_fn(params, state, inputs):
         rngs={"params": inputs["rng"], "dropout": inputs["dropout_rng"]},
     )
     mask = outputs["mask"]
+    outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
     ce_loss = optax.softmax_cross_entropy_with_integer_labels(
         outputs["token_logits"], outputs["video_tokens"]
     )
@@ -95,12 +102,28 @@ def dynamics_loss_fn(params, state, inputs):
     acc = outputs["token_logits"].argmax(-1) == outputs["video_tokens"]
     acc = (mask * acc).sum() / mask.sum()
     select_probs = jax.nn.softmax(outputs["token_logits"])
+    gt = inputs["videos"].clip(0, 1).reshape(-1, *inputs["videos"].shape[2:])
+    recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
+    psnr = pix.psnr(gt, recon).mean() # type: ignore
+    ssim = pix.ssim(gt, recon).mean() # type: ignore
+    _, index_counts_lam = jnp.unique_counts(
+        jnp.ravel(outputs["lam_indices"]), size=args.num_latent_actions, fill_value=0
+    )
+    _, index_counts_tokenizer = jnp.unique_counts(
+        jnp.ravel(outputs["video_tokens"]), size=args.num_patch_latents, fill_value=0
+    )
+    codebook_usage_lam = (index_counts_lam != 0).mean()
+    codebook_usage_tokenizer = (index_counts_tokenizer != 0).mean()
     metrics = dict(
         cross_entropy_loss=ce_loss,
         masked_token_accuracy=acc,
         select_logit=outputs["token_logits"].max(-1).mean(),
         select_p=select_probs.max(-1).mean(),
         entropy=jax.scipy.special.entr(select_probs).sum(-1).mean(),
+        psnr=psnr,
+        ssim=ssim,
+        codebook_usage_lam=codebook_usage_lam,
+        codebook_usage_tokenizer=codebook_usage_tokenizer,
     )
     return ce_loss, (outputs["recon"], metrics)
 
@@ -163,16 +186,18 @@ if __name__ == "__main__":
         dyna_num_heads=args.dyna_num_heads,
         dropout=args.dropout,
         mask_limit=args.mask_limit,
+        param_dtype=args.param_dtype,
+        dtype=args.dtype,
     )
     rng, _rng = jax.random.split(rng)
     image_shape = (args.image_height, args.image_width, args.image_channels)
     dummy_inputs = dict(
         videos=jnp.zeros(
             (per_device_batch_size_for_init, args.seq_len, *image_shape),
-            dtype=jnp.float32,
+            dtype=args.dtype,
         ),
         action=jnp.zeros(
-            (per_device_batch_size_for_init, args.seq_len), dtype=jnp.float32
+            (per_device_batch_size_for_init, args.seq_len), dtype=args.dtype
         ),
         mask_rng=_rng,
     )
@@ -198,22 +223,28 @@ if __name__ == "__main__":
                     "resume": "allow",
                 }
             )
+        wandb.init(**wandb_init_kwargs)
+
         wandb.config.update({"model_param_count": param_counts})
 
     print("Parameter counts:")
     print(param_counts)
 
     # --- Initialize optimizer ---
-    lr_schedule = optax.warmup_cosine_decay_schedule(
-        args.min_lr, args.max_lr, args.warmup_steps, args.num_steps
-    )
+    lr_schedule = get_lr_schedule(args.lr_schedule, 
+                                  args.init_lr, 
+                                  args.max_lr, 
+                                  args.decay_end, 
+                                  args.num_steps, 
+                                  args.warmup_steps, 
+                                  args.wsd_decay_steps)
     if args.grad_clip_threshold:
         tx = optax.chain(
             optax.clip_by_global_norm(args.grad_clip_threshold),
-            optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
+            optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
         )
     else:
-        tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
+        tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
     train_state = TrainState.create(apply_fn=genie.apply, params=init_params, tx=tx)
 
     device_mesh_arr = create_device_mesh((num_devices,))
@@ -306,6 +337,7 @@ if __name__ == "__main__":
                 mask_rng=_rng_mask,
             )
             train_state, loss, recon, metrics = train_step(train_state, inputs)
+            metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1
 

@@ -18,6 +18,7 @@ import grain
 
 from models.tokenizer import TokenizerVQVAE
 from utils.dataloader import get_dataloader
+from utils.lr_utils import get_lr_schedule
 from utils.parameter_utils import count_parameters_by_component
 
 
@@ -36,8 +37,11 @@ class Args:
     # Optimization
     vq_beta: float = 0.25
     batch_size: int = 48
-    min_lr: float = 0.0
+    init_lr: float = 0.0
     max_lr: float = 3e-4
+    decay_end: float = 0.0
+    wsd_decay_steps: int = 20000 # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
+    lr_schedule: str = "wsd" # supported options: wsd, cos 
     warmup_steps: int = 10000
     grad_clip_threshold: Optional[float] = None
     # Tokenizer
@@ -49,6 +53,8 @@ class Args:
     num_heads: int = 8
     dropout: float = 0.0
     codebook_dropout: float = 0.01
+    param_dtype: jnp.dtype = jnp.float32
+    dtype: jnp.dtype = jnp.bfloat16
     # Logging
     log: bool = False
     entity: str = ""
@@ -69,7 +75,10 @@ args = tyro.cli(Args)
 
 def tokenizer_loss_fn(params, state, inputs):
     # --- Compute loss ---
-    inputs["videos"] = inputs["videos"].astype(jnp.float32) / 255.0
+    # FIXME (f.srambical): Can we even do native int8 training without casting the video at all?
+    # FIXME (f.srambical): If the tokenizer is the reason for the dynamics model being memory-bound,
+    # should we at least train the tokenizer natively in int8?
+    inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
     outputs = state.apply_fn(
         params,
         inputs,
@@ -153,13 +162,15 @@ if __name__ == "__main__":
         num_heads=args.num_heads,
         dropout=args.dropout,
         codebook_dropout=args.codebook_dropout,
+        param_dtype=args.param_dtype,
+        dtype=args.dtype,
     )
     rng, _rng = jax.random.split(rng)
     image_shape = (args.image_height, args.image_width, args.image_channels)
     inputs = dict(
         videos=jnp.zeros(
             (per_device_batch_size_for_init, args.seq_len, *image_shape),
-            dtype=jnp.float32,
+            dtype=args.dtype,
         ),
     )
     init_params = tokenizer.init(_rng, inputs)
@@ -183,22 +194,28 @@ if __name__ == "__main__":
                     "resume": "allow",
                 }
             )
+        wandb.init(**wandb_init_kwargs)
+
         wandb.config.update({"model_param_count": param_counts})
 
     print("Parameter counts:")
     print(param_counts)
 
     # --- Initialize optimizer ---
-    lr_schedule = optax.warmup_cosine_decay_schedule(
-        args.min_lr, args.max_lr, args.warmup_steps, args.num_steps
-    )
+    lr_schedule = get_lr_schedule(args.lr_schedule, 
+                                  args.init_lr, 
+                                  args.max_lr, 
+                                  args.decay_end, 
+                                  args.num_steps, 
+                                  args.warmup_steps, 
+                                  args.wsd_decay_steps)
     if args.grad_clip_threshold:
         tx = optax.chain(
             optax.clip_by_global_norm(args.grad_clip_threshold),
-            optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
+            optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
         )
     else:
-        tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
+        tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
     train_state = TrainState.create(apply_fn=tokenizer.apply, params=init_params, tx=tx)
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
@@ -282,6 +299,7 @@ if __name__ == "__main__":
 
             inputs = dict(videos=videos, rng=_rng, dropout_rng=_rng_dropout)
             train_state, loss, recon, metrics = train_step(train_state, inputs)
+            metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1
 

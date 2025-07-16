@@ -18,6 +18,7 @@ import grain
 
 from models.lam import LatentActionModel
 from utils.dataloader import get_dataloader
+from utils.lr_utils import get_lr_schedule
 from utils.parameter_utils import count_parameters_by_component
 
 
@@ -36,9 +37,12 @@ class Args:
     # Optimization
     batch_size: int = 36
     vq_beta: float = 0.25
-    min_lr: float = 0.0
+    init_lr: float = 0.0
     max_lr: float = 3e-5
+    decay_end: float = 0.0
+    wsd_decay_steps: int = 10000 # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
     warmup_steps: int = 5000
+    lr_schedule : str = "wsd" # supported options: wsd, cos
     vq_reset_thresh: int = 50
     grad_clip_threshold: Optional[float] = None
     # LAM
@@ -50,6 +54,8 @@ class Args:
     num_heads: int = 8
     dropout: float = 0.0
     codebook_dropout: float = 0.0
+    param_dtype: jnp.dtype = jnp.float32
+    dtype: jnp.dtype = jnp.bfloat16
     # Logging
     log: bool = False
     entity: str = ""
@@ -69,7 +75,7 @@ args = tyro.cli(Args)
 
 def lam_loss_fn(params, state, inputs):
     # --- Compute loss ---
-    inputs["videos"] = inputs["videos"].astype(jnp.float32) / 255.0
+    inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
     outputs = state.apply_fn(
         params, inputs, training=True, rngs={"dropout": inputs["rng"]}
     )
@@ -156,6 +162,8 @@ if __name__ == "__main__":
         num_heads=args.num_heads,
         dropout=args.dropout,
         codebook_dropout=args.codebook_dropout,
+        param_dtype=args.param_dtype,
+        dtype=args.dtype,
     )
     # Track when each action was last sampled
     action_last_active = jnp.zeros(args.num_latents)
@@ -164,7 +172,7 @@ if __name__ == "__main__":
     inputs = dict(
         videos=jnp.zeros(
             (per_device_batch_size_for_init, args.seq_len, *image_shape),
-            dtype=jnp.float32,
+            dtype=args.dtype,
         ),
         rng=_rng,
     )
@@ -190,22 +198,28 @@ if __name__ == "__main__":
                     "resume": "allow",
                 }
             )
+        wandb.init(**wandb_init_kwargs)
+
         wandb.config.update({"model_param_count": param_counts})
 
     print("Parameter counts:")
     print(param_counts)
 
     # --- Initialize optimizer ---
-    lr_schedule = optax.warmup_cosine_decay_schedule(
-        args.min_lr, args.max_lr, args.warmup_steps, args.num_steps
-    )
+    lr_schedule = get_lr_schedule(args.lr_schedule, 
+                                  args.init_lr, 
+                                  args.max_lr, 
+                                  args.decay_end, 
+                                  args.num_steps, 
+                                  args.warmup_steps, 
+                                  args.wsd_decay_steps)
     if args.grad_clip_threshold:
         tx = optax.chain(
             optax.clip_by_global_norm(args.grad_clip_threshold),
-            optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
+            optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
         )
     else:
-        tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
+        tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
     train_state = TrainState.create(apply_fn=lam.apply, params=init_params, tx=tx)
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
@@ -292,6 +306,7 @@ if __name__ == "__main__":
             train_state, loss, recon, action_last_active, metrics = train_step(
                 train_state, inputs, action_last_active
             )
+            metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1
 
