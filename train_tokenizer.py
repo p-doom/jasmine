@@ -304,7 +304,7 @@ if __name__ == "__main__":
                         }
                     )
                 if step % args.log_image_interval == 0:
-                    gt_seq = inputs["videos"][0]
+                    gt_seq = inputs["videos"][0] / 255.0
                     recon_seq = recon[0].clip(0, 1)
                     comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
                     comparison_seq = einops.rearrange(
