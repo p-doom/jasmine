@@ -17,8 +17,8 @@ import grain
 
 from genie import Genie, restore_genie_components
 from utils.dataloader import get_dataloader
+from utils.lr_utils import get_lr_schedule
 from utils.parameter_utils import count_parameters_by_component
-
 
 @dataclass
 class Args:
@@ -34,9 +34,12 @@ class Args:
     restore_ckpt: bool = False
     # Optimization
     batch_size: int = 36
-    min_lr: float = 0.0
+    init_lr: float = 0.0
     max_lr: float = 3e-5
+    decay_end: float = 0.0
+    wsd_decay_steps: int = 10000 # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
     warmup_steps: int = 5000
+    lr_schedule : str = "wsd" # supported options: wsd, cos
     # Tokenizer
     tokenizer_dim: int = 512
     latent_patch_dim: int = 32
@@ -217,9 +220,13 @@ if __name__ == "__main__":
     print(param_counts)
 
     # --- Initialize optimizer ---
-    lr_schedule = optax.warmup_cosine_decay_schedule(
-        args.min_lr, args.max_lr, args.warmup_steps, args.num_steps
-    )
+    lr_schedule = get_lr_schedule(args.lr_schedule, 
+                                  args.init_lr, 
+                                  args.max_lr, 
+                                  args.decay_end, 
+                                  args.num_steps, 
+                                  args.warmup_steps, 
+                                  args.wsd_decay_steps)
     tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4)
     train_state = TrainState.create(apply_fn=genie.apply, params=init_params, tx=tx)
 
@@ -313,6 +320,7 @@ if __name__ == "__main__":
                 mask_rng=_rng_mask,
             )
             train_state, loss, recon, metrics = train_step(train_state, inputs)
+            metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1
 
