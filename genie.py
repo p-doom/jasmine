@@ -7,7 +7,7 @@ import flax.linen as nn
 from flax.training.train_state import TrainState
 import orbax.checkpoint as ocp
 
-from models.dynamics import DynamicsMaskGIT
+from models.dynamics import DynamicsMaskGIT, DynamicsAutoregressive
 from models.lam import LatentActionModel
 from models.tokenizer import TokenizerVQVAE
 
@@ -38,6 +38,7 @@ class Genie(nn.Module):
     dyna_dim: int
     dyna_num_blocks: int
     dyna_num_heads: int
+    use_maskgit: bool
     param_dtype: jnp.dtype
     dtype: jnp.dtype
     dropout: float = 0.0
@@ -70,16 +71,28 @@ class Genie(nn.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
         )
-        self.dynamics = DynamicsMaskGIT(
-            model_dim=self.dyna_dim,
-            num_latents=self.num_patch_latents,
-            num_blocks=self.dyna_num_blocks,
-            num_heads=self.dyna_num_heads,
-            dropout=self.dropout,
-            mask_limit=self.mask_limit,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-        )
+
+        if self.use_maskgit:
+            self.dynamics = DynamicsMaskGIT(
+                model_dim=self.dyna_dim,
+                num_latents=self.num_patch_latents,
+                num_blocks=self.dyna_num_blocks,
+                num_heads=self.dyna_num_heads,
+                dropout=self.dropout,
+                mask_limit=self.mask_limit,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+            ) 
+        else:
+            self.dynamics = DynamicsAutoregressive(
+                model_dim=self.dyna_dim,
+                num_latents=self.num_patch_latents,
+                num_blocks=self.dyna_num_blocks,
+                num_heads=self.dyna_num_heads,
+                dropout=self.dropout,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+            )
 
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
         tokenizer_outputs = self.tokenizer.vq_encode(batch["videos"], training=False)

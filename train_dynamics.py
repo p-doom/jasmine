@@ -62,6 +62,7 @@ class Args:
     dyna_num_heads: int = 8
     dropout: float = 0.0
     mask_limit: float = 0.5
+    use_maskgit: bool = False
     param_dtype: jnp.dtype = jnp.float32
     dtype: jnp.dtype = jnp.bfloat16
     # Logging
@@ -93,13 +94,20 @@ def dynamics_loss_fn(params, state, inputs):
     )
     mask = outputs["mask"]
     outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
+    logits = outputs["token_logits"]
+    targets = outputs["video_tokens"]
+
+    if not args.use_maskgit:
+        logits = outputs["token_logits"][:, :, :-1]
+        targets = outputs["video_tokens"][:, :, 1:]
+        mask = outputs["mask"][:, :, 1:] 
     ce_loss = optax.softmax_cross_entropy_with_integer_labels(
-        outputs["token_logits"], outputs["video_tokens"]
+        logits, targets
     )
     ce_loss = (mask * ce_loss).sum() / mask.sum()
-    acc = outputs["token_logits"].argmax(-1) == outputs["video_tokens"]
+    acc = logits.argmax(-1) == targets
     acc = (mask * acc).sum() / mask.sum()
-    select_probs = jax.nn.softmax(outputs["token_logits"])
+    select_probs = jax.nn.softmax(logits)
     gt = inputs["videos"].clip(0, 1).reshape(-1, *inputs["videos"].shape[2:])
     recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
     psnr = pix.psnr(gt, recon).mean() # type: ignore
@@ -115,7 +123,7 @@ def dynamics_loss_fn(params, state, inputs):
     metrics = dict(
         cross_entropy_loss=ce_loss,
         masked_token_accuracy=acc,
-        select_logit=outputs["token_logits"].max(-1).mean(),
+        select_logit=logits.max(-1).mean(),
         select_p=select_probs.max(-1).mean(),
         entropy=jax.scipy.special.entr(select_probs).sum(-1).mean(),
         psnr=psnr,
@@ -180,6 +188,7 @@ if __name__ == "__main__":
         dyna_num_heads=args.dyna_num_heads,
         dropout=args.dropout,
         mask_limit=args.mask_limit,
+        use_maskgit=args.use_maskgit,
         param_dtype=args.param_dtype,
         dtype=args.dtype,
     )
