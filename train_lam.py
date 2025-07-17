@@ -1,8 +1,8 @@
 from dataclasses import dataclass, field
 import os
+from typing import Optional
 
 import einops
-from flax.training import orbax_utils
 from flax.training.train_state import TrainState
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.mesh_utils import create_device_mesh
@@ -44,6 +44,7 @@ class Args:
     warmup_steps: int = 5000
     lr_schedule : str = "wsd" # supported options: wsd, cos
     vq_reset_thresh: int = 50
+    grad_clip_threshold: Optional[float] = None
     # LAM
     model_dim: int = 512
     latent_dim: int = 32
@@ -111,6 +112,10 @@ def train_step(state, inputs, action_last_active):
     rng, inputs["rng"] = jax.random.split(inputs["rng"])
     grad_fn = jax.value_and_grad(lam_loss_fn, has_aux=True, allow_int=True)
     (loss, (recon, idx_counts, metrics)), grads = grad_fn(state.params, state, inputs)
+    # extract and manually clip grad norm for logging (actual clipping is done in the optax.chain)
+    raw_grad_norm = optax.global_norm(grads)
+    metrics["grad_norm"] = jnp.minimum(raw_grad_norm, args.grad_clip_threshold) if args.grad_clip_threshold else raw_grad_norm
+
     state = state.apply_gradients(grads=grads)
 
     # --- Reset inactive latent actions ---
@@ -208,7 +213,13 @@ if __name__ == "__main__":
                                   args.num_steps, 
                                   args.warmup_steps, 
                                   args.wsd_decay_steps)
-    tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
+    if args.grad_clip_threshold:
+        tx = optax.chain(
+            optax.clip_by_global_norm(args.grad_clip_threshold),
+            optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
+        )
+    else:
+        tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
     train_state = TrainState.create(apply_fn=lam.apply, params=init_params, tx=tx)
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
