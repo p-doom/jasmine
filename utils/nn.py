@@ -81,7 +81,6 @@ class STBlock(nn.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
         )(x)
-        # FIXME (f.srambical): Here, the attention hidden dimension is the same as the FFN's. Usually, FFN hidden dimension is 4x model_dim
         z = nn.Dense(
             self.ffn_dim,
             param_dtype=self.param_dtype,
