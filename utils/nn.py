@@ -1,5 +1,6 @@
 import math
 from typing import Tuple
+from functools import partial
 
 from flax import linen as nn
 import jax
@@ -36,7 +37,7 @@ class STBlock(nn.Module):
     dtype: jnp.dtype
     use_flash_attention: bool
 
-    @nn.remat
+    @partial(nn.remat, policy=jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims)
     @nn.compact
     def __call__(self, x: jax.Array) -> jax.Array:
         # --- Spatial attention ---
