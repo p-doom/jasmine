@@ -97,10 +97,10 @@ def dynamics_loss_fn(params, state, inputs):
     logits = outputs["token_logits"]
     targets = outputs["video_tokens"]
 
-    if not args.use_maskgit:
-        logits = outputs["token_logits"][:, :, :-1]
-        targets = outputs["video_tokens"][:, :, 1:]
-        mask = outputs["mask"][:, :, 1:] 
+    # if not args.use_maskgit:
+        # logits = outputs["token_logits"][:, :, :-1]
+        # targets = outputs["video_tokens"][:, :, 1:]
+        # mask = outputs["mask"][:, :, 1:] 
     ce_loss = optax.softmax_cross_entropy_with_integer_labels(
         logits, targets
     )
@@ -323,7 +323,10 @@ if __name__ == "__main__":
     # --- TRAIN LOOP ---
     dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in grain_iterator)  # type: ignore
     while step < args.num_steps:
-        for videos in dataloader:
+        # for videos in dataloader:
+        videos = np.load("overfit_dir/corner_8repl.npy")
+        videos = jax.make_array_from_process_local_data(videos_sharding, videos)
+        while True:
             # --- Train step ---
             rng, _rng, _rng_dropout, _rng_mask = jax.random.split(rng, 4)
 
@@ -349,7 +352,7 @@ if __name__ == "__main__":
                         }
                     )
                 if step % args.log_image_interval == 0:
-                    gt_seq = inputs["videos"][0].astype(jnp.float32) / 255.0
+                    gt_seq = inputs["videos"][0].astype(jnp.float32) #/ 255.0
                     recon_seq = recon[0].clip(0, 1)
                     comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
                     comparison_seq = einops.rearrange(

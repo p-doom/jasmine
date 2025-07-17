@@ -116,8 +116,80 @@ class Genie(nn.Module):
         outputs["lam_indices"] = lam_outputs["indices"]
         return outputs
 
+
+    def sample_causal(
+        self,
+        batch: Dict[str, Any],
+        seq_len: int,
+        temperature: float = 1,
+        sample_argmax: bool = False,
+    ):
+        """
+        Autoregressively samples up to `seq_len` future frames using the causal transformer backend.
+
+        - Input frames are tokenized once.
+        - Future frames are generated one at a time, each conditioned on all previous frames.
+        - All frames are detokenized in a single pass at the end.
+
+        Args:
+            batch: Dict with at least "videos" (B, T, H, W, C)
+            seq_len: total number of frames to generate (including context)
+            temperature: sampling temperature
+            sample_argmax: if True, use argmax instead of sampling
+
+        Returns:
+            Generated video frames (B, seq_len, H, W, C)
+        """
+        # --- Encode context frames ---
+        tokenizer_out = self.tokenizer.vq_encode(batch["videos"], training=False)
+        token_idxs = tokenizer_out["indices"]  # (B, T, N)
+        B, T, N = token_idxs.shape
+
+        # jax.debug.print("token_idxs shape: {}", token_idxs.shape)
+        # --- Prepare initial token sequence ---
+        # Pad with zeros for future frames
+        pad_shape = (B, seq_len - T, N)
+        token_idxs_full = jnp.concatenate(
+            [token_idxs, jnp.zeros(pad_shape, dtype=token_idxs.dtype)], axis=1
+        )  # (B, seq_len, N)
+
+        # --- Prepare latent actions ---
+        action_tokens = self.lam.vq.get_codes(batch["latent_actions"]) # (B, S-1, )
+        # --- Autoregressive generation loop ---
+        rng = batch["rng"]
+        for t in range(T, seq_len):
+            for n in range(30):
+                dyna_inputs = {
+                    "video_tokens": token_idxs_full,
+                    "latent_actions": action_tokens
+                    }
+                # jax.debug.print("token_idxs_full 0: {}", token_idxs_full[0,:,0])
+                dyna_outputs = self.dynamics(dyna_inputs, training=False)
+                # # dyna_outputs["token_logits"]: (B, t, N, vocab_size)
+                # # We want the logits for the last time step (frame t-1 predicting t)
+                next_token_logits = dyna_outputs["token_logits"][:, t-1, n, :].astype(jnp.float32)  # (B, 1, vocab_size)
+
+                # Sample or argmax for each patch
+                if sample_argmax:
+                    next_token = jnp.argmax(next_token_logits, axis=-1)  # (B, 1)
+                else:
+                    rng, step_rng = jax.random.split(rng)
+                    next_token = jax.random.categorical(
+                        step_rng, next_token_logits / temperature, axis=-1
+                    )  # (B, 1)
+
+                # Insert the generated tokens into the sequence
+                token_idxs_full = token_idxs_full.at[:, t, n].set(next_token)
+
+        # --- Decode all tokens at once at the end ---
+        final_frames = self.tokenizer.decode(
+            token_idxs_full, video_hw=batch["videos"].shape[2:4]
+        )
+        return final_frames
+
+
     @nn.compact
-    def sample(
+    def sample_maskgit(
         self,
         batch: Dict[str, Any],
         seq_len: int,
@@ -154,7 +226,7 @@ class Genie(nn.Module):
         pad_shape = (B, seq_len - T, N)
         pad = jnp.zeros(pad_shape, dtype=token_idxs.dtype)
         token_idxs = jnp.concatenate([token_idxs, pad], axis=1) # (B, S, N)
-        action_tokens = self.lam.vq.get_codes(batch["latent_actions"])
+        action_tokens = self.lam.vq.get_codes(batch["latent_actions"]) 
 
         MaskGITLoop = nn.scan(
             MaskGITStep,

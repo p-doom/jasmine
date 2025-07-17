@@ -95,6 +95,7 @@ class DynamicsAutoregressive(nn.Module):
         vid_embed = self.patch_embed(batch["video_tokens"])
         act_embed = self.action_up(batch["latent_actions"])
         vid_embed += jnp.pad(act_embed, ((0, 0), (1, 0), (0, 0), (0, 0)))
-        logits = self.dynamics(vid_embed)
+        vid_embed_padded = jnp.pad(vid_embed, ((0, 0), (0, 0), (1, 0), (0, 0)))
+        logits = self.dynamics(vid_embed_padded)[:,:,1:]
         mask = jnp.ones(vid_embed.shape[:-1])
         return dict(token_logits=logits, mask=mask)
