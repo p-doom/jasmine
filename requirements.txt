@@ -1,7 +1,7 @@
 dm_pix>=0.4.3
 einops>=0.8.0
 flax>=0.8.5
-jax[cuda12]>=0.4.30
+jax[cuda12]>=0.6.2
 optax>=0.2.3
 procgen>=0.10.7
 tyro>=0.8.5
