@@ -37,7 +37,7 @@ class STBlock(nn.Module):
     dtype: jnp.dtype
     use_flash_attention: bool
 
-    @partial(nn.remat, policy=jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims)
+    @nn.remat
     @nn.compact
     def __call__(self, x: jax.Array) -> jax.Array:
         # --- Spatial attention ---
