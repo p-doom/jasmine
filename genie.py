@@ -276,7 +276,6 @@ def restore_genie_components(
     )
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add('model_state', ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler)
-    handler_registry.add('dataloader_state', grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler)
     
 
     checkpoint_options = ocp.CheckpointManagerOptions(
@@ -312,7 +311,6 @@ def restore_genie_components(
         step=tokenizer_checkpoint_manager.latest_step(),
         args=ocp.args.Composite(
             model_state=ocp.args.StandardRestore(abstract_sharded_tokenizer_state),
-            dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
         ),
     )["model_state"]
     restored_tokenizer_params = restored_tokenizer.params["params"]
@@ -350,7 +348,6 @@ def restore_genie_components(
             step=lam_checkpoint_manager.latest_step(),
             args=ocp.args.Composite(
                 model_state=ocp.args.StandardRestore(abstract_sharded_lam_state),
-                dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
             ),
         )["model_state"]
         restored_lam_params = restored_lam.params["params"]
