@@ -12,6 +12,7 @@ class LatentActionModel(nn.Module):
 
     in_dim: int
     model_dim: int
+    ffn_dim: int
     latent_dim: int
     num_latents: int
     patch_size: int
@@ -27,6 +28,7 @@ class LatentActionModel(nn.Module):
         self.patch_token_dim = self.in_dim * self.patch_size**2
         self.encoder = STTransformer(
             self.model_dim,
+            self.ffn_dim,
             self.latent_dim,
             self.num_blocks,
             self.num_heads,
@@ -57,6 +59,7 @@ class LatentActionModel(nn.Module):
         )
         self.decoder = STTransformer(
             self.model_dim,
+            self.ffn_dim,
             self.patch_token_dim,
             self.num_blocks,
             self.num_heads,

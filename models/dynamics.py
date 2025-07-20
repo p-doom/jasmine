@@ -11,6 +11,7 @@ class DynamicsMaskGIT(nn.Module):
     """MaskGIT dynamics model"""
 
     model_dim: int
+    ffn_dim: int
     num_latents: int
     num_blocks: int
     num_heads: int
@@ -23,6 +24,7 @@ class DynamicsMaskGIT(nn.Module):
     def setup(self):
         self.dynamics = STTransformer(
             self.model_dim,
+            self.ffn_dim,
             self.num_latents,
             self.num_blocks,
             self.num_heads,
