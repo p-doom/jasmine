@@ -50,8 +50,8 @@ class Args:
     dyna_dim: int = 512
     dyna_num_blocks: int = 12
     dyna_num_heads: int = 8
-    param_dtype: jnp.dtype = jnp.float32
-    dtype: jnp.dtype = jnp.bfloat16
+    param_dtype = jnp.float32
+    dtype = jnp.bfloat16
     use_flash_attention: bool = True
 
 
