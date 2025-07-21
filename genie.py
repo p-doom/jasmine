@@ -11,7 +11,6 @@ from models.dynamics import DynamicsMaskGIT, DynamicsAutoregressive
 from models.lam import LatentActionModel
 from models.tokenizer import TokenizerVQVAE
 
-import os
 import grain
 
 
@@ -41,6 +40,7 @@ class Genie(nn.Module):
     use_maskgit: bool
     param_dtype: jnp.dtype
     dtype: jnp.dtype
+    use_flash_attention: bool
     dropout: float = 0.0
     mask_limit: float = 0.0
 
@@ -57,6 +57,7 @@ class Genie(nn.Module):
             codebook_dropout=0.0,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
+            use_flash_attention=self.use_flash_attention,
         )
         self.lam = LatentActionModel(
             in_dim=self.in_dim,
@@ -70,6 +71,7 @@ class Genie(nn.Module):
             codebook_dropout=0.0,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
+            use_flash_attention=self.use_flash_attention,
         )
 
         if self.use_maskgit:
@@ -82,6 +84,7 @@ class Genie(nn.Module):
                 mask_limit=self.mask_limit,
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
+                use_flash_attention=self.use_flash_attention,
             ) 
         else:
             self.dynamics = DynamicsAutoregressive(
@@ -92,6 +95,7 @@ class Genie(nn.Module):
                 dropout=self.dropout,
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
+                use_flash_attention=self.use_flash_attention,
             )
 
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
@@ -358,7 +362,6 @@ def restore_genie_components(
     )
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add('model_state', ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler)
-    handler_registry.add('dataloader_state', grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler)
     
 
     checkpoint_options = ocp.CheckpointManagerOptions(
@@ -381,6 +384,7 @@ def restore_genie_components(
         codebook_dropout=args.dropout,
         param_dtype=args.param_dtype,
         dtype=args.dtype,
+        use_flash_attention=args.use_flash_attention,
     )
     tokenizer_init_params = dummy_tokenizer.init(_rng, inputs)
     dummy_tokenizer_train_state = TrainState.create(
@@ -393,7 +397,6 @@ def restore_genie_components(
         step=tokenizer_checkpoint_manager.latest_step(),
         args=ocp.args.Composite(
             model_state=ocp.args.StandardRestore(abstract_sharded_tokenizer_state),
-            dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
         ),
     )["model_state"]
     restored_tokenizer_params = restored_tokenizer.params["params"]
@@ -418,6 +421,7 @@ def restore_genie_components(
             codebook_dropout=args.dropout,
             param_dtype=args.param_dtype,
             dtype=args.dtype,
+            use_flash_attention=args.use_flash_attention,
         )
         lam_init_params = dummy_lam.init(_rng, inputs)
         dummy_lam_train_state = TrainState.create(
@@ -430,7 +434,6 @@ def restore_genie_components(
             step=lam_checkpoint_manager.latest_step(),
             args=ocp.args.Composite(
                 model_state=ocp.args.StandardRestore(abstract_sharded_lam_state),
-                dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
             ),
         )["model_state"]
         restored_lam_params = restored_lam.params["params"]

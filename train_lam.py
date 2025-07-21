@@ -67,6 +67,7 @@ class Args:
     log_checkpoint_interval: int = 10000
     log_checkpoint_keep_period: int = 20000
     wandb_id: str = ""
+    use_flash_attention: bool = True
 
 
 args = tyro.cli(Args)
@@ -159,6 +160,7 @@ if __name__ == "__main__":
         codebook_dropout=args.codebook_dropout,
         param_dtype=args.param_dtype,
         dtype=args.dtype,
+        use_flash_attention=args.use_flash_attention,
     )
     # Track when each action was last sampled
     action_last_active = jnp.zeros(args.num_latents)

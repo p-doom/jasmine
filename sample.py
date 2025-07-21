@@ -58,6 +58,7 @@ class Args:
     dyna_num_heads: int = 8
     param_dtype: jnp.dtype = jnp.float32
     dtype: jnp.dtype = jnp.bfloat16
+    use_flash_attention: bool = True
 
 
 args = tyro.cli(Args)
@@ -88,6 +89,7 @@ genie = Genie(
     use_maskgit=False,
     param_dtype=args.param_dtype,
     dtype=args.dtype,
+    use_flash_attention=args.use_flash_attention,
 )
 rng, _rng = jax.random.split(rng)
 image_shape = (args.image_height, args.image_width, args.image_channels)

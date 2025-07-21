@@ -21,6 +21,7 @@ class LatentActionModel(nn.Module):
     codebook_dropout: float
     param_dtype: jnp.dtype
     dtype: jnp.dtype
+    use_flash_attention: bool
 
     def setup(self):
         self.patch_token_dim = self.in_dim * self.patch_size**2
@@ -32,6 +33,7 @@ class LatentActionModel(nn.Module):
             self.dropout,
             self.param_dtype,
             self.dtype,
+            use_flash_attention=self.use_flash_attention,
         )
         self.action_in = self.param(
             "action_in",
@@ -61,6 +63,7 @@ class LatentActionModel(nn.Module):
             self.dropout,
             self.param_dtype,
             self.dtype,
+            use_flash_attention=self.use_flash_attention,
         )
 
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:

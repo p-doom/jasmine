@@ -1,9 +1,11 @@
 import math
-from typing import Dict, Tuple
+from typing import Tuple
+from functools import partial
 
 from flax import linen as nn
 import jax
 import jax.numpy as jnp
+import einops
 
 
 class PositionalEncoding(nn.Module):
@@ -139,6 +141,7 @@ class STBlock(nn.Module):
     dropout: float
     param_dtype: jnp.dtype
     dtype: jnp.dtype
+    use_flash_attention: bool
     spacial_bert: bool = True
 
     @nn.remat
@@ -150,14 +153,14 @@ class STBlock(nn.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
         )(z)
-        spacial_mask = None if self.spacial_bert else jnp.tri(z.shape[-2])
         z = nn.MultiHeadAttention(
             num_heads=self.num_heads,
             qkv_features=self.dim,
             dropout_rate=self.dropout,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
-        )(z, mask=spacial_mask)
+            attention_fn=_create_flash_attention_fn(self.use_flash_attention, is_causal=not self.spacial_bert),
+        )(z)
         x = x + z
 
         # --- Temporal attention ---
@@ -174,7 +177,9 @@ class STBlock(nn.Module):
             dropout_rate=self.dropout,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
-        )(z, mask=causal_mask)
+            attention_fn=_create_flash_attention_fn(self.use_flash_attention, is_causal=True),
+        # FIXME (f.srambical): check whether we should still pass the mask if we set is_causal=True
+        )(z)
         x = x + z
         x = x.swapaxes(1, 2)
 
@@ -204,6 +209,7 @@ class STTransformer(nn.Module):
     param_dtype: jnp.dtype
     dtype: jnp.dtype
     spacial_bert: bool = True
+    use_flash_attention: bool
 
     @nn.compact
     def __call__(self, x: jax.Array) -> jax.Array:
@@ -231,6 +237,7 @@ class STTransformer(nn.Module):
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
                 spacial_bert=self.spacial_bert,
+                use_flash_attention=self.use_flash_attention,
             )(x)
         x = nn.Dense(
             self.out_dim,
@@ -280,3 +287,63 @@ class VectorQuantizer(nn.Module):
 
     def get_codes(self, indices: jax.Array):
         return self.codebook[indices]
+
+
+def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool):
+    """
+    Create an attention function that uses flash attention if enabled.
+
+    Flax MultiHeadAttention provides tensors with shape (batch..., length, num_heads, head_dim)
+    jax.nn.dot_product_attention expects (batch, length, num_heads, head_dim).
+
+    We need to reshape to ensure compatibility. cuDNN's flash attention additionally
+    requires a sequence length that is a multiple of 4. We pad the sequence length to the nearest
+    multiple of 4 and mask accordingly.
+    """
+        
+    def attention_fn(query, key, value, bias=None, mask=None, **kwargs):
+        implementation = 'cudnn' if use_flash_attention else None
+
+        def _rearrange(x):
+            return einops.rearrange(x, '... l h d -> (...) l h d')
+        def _pad(x):
+            return jnp.pad(x, ((0, 0), (0, pad_size), (0, 0), (0, 0)))
+        def _fuse_masks(mask: jax.Array, attention_mask: jax.Array) -> jax.Array:
+            mask_bool = mask.astype(jnp.bool_)
+            expanded_mask = jnp.pad(mask_bool, ((0, pad_size), (0, pad_size)), constant_values=False)
+            return jnp.logical_and(attention_mask, expanded_mask)
+        
+        original_shape = query.shape
+        original_seq_len = query.shape[-3]
+        
+        # Pad to nearest multiple of 4
+        target_seq_len = ((original_seq_len + 3) // 4) * 4
+        pad_size = target_seq_len - original_seq_len
+
+        query_4d = _pad(_rearrange(query))
+        key_4d = _pad(_rearrange(key))
+        value_4d = _pad(_rearrange(value))
+        
+        attention_mask = jnp.ones((target_seq_len, target_seq_len), dtype=jnp.bool_)
+        attention_mask = attention_mask.at[original_seq_len:, :].set(False)
+        attention_mask = attention_mask.at[:, original_seq_len:].set(False)
+
+        mask_4d = _fuse_masks(mask, attention_mask) if mask is not None else attention_mask
+        mask_4d = mask_4d[jnp.newaxis, jnp.newaxis, :, :]  # (1, 1, seq_len, seq_len)
+        
+        bias_4d = _pad(_rearrange(bias)) if bias is not None else None
+        
+        output_4d = jax.nn.dot_product_attention(
+            query=query_4d,
+            key=key_4d,
+            value=value_4d,
+            bias=bias_4d,
+            mask=mask_4d,
+            implementation=implementation,
+            is_causal=is_causal,
+            **kwargs
+        )
+        return output_4d[..., :original_seq_len, :, :].reshape(original_shape)
+    
+    return attention_fn
+
