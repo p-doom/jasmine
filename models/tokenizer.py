@@ -12,6 +12,7 @@ class TokenizerVQVAE(nn.Module):
 
     in_dim: int
     model_dim: int
+    ffn_dim: int
     latent_dim: int
     num_latents: int
     patch_size: int
@@ -26,6 +27,7 @@ class TokenizerVQVAE(nn.Module):
     def setup(self):
         self.encoder = STTransformer(
             self.model_dim,
+            self.ffn_dim,
             self.latent_dim,
             self.num_blocks,
             self.num_heads,
@@ -42,6 +44,7 @@ class TokenizerVQVAE(nn.Module):
         self.out_dim = self.in_dim * self.patch_size**2
         self.decoder = STTransformer(
             self.model_dim,
+            self.ffn_dim,
             self.out_dim,
             self.num_blocks,
             self.num_heads,

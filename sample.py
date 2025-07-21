@@ -34,21 +34,24 @@ class Args:
     start_frame: int = 0
     # Tokenizer checkpoint
     tokenizer_dim: int = 512
+    tokenizer_ffn_dim: int = 2048
     latent_patch_dim: int = 32
     num_patch_latents: int = 1024
     patch_size: int = 4
-    tokenizer_num_blocks: int = 8
+    tokenizer_num_blocks: int = 4
     tokenizer_num_heads: int = 8
     # LAM checkpoint
     lam_dim: int = 512
+    lam_ffn_dim: int = 2048
     latent_action_dim: int = 32
     num_latent_actions: int = 6
     lam_patch_size: int = 16
-    lam_num_blocks: int = 8
+    lam_num_blocks: int = 4
     lam_num_heads: int = 8
     # Dynamics checkpoint
     dyna_dim: int = 512
-    dyna_num_blocks: int = 12
+    dyna_ffn_dim: int = 2048
+    dyna_num_blocks: int = 6
     dyna_num_heads: int = 8
     param_dtype: jnp.dtype = jnp.float32
     dtype: jnp.dtype = jnp.bfloat16
@@ -63,6 +66,7 @@ genie = Genie(
     # Tokenizer
     in_dim=args.image_channels,
     tokenizer_dim=args.tokenizer_dim,
+    tokenizer_ffn_dim=args.tokenizer_ffn_dim,
     latent_patch_dim=args.latent_patch_dim,
     num_patch_latents=args.num_patch_latents,
     patch_size=args.patch_size,
@@ -70,6 +74,7 @@ genie = Genie(
     tokenizer_num_heads=args.tokenizer_num_heads,
     # LAM
     lam_dim=args.lam_dim,
+    lam_ffn_dim=args.lam_ffn_dim,
     latent_action_dim=args.latent_action_dim,
     num_latent_actions=args.num_latent_actions,
     lam_patch_size=args.lam_patch_size,
@@ -78,6 +83,7 @@ genie = Genie(
     lam_co_train=False,
     # Dynamics
     dyna_dim=args.dyna_dim,
+    dyna_ffn_dim=args.dyna_ffn_dim,
     dyna_num_blocks=args.dyna_num_blocks,
     dyna_num_heads=args.dyna_num_heads,
     param_dtype=args.param_dtype,

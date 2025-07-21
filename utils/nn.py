@@ -1,6 +1,5 @@
 import math
 from typing import Tuple
-from functools import partial
 
 from flax import linen as nn
 import jax
@@ -31,6 +30,7 @@ class PositionalEncoding(nn.Module):
 
 class STBlock(nn.Module):
     dim: int
+    ffn_dim: int
     num_heads: int
     dropout: float
     param_dtype: jnp.dtype
@@ -81,13 +81,17 @@ class STBlock(nn.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
         )(x)
-        # FIXME (f.srambical): Here, the attention hidden dimension is the same as the FFN's. Usually, FFN hidden dimension is 4x model_dim
+        z = nn.Dense(
+            self.ffn_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+        )(z)
+        z = nn.gelu(z)
         z = nn.Dense(
             self.dim,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
         )(z)
-        z = nn.gelu(z)
         x = x + z
 
         return x
@@ -95,6 +99,7 @@ class STBlock(nn.Module):
 
 class STTransformer(nn.Module):
     model_dim: int
+    ffn_dim: int
     out_dim: int
     num_blocks: int
     num_heads: int
@@ -124,6 +129,7 @@ class STTransformer(nn.Module):
         for _ in range(self.num_blocks):
             x = STBlock(
                 dim=self.model_dim,
+                ffn_dim=self.ffn_dim,
                 num_heads=self.num_heads,
                 dropout=self.dropout,
                 param_dtype=self.param_dtype,
