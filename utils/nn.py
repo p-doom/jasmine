@@ -208,8 +208,8 @@ class STTransformer(nn.Module):
     dropout: float
     param_dtype: jnp.dtype
     dtype: jnp.dtype
-    spatial_bert: bool = True
     use_flash_attention: bool
+    spatial_bert: bool = True
 
     @nn.compact
     def __call__(self, x: jax.Array) -> jax.Array:

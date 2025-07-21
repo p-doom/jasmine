@@ -30,7 +30,7 @@ class DynamicsMaskGIT(nn.Module):
             self.dropout,
             self.param_dtype,
             self.dtype,
-            spacial_bert=True,
+            spatial_bert=True,
             use_flash_attention=self.use_flash_attention,
         )
         self.patch_embed = nn.Embed(self.num_latents, self.model_dim)
@@ -74,6 +74,7 @@ class DynamicsAutoregressive(nn.Module):
     dropout: float
     param_dtype: jnp.dtype
     dtype: jnp.dtype
+    use_flash_attention: bool
 
     def setup(self):
         self.dynamics = STTransformer(
@@ -84,7 +85,8 @@ class DynamicsAutoregressive(nn.Module):
             self.dropout,
             self.param_dtype,
             self.dtype,
-            spacial_bert=False,
+            self.use_flash_attention,
+            spatial_bert=False,
         )
         self.patch_embed = nn.Embed(self.num_latents, self.model_dim)
         self.action_up = nn.Dense(

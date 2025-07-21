@@ -137,7 +137,8 @@ def _sampling_wrapper(module, batch):
 # --- Define autoregressive sampling loop ---
 def _autoreg_sample(rng, video_batch, action_batch):
     vid = video_batch[:, : args.start_frame + 1]
-    sampling_fn = jax.jit(nn.apply(_sampling_wrapper, genie)) 
+    # sampling_fn = jax.jit(nn.apply(_sampling_wrapper, genie)) 
+    sampling_fn = nn.apply(_sampling_wrapper, genie)
     rng, _rng = jax.random.split(rng)
     batch = dict(videos=vid, latent_actions=action_batch, rng=_rng)
     generated_vid = sampling_fn(

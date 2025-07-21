@@ -162,7 +162,8 @@ class Genie(nn.Module):
         # --- Autoregressive generation loop ---
         rng = batch["rng"]
         for t in range(T, seq_len):
-            for n in range(300):
+            for n in range(N):
+                jax.debug.print("Sampling token {} from frame {}", n, t)
                 dyna_inputs = {
                     "video_tokens": token_idxs_full,
                     "latent_actions": action_tokens
