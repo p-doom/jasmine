@@ -160,6 +160,7 @@ class STBlock(nn.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             attention_fn=_create_flash_attention_fn(self.use_flash_attention, is_causal=not self.spatial_bert),
+            # decode=True
         )(z)
         x = x + z
 
@@ -178,6 +179,7 @@ class STBlock(nn.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             attention_fn=_create_flash_attention_fn(self.use_flash_attention, is_causal=True),
+            # decode=True
         # FIXME (f.srambical): check whether we should still pass the mask if we set is_causal=True
         )(z)
         x = x + z
