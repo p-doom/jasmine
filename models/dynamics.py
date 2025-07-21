@@ -20,6 +20,8 @@ class DynamicsMaskGIT(nn.Module):
     param_dtype: jnp.dtype
     dtype: jnp.dtype
     use_flash_attention: bool
+    use_gt_actions: bool
+    num_actions: int
 
     def setup(self):
         self.dynamics = STTransformer(
@@ -39,11 +41,14 @@ class DynamicsMaskGIT(nn.Module):
             nn.initializers.lecun_uniform(),
             (1, 1, 1, self.model_dim),
         )
-        self.action_up = nn.Dense(
-            self.model_dim,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-        )
+        if self.use_gt_actions:
+            self.action_embed = nn.Embed(self.num_actions, self.model_dim)
+        else:
+            self.action_up = nn.Dense(
+                self.model_dim,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+            )
 
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
         # --- Mask videos ---
@@ -58,7 +63,10 @@ class DynamicsMaskGIT(nn.Module):
             mask = None
 
         # --- Predict transition ---
-        act_embed = self.action_up(batch["latent_actions"])
+        if self.use_gt_actions:
+            act_embed = self.action_embed(batch["actions"])
+        else:
+            act_embed = self.action_up(batch["actions"])
         vid_embed += jnp.pad(act_embed, ((0, 0), (1, 0), (0, 0), (0, 0)))
         logits = self.dynamics(vid_embed)
         return dict(token_logits=logits, mask=mask)

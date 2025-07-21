@@ -30,7 +30,7 @@ class Genie(nn.Module):
     lam_dim: int
     lam_ffn_dim: int
     latent_action_dim: int
-    num_latent_actions: int
+    num_actions: int
     lam_patch_size: int
     lam_num_blocks: int
     lam_num_heads: int
@@ -43,6 +43,7 @@ class Genie(nn.Module):
     param_dtype: jnp.dtype
     dtype: jnp.dtype
     use_flash_attention: bool
+    use_gt_actions: bool = False
     dropout: float = 0.0
     mask_limit: float = 0.0
 
@@ -62,21 +63,22 @@ class Genie(nn.Module):
             dtype=self.dtype,
             use_flash_attention=self.use_flash_attention,
         )
-        self.lam = LatentActionModel(
-            in_dim=self.in_dim,
-            model_dim=self.lam_dim,
-            ffn_dim=self.lam_ffn_dim,
-            latent_dim=self.latent_patch_dim,
-            num_latents=self.num_latent_actions,
-            patch_size=self.lam_patch_size,
-            num_blocks=self.lam_num_blocks,
-            num_heads=self.lam_num_heads,
-            dropout=0.0,
-            codebook_dropout=0.0,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-            use_flash_attention=self.use_flash_attention,
-        )
+        if not self.use_gt_actions:
+            self.lam = LatentActionModel(
+                in_dim=self.in_dim,
+                model_dim=self.lam_dim,
+                ffn_dim=self.lam_ffn_dim,
+                latent_dim=self.latent_patch_dim,
+                num_latents=self.num_actions,
+                patch_size=self.lam_patch_size,
+                num_blocks=self.lam_num_blocks,
+                num_heads=self.lam_num_heads,
+                dropout=0.0,
+                codebook_dropout=0.0,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+                use_flash_attention=self.use_flash_attention,
+            )
         self.dynamics = DynamicsMaskGIT(
             model_dim=self.dyna_dim,
             ffn_dim=self.dyna_ffn_dim,
@@ -88,19 +90,24 @@ class Genie(nn.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             use_flash_attention=self.use_flash_attention,
+            use_gt_actions=self.use_gt_actions,
+            num_actions=self.num_actions,
         )
 
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
         tokenizer_outputs = self.tokenizer.vq_encode(batch["videos"], training=False)
-        lam_outputs = self.lam.vq_encode(batch["videos"], training=False)
-        latent_actions = jax.lax.cond(
-            self.lam_co_train,
-            lambda: lam_outputs["z_q"],
-            lambda: jax.lax.stop_gradient(lam_outputs["z_q"])
-        )
+        if self.use_gt_actions:
+            actions = batch["actions"]
+        else:
+            lam_outputs = self.lam.vq_encode(batch["videos"], training=False)
+            actions = jax.lax.cond(
+                self.lam_co_train,
+                lambda: lam_outputs["z_q"],
+                lambda: jax.lax.stop_gradient(lam_outputs["z_q"])
+            )
         outputs = dict(
             video_tokens=jax.lax.stop_gradient(tokenizer_outputs["indices"]),
-            latent_actions=latent_actions,
+            actions=actions,
         )
         outputs["mask_rng"] = batch["mask_rng"]
         dyna_outputs = self.dynamics(outputs, training)
@@ -109,7 +116,8 @@ class Genie(nn.Module):
         outputs["recon"] = self.tokenizer.decode(
             mle_indices, batch["videos"].shape[2:4]
         )
-        outputs["lam_indices"] = lam_outputs["indices"]
+        if not self.use_gt_actions:
+            outputs["lam_indices"] = lam_outputs["indices"] # type: ignore[unbound]
         return outputs
 
     @nn.compact
@@ -150,7 +158,10 @@ class Genie(nn.Module):
         pad_shape = (B, seq_len - T, N)
         pad = jnp.zeros(pad_shape, dtype=token_idxs.dtype)
         token_idxs = jnp.concatenate([token_idxs, pad], axis=1) # (B, S, N)
-        action_tokens = self.lam.vq.get_codes(batch["latent_actions"])
+        if self.use_gt_actions:
+            action_tokens = batch["actions"]
+        else:
+            action_tokens = self.lam.vq.get_codes(batch["actions"])
 
         MaskGITLoop = nn.scan(
             MaskGITStep,
@@ -335,7 +346,7 @@ def restore_genie_components(
             model_dim=args.lam_dim,
             ffn_dim=args.lam_ffn_dim,
             latent_dim=args.latent_patch_dim,
-            num_latents=args.num_latent_actions,
+            num_latents=args.num_actions,
             patch_size=args.lam_patch_size,
             num_blocks=args.lam_num_blocks,
             num_heads=args.lam_num_heads,
