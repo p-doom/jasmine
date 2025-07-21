@@ -88,6 +88,7 @@ class LatentActionModel(nn.Module):
         B, T = videos.shape[:2]
         patches = patchify(videos, self.patch_size)
         action_pad = jnp.broadcast_to(self.action_in, (B, T, 1, self.patch_token_dim))
+        # FIXME mihir do this the other way around
         padded_patches = jnp.concatenate((action_pad, patches), axis=2)
 
         # --- Encode ---

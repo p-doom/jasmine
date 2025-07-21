@@ -162,7 +162,7 @@ class Genie(nn.Module):
         # --- Autoregressive generation loop ---
         rng = batch["rng"]
         for t in range(T, seq_len):
-            for n in range(30):
+            for n in range(300):
                 dyna_inputs = {
                     "video_tokens": token_idxs_full,
                     "latent_actions": action_tokens
@@ -171,7 +171,8 @@ class Genie(nn.Module):
                 dyna_outputs = self.dynamics(dyna_inputs, training=False)
                 # # dyna_outputs["token_logits"]: (B, t, N, vocab_size)
                 # # We want the logits for the last time step (frame t-1 predicting t)
-                next_token_logits = dyna_outputs["token_logits"][:, t-1, n, :].astype(jnp.float32)  # (B, 1, vocab_size)
+                # jax.debug.breakpoint()
+                next_token_logits = dyna_outputs["token_logits"][:, t, n, :].astype(jnp.float32)  # (B, 1, vocab_size)
 
                 # Sample or argmax for each patch
                 if sample_argmax:

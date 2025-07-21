@@ -142,7 +142,7 @@ class STBlock(nn.Module):
     param_dtype: jnp.dtype
     dtype: jnp.dtype
     use_flash_attention: bool
-    spacial_bert: bool = True
+    spatial_bert: bool = True
 
     @nn.remat
     @nn.compact
@@ -159,7 +159,7 @@ class STBlock(nn.Module):
             dropout_rate=self.dropout,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
-            attention_fn=_create_flash_attention_fn(self.use_flash_attention, is_causal=not self.spacial_bert),
+            attention_fn=_create_flash_attention_fn(self.use_flash_attention, is_causal=not self.spatial_bert),
         )(z)
         x = x + z
 
@@ -208,7 +208,7 @@ class STTransformer(nn.Module):
     dropout: float
     param_dtype: jnp.dtype
     dtype: jnp.dtype
-    spacial_bert: bool = True
+    spatial_bert: bool = True
     use_flash_attention: bool
 
     @nn.compact
@@ -236,7 +236,7 @@ class STTransformer(nn.Module):
                 dropout=self.dropout,
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
-                spacial_bert=self.spacial_bert,
+                spatial_bert=self.spatial_bert,
                 use_flash_attention=self.use_flash_attention,
             )(x)
         x = nn.Dense(
