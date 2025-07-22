@@ -103,19 +103,20 @@ params["params"].update(ckpt)
 
 
 def _sampling_wrapper(module, batch):
-    return module.sample(batch, args.seq_len, args.maskgit_steps, args.temperature, args.sample_argmax)
+    return module.sample(
+        batch, args.seq_len, args.maskgit_steps, args.temperature, args.sample_argmax
+    )
+
 
 # --- Define autoregressive sampling loop ---
 def _autoreg_sample(rng, video_batch, action_batch):
     vid = video_batch[:, : args.start_frame + 1]
-    sampling_fn = jax.jit(nn.apply(_sampling_wrapper, genie)) 
+    sampling_fn = jax.jit(nn.apply(_sampling_wrapper, genie))
     rng, _rng = jax.random.split(rng)
     batch = dict(videos=vid, latent_actions=action_batch, rng=_rng)
-    generated_vid = sampling_fn(
-        params,
-        batch
-    )
+    generated_vid = sampling_fn(params, batch)
     return generated_vid
+
 
 # --- Get video + latent actions ---
 array_record_files = [
@@ -151,11 +152,11 @@ print(f"SSIM: {ssim}")
 true_videos = (video_batch * 255).astype(np.uint8)
 pred_videos = (vid * 255).astype(np.uint8)
 video_comparison = np.zeros((2, *vid.shape), dtype=np.uint8)
-video_comparison[0] = true_videos[:, :args.seq_len]
+video_comparison[0] = true_videos[:, : args.seq_len]
 video_comparison[1] = pred_videos
 frames = einops.rearrange(video_comparison, "n b t h w c -> t (b h) (n w) c")
 
-# --- Save video --- 
+# --- Save video ---
 imgs = [Image.fromarray(img) for img in frames]
 # Write actions on each frame, on each row (i.e., for each video in the batch, on the GT row)
 for t, img in enumerate(imgs[1:]):
