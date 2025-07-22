@@ -326,10 +326,11 @@ if __name__ == "__main__":
     # --- TRAIN LOOP ---
     dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in grain_iterator)  # type: ignore
     while step < args.num_steps:
-        for videos in dataloader:
-        # videos = np.load("overfit_dir/corner_8repl.npy")
-        # videos = jax.make_array_from_process_local_data(videos_sharding, videos)
-        # while True:
+        # for videos in dataloader:
+        videos = np.load("overfit_dir/single_sample_corner.npy") * 255.
+        videos = videos.astype(np.uint8)
+        videos = jax.make_array_from_process_local_data(videos_sharding, videos)
+        while True:
             # --- Train step ---
             rng, _rng, _rng_dropout, _rng_mask = jax.random.split(rng, 4)
 

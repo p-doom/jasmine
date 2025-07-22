@@ -169,11 +169,11 @@ def _get_dataloader_iterator():
     return grain_iterator
 
 # --- Get video + latent actions ---
-grain_iterator = _get_dataloader_iterator()
-video_batch = next(grain_iterator)
-# video_batch = np.load("overfit_dir/single_sample_corner.npy")
+# grain_iterator = _get_dataloader_iterator()
+# video_batch = next(grain_iterator)
+video_batch = np.load("overfit_dir/single_sample_corner.npy")
 
-video_batch = video_batch.astype(args.dtype) / 255.0
+video_batch = video_batch.astype(args.dtype) # / 255.0
 # Get latent actions for all videos in the batch
 batch = dict(videos=video_batch[:,:args.seq_len])
 action_batch = genie.apply(params, batch, False, method=Genie.vq_encode)
