@@ -109,8 +109,6 @@ class DynamicsAutoregressive(nn.Module):
         # logits = self.dynamics(noise)[:, :, :-1]
 
         logits = self.dynamics(vid_embed_padded)[:, :, :-1]
+
         mask = jnp.ones(vid_embed.shape[:-1])
-        # next_tokens = jnp.argmax(logits, axis=-1)
-        # print(next_tokens.shape)
-        # jax.debug.breakpoint()
         return dict(token_logits=logits, mask=mask)
