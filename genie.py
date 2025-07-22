@@ -96,7 +96,7 @@ class Genie(nn.Module):
         latent_actions = jax.lax.cond(
             self.lam_co_train,
             lambda: lam_outputs["z_q"],
-            lambda: jax.lax.stop_gradient(lam_outputs["z_q"])
+            lambda: jax.lax.stop_gradient(lam_outputs["z_q"]),
         )
         outputs = dict(
             video_tokens=jax.lax.stop_gradient(tokenizer_outputs["indices"]),
@@ -131,25 +131,25 @@ class Genie(nn.Module):
         Note:
         - For interactive or step-wise sampling, detokenization should occur after each action.
         - To maintain consistent tensor shapes across timesteps, all current and future frames are decoded at every step.
-        - Temporal causal structure is preserved by 
+        - Temporal causal structure is preserved by
             a) reapplying the mask before each decoding step.
             b) a temporal causal mask is applied within each ST-transformer block.
 
         Dimension keys:
-            B: batch size  
-            T: number of input (conditioning) frames  
-            N: patches per frame  
-            S: sequence length  
-            A: action space  
+            B: batch size
+            T: number of input (conditioning) frames
+            N: patches per frame
+            S: sequence length
+            A: action space
             D: model latent dimension
         """
         # --- Encode videos and actions ---
         tokenizer_out = self.tokenizer.vq_encode(batch["videos"], training=False)
-        token_idxs = tokenizer_out["indices"] # (B, T, N)
+        token_idxs = tokenizer_out["indices"]  # (B, T, N)
         B, T, N = token_idxs.shape
         pad_shape = (B, seq_len - T, N)
         pad = jnp.zeros(pad_shape, dtype=token_idxs.dtype)
-        token_idxs = jnp.concatenate([token_idxs, pad], axis=1) # (B, S, N)
+        token_idxs = jnp.concatenate([token_idxs, pad], axis=1)  # (B, S, N)
         action_tokens = self.lam.vq.get_codes(batch["latent_actions"])
 
         MaskGITLoop = nn.scan(
@@ -160,7 +160,7 @@ class Genie(nn.Module):
             out_axes=0,
             length=steps,
         )
-    
+
         loop_fn = MaskGITLoop(
             dynamics=self.dynamics,
             tokenizer=self.tokenizer,
@@ -174,8 +174,8 @@ class Genie(nn.Module):
             rng, step_rng = jax.random.split(rng)
 
             # Mask current and future frames (i.e., t >= step_t)
-            mask = jnp.arange(seq_len) >= step_t # (S,)
-            mask = jnp.broadcast_to(mask[None, :, None], (B, seq_len, N)) # (B, S, N)
+            mask = jnp.arange(seq_len) >= step_t  # (S,)
+            mask = jnp.broadcast_to(mask[None, :, None], (B, seq_len, N))  # (B, S, N)
             mask = mask.astype(bool)
             masked_token_idxs = current_token_idxs * ~mask
 
@@ -195,9 +195,7 @@ class Genie(nn.Module):
         initial_carry = (batch["rng"], token_idxs)
         timesteps_to_scan = jnp.arange(T, seq_len)
         final_carry, _ = jax.lax.scan(
-            generation_step_fn,
-            initial_carry,
-            timesteps_to_scan
+            generation_step_fn, initial_carry, timesteps_to_scan
         )
         final_token_idxs = final_carry[1]
 
@@ -228,9 +226,9 @@ class MaskGITStep(nn.Module):
         N = token_idxs.shape[2]
 
         # --- Construct + encode video ---
-        vid_embed = self.dynamics.patch_embed(token_idxs) # (B, S, N, D)
+        vid_embed = self.dynamics.patch_embed(token_idxs)  # (B, S, N, D)
         mask_token = self.dynamics.mask_token  # (1, 1, 1, D,)
-        mask_expanded = mask[..., None] # (B, S, N, 1) 
+        mask_expanded = mask[..., None]  # (B, S, N, 1)
         vid_embed = jnp.where(mask_expanded, mask_token, vid_embed)
 
         # --- Predict transition ---
@@ -262,6 +260,7 @@ class MaskGITStep(nn.Module):
         new_carry = (rng, token_idxs, new_mask, action_tokens)
         return new_carry, None
 
+
 def restore_genie_components(
     train_state: TrainState,
     sharding: jax.sharding.NamedSharding,
@@ -281,8 +280,9 @@ def restore_genie_components(
         weight_decay=1e-4,
     )
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
-    handler_registry.add('model_state', ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler)
-    
+    handler_registry.add(
+        "model_state", ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler
+    )
 
     checkpoint_options = ocp.CheckpointManagerOptions(
         step_format_fixed_length=6,
@@ -371,6 +371,7 @@ def restore_genie_components(
         lam_checkpoint_manager.close()
 
     return train_state
+
 
 def _create_abstract_sharded_pytree(pytree_template, sharding_spec):
     """Replaces arrays in a pytree with ShapeDtypeStructs having the given sharding."""

@@ -21,7 +21,7 @@ class DataloaderReproducibilityTest(unittest.TestCase):
         self.image_height = 64
         self.image_width = 64
         self.image_channels = 3
-        
+
         dummy_file = self.test_data_dir / "dummy_test_shard.array_record"
         generate_dummy_arrayrecord(
             dummy_file,
@@ -30,13 +30,13 @@ class DataloaderReproducibilityTest(unittest.TestCase):
             height=self.image_height,
             width=self.image_width,
             channels=self.image_channels,
-            seed=42
+            seed=42,
         )
-        
+
         self.array_record_files = [
-            str(self.test_data_dir / f) 
-            for f in os.listdir(self.test_data_dir) 
-            if f.endswith('.array_record')
+            str(self.test_data_dir / f)
+            for f in os.listdir(self.test_data_dir)
+            if f.endswith(".array_record")
         ]
 
         self.fixed_seed = 42
@@ -72,7 +72,9 @@ class DataloaderReproducibilityTest(unittest.TestCase):
         batches2 = [next(dataloader2) for _ in range(3)]
 
         for i, (b1, b2) in enumerate(zip(batches1, batches2)):
-            np.testing.assert_array_equal(b1, b2, err_msg=f"Batch {i} is not reproducible")
+            np.testing.assert_array_equal(
+                b1, b2, err_msg=f"Batch {i} is not reproducible"
+            )
 
 
 if __name__ == "__main__":
