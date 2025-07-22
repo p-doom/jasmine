@@ -35,13 +35,15 @@ def download_file(args):
         jsonl_url = url.rsplit(".", 1)[0] + ".jsonl"
         filename = flatten_path(jsonl_url)
         output_file = os.path.join(output_dir, filename)
-        subprocess.run(["wget", "-q", base_dir + jsonl_url, "-O", output_file], check=True)
-        return {'file': jsonl_url, 'success': True}
+        subprocess.run(
+            ["wget", "-q", base_dir + jsonl_url, "-O", output_file], check=True
+        )
+        return {"file": jsonl_url, "success": True}
     except subprocess.CalledProcessError as e:
         # delete file if it exists
         if os.path.exists(output_file):
             os.remove(output_file)
-        return {'file': jsonl_url, 'success': False, 'error': str(e)}
+        return {"file": jsonl_url, "success": False, "error": str(e)}
 
 
 def download_actions_files(index_file: str, output_dir: str, num_workers: int):
@@ -74,6 +76,7 @@ def download_actions_files(index_file: str, output_dir: str, num_workers: int):
     # print number of successful downloads
     successful_downloads = [result for result in results if result["success"]]
     print(f"Number of successful downloads: {len(successful_downloads)}")
+
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
