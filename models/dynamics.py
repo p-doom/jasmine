@@ -55,11 +55,10 @@ class DynamicsMaskGIT(nn.Module):
                 rng1, shape=(batch_size,), minval=self.mask_limit
             )
             mask_rngs = jax.random.split(rng2, batch_size)
-
             per_sample_shape = vid_embed.shape[1:-1]
             mask = jax.vmap(
                 lambda rng, prob: jax.random.bernoulli(rng, prob, per_sample_shape),
-                in_axes=(0, 0)
+                in_axes=(0, 0),
             )(mask_rngs, mask_prob)
             mask = mask.at[:, 0].set(False)
             vid_embed = jnp.where(jnp.expand_dims(mask, -1), self.mask_token, vid_embed)
