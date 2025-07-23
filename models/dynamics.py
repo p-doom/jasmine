@@ -2,26 +2,28 @@ from typing import Dict, Any
 
 import jax
 import jax.numpy as jnp
-import flax.linen as nn
+import flax.nnx as nnx
 
 from utils.nn import STTransformer
 
 
-class DynamicsMaskGIT(nn.Module):
+class DynamicsMaskGIT(nnx.Module):
     """MaskGIT dynamics model"""
 
-    model_dim: int
-    ffn_dim: int
-    num_latents: int
-    num_blocks: int
-    num_heads: int
-    dropout: float
-    mask_limit: float
-    param_dtype: jnp.dtype
-    dtype: jnp.dtype
-    use_flash_attention: bool
-
-    def setup(self):
+    def __init__(self, model_dim: int, ffn_dim: int, num_latents: int, num_blocks: int, 
+                 num_heads: int, dropout: float, mask_limit: float, param_dtype: jnp.dtype, 
+                 dtype: jnp.dtype, use_flash_attention: bool, rngs: nnx.Rngs):
+        self.model_dim = model_dim
+        self.ffn_dim = ffn_dim
+        self.num_latents = num_latents
+        self.num_blocks = num_blocks
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.mask_limit = mask_limit
+        self.param_dtype = param_dtype
+        self.dtype = dtype
+        self.use_flash_attention = use_flash_attention
+        
         self.dynamics = STTransformer(
             self.model_dim,
             self.ffn_dim,
@@ -32,17 +34,22 @@ class DynamicsMaskGIT(nn.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
+            rngs=rngs,
         )
-        self.patch_embed = nn.Embed(self.num_latents, self.model_dim)
-        self.mask_token = self.param(
-            "mask_token",
-            nn.initializers.lecun_uniform(),
-            (1, 1, 1, self.model_dim),
+        self.patch_embed = nnx.Embed(self.num_latents, self.model_dim, rngs=rngs)
+        self.mask_token = nnx.Param(
+            nnx.initializers.lecun_uniform()(
+                rngs.params(),
+                (1, 1, 1, self.model_dim)
+            )
         )
-        self.action_up = nn.Dense(
+        self.action_up = nnx.Linear(
+            # FIXME (f.srambical): think about whether this is actually latent_dim or num_latents
+            self.num_latents,
             self.model_dim,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
+            rngs=rngs,
         )
 
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
@@ -53,7 +60,7 @@ class DynamicsMaskGIT(nn.Module):
             mask_prob = jax.random.uniform(rng1, minval=self.mask_limit)
             mask = jax.random.bernoulli(rng2, mask_prob, vid_embed.shape[:-1])
             mask = mask.at[:, 0].set(False)
-            vid_embed = jnp.where(jnp.expand_dims(mask, -1), self.mask_token, vid_embed)
+            vid_embed = jnp.where(jnp.expand_dims(mask, -1), self.mask_token.value, vid_embed)
         else:
             mask = None
 

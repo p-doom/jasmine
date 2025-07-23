@@ -1,30 +1,34 @@
 from typing import Dict, Any, Tuple
 
-import flax.linen as nn
+import flax.nnx as nnx
 import jax.numpy as jnp
+import jax
 
 from utils.preprocess import patchify, unpatchify
 from utils.nn import STTransformer, VectorQuantizer
 
 
-class TokenizerVQVAE(nn.Module):
+class TokenizerVQVAE(nnx.Module):
     """ST-ViVit VQ-VAE"""
 
-    in_dim: int
-    model_dim: int
-    ffn_dim: int
-    latent_dim: int
-    num_latents: int
-    patch_size: int
-    num_blocks: int
-    num_heads: int
-    dropout: float
-    codebook_dropout: float
-    param_dtype: jnp.dtype
-    dtype: jnp.dtype
-    use_flash_attention: bool
-
-    def setup(self):
+    def __init__(self, in_dim: int, model_dim: int, ffn_dim: int, latent_dim: int, 
+                 num_latents: int, patch_size: int, num_blocks: int, num_heads: int, 
+                 dropout: float, codebook_dropout: float, param_dtype: jnp.dtype, 
+                 dtype: jnp.dtype, use_flash_attention: bool, rngs: nnx.Rngs):
+        self.in_dim = in_dim
+        self.model_dim = model_dim
+        self.ffn_dim = ffn_dim
+        self.latent_dim = latent_dim
+        self.num_latents = num_latents
+        self.patch_size = patch_size
+        self.num_blocks = num_blocks
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.codebook_dropout = codebook_dropout
+        self.param_dtype = param_dtype
+        self.dtype = dtype
+        self.use_flash_attention = use_flash_attention
+        
         self.encoder = STTransformer(
             self.model_dim,
             self.ffn_dim,
@@ -35,11 +39,13 @@ class TokenizerVQVAE(nn.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
+            rngs=rngs,
         )
         self.vq = VectorQuantizer(
             self.latent_dim,
             self.num_latents,
             self.codebook_dropout,
+            rngs=rngs,
         )
         self.out_dim = self.in_dim * self.patch_size**2
         self.decoder = STTransformer(
@@ -52,6 +58,7 @@ class TokenizerVQVAE(nn.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
+            rngs=rngs,
         )
 
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
@@ -59,7 +66,7 @@ class TokenizerVQVAE(nn.Module):
         outputs = self.vq_encode(batch["videos"], training)
         recon = self.decoder(outputs["z_q"])  # (B, T, H_down * W_down, C)
         recon = recon.astype(jnp.float32)
-        recon = nn.sigmoid(recon)
+        recon = nnx.sigmoid(recon)
         recon = recon.astype(self.dtype)
         outputs["recon"] = unpatchify(recon, self.patch_size, H, W)
         return outputs
@@ -82,6 +89,6 @@ class TokenizerVQVAE(nn.Module):
         z = self.vq.codebook[indices]
         recon = self.decoder(z)
         recon = recon.astype(jnp.float32)
-        recon = nn.sigmoid(recon)
+        recon = nnx.sigmoid(recon)
         recon = recon.astype(self.dtype)
         return unpatchify(recon, self.patch_size, *video_hw)

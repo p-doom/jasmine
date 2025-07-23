@@ -2,8 +2,7 @@ from dataclasses import dataclass, field
 import os
 
 import einops
-from flax.training import orbax_utils
-from flax.training.train_state import TrainState
+from flax.training import train_state
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.mesh_utils import create_device_mesh
 import optax
@@ -15,6 +14,7 @@ import jax.numpy as jnp
 import tyro
 import wandb
 import grain
+import flax.nnx as nnx
 
 from models.tokenizer import TokenizerVQVAE
 from utils.dataloader import get_dataloader
@@ -74,18 +74,14 @@ class Args:
 args = tyro.cli(Args)
 
 
-def tokenizer_loss_fn(params, state, inputs):
+def tokenizer_loss_fn(model, inputs):
     # --- Compute loss ---
     # FIXME (f.srambical): Can we even do native int8 training without casting the video at all?
     # FIXME (f.srambical): If the tokenizer is the reason for the dynamics model being memory-bound,
     # should we at least train the tokenizer natively in int8?
     inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
-    outputs = state.apply_fn(
-        params,
-        inputs,
-        training=True,
-        rngs={"params": inputs["rng"], "dropout": inputs["dropout_rng"]},
-    )
+    model.train()
+    outputs = model(inputs, training=True)
     mse = jnp.square(inputs["videos"] - outputs["recon"]).mean()
     q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()
     commitment_loss = jnp.square(
@@ -114,11 +110,13 @@ def tokenizer_loss_fn(params, state, inputs):
     return loss, (outputs["recon"], metrics)
 
 
-@jax.jit
-def train_step(state, inputs):
-    grad_fn = jax.value_and_grad(tokenizer_loss_fn, has_aux=True, allow_int=True)
-    (loss, (recon, metrics)), grads = grad_fn(state.params, state, inputs)
-    state = state.apply_gradients(grads=grads)
+@nnx.jit
+def train_step(tokenizer, optimizer, inputs):
+    def loss_fn(model):
+        return tokenizer_loss_fn(model, inputs)
+    
+    (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(tokenizer)
+    optimizer.update(grads)
     if args.log_gradients:
         metrics["encoder_gradients_std/"] = jax.tree.map(
             lambda x: x.std(), grads["params"]["encoder"]
@@ -129,7 +127,7 @@ def train_step(state, inputs):
         metrics["decoder_gradients_std/"] = jax.tree.map(
             lambda x: x.std(), grads["params"]["decoder"]
         )
-    return state, loss, recon, metrics
+    return loss, recon, metrics
 
 
 if __name__ == "__main__":
@@ -150,6 +148,8 @@ if __name__ == "__main__":
     rng = jax.random.PRNGKey(args.seed)
 
     # --- Initialize model ---
+    rng, _rng = jax.random.split(rng)
+    rngs = nnx.Rngs(_rng)
     tokenizer = TokenizerVQVAE(
         in_dim=args.image_channels,
         model_dim=args.model_dim,
@@ -164,18 +164,11 @@ if __name__ == "__main__":
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
+        rngs=rngs,
     )
-    rng, _rng = jax.random.split(rng)
-    image_shape = (args.image_height, args.image_width, args.image_channels)
-    inputs = dict(
-        videos=jnp.zeros(
-            (per_device_batch_size_for_init, args.seq_len, *image_shape),
-            dtype=args.dtype,
-        ),
-    )
-    init_params = tokenizer.init(_rng, inputs)
 
-    param_counts = count_parameters_by_component(init_params)
+    _, params, _ = nnx.split(tokenizer, nnx.Param, ...)
+    param_counts = count_parameters_by_component(params)
 
     if args.log and jax.process_index() == 0:
         wandb_init_kwargs = {
@@ -210,7 +203,7 @@ if __name__ == "__main__":
                                   args.warmup_steps, 
                                   args.wsd_decay_steps)
     tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
-    train_state = TrainState.create(apply_fn=tokenizer.apply, params=init_params, tx=tx)
+    optimizer = nnx.Optimizer(tokenizer, tx)
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
     device_mesh_arr = create_device_mesh((num_devices,))
@@ -247,6 +240,7 @@ if __name__ == "__main__":
     )
 
     # --- Create DataLoaderIterator from dataloader ---
+    image_shape = (args.image_height, args.image_width, args.image_channels)
     array_record_files = [
         os.path.join(args.data_dir, x)
         for x in os.listdir(args.data_dir)
@@ -292,7 +286,7 @@ if __name__ == "__main__":
             rng, _rng, _rng_dropout = jax.random.split(rng, 3)
 
             inputs = dict(videos=videos, rng=_rng, dropout_rng=_rng_dropout)
-            train_state, loss, recon, metrics = train_step(train_state, inputs)
+            loss, recon, metrics = train_step(tokenizer, optimizer, inputs)
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1
