@@ -327,7 +327,7 @@ if __name__ == "__main__":
     else:
         # Restore from pre-trained tokenizer (and LAM)
         train_state = restore_genie_components(
-            train_state, replicated_sharding, grain_iterator, dummy_inputs, rng, args
+            train_state, replicated_sharding, dummy_inputs, rng, args
         )
 
     # --- TRAIN LOOP ---
