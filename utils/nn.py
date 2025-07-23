@@ -28,111 +28,112 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[: x.shape[2]]
         return x
 
+
 # class STBlock2(nn.Module):
-    # dim: int
-    # num_heads: int
-    # dropout: float
-    # param_dtype: jnp.dtype
-    # dtype: jnp.dtype
+# dim: int
+# num_heads: int
+# dropout: float
+# param_dtype: jnp.dtype
+# dtype: jnp.dtype
 
-    # @nn.remat
-    # @nn.compact
-    # def __call__(self, x: jax.Array) -> jax.Array:
-        # # --- Spatial attention ---
-        # z = PositionalEncoding(self.dim)(x)
-        # z = nn.LayerNorm(
-            # param_dtype=self.param_dtype,
-            # dtype=self.dtype,
-        # )(z)
-        # causal_mask = jnp.tri(z.shape[-2])
-        # z = nn.MultiHeadAttention(
-            # num_heads=self.num_heads,
-            # qkv_features=self.dim,
-            # dropout_rate=self.dropout,
-            # param_dtype=self.param_dtype,
-            # dtype=self.dtype,
-        # )(z, mask=causal_mask)
-        # x = x + z
+# @nn.remat
+# @nn.compact
+# def __call__(self, x: jax.Array) -> jax.Array:
+# # --- Spatial attention ---
+# z = PositionalEncoding(self.dim)(x)
+# z = nn.LayerNorm(
+# param_dtype=self.param_dtype,
+# dtype=self.dtype,
+# )(z)
+# causal_mask = jnp.tri(z.shape[-2])
+# z = nn.MultiHeadAttention(
+# num_heads=self.num_heads,
+# qkv_features=self.dim,
+# dropout_rate=self.dropout,
+# param_dtype=self.param_dtype,
+# dtype=self.dtype,
+# )(z, mask=causal_mask)
+# x = x + z
 
-        # # --- Temporal attention ---
-        # x = x.swapaxes(1, 2)
-        # z = PositionalEncoding(self.dim)(x)
-        # z = nn.LayerNorm(
-            # param_dtype=self.param_dtype,
-            # dtype=self.dtype,
-        # )(z)
-        # causal_mask = jnp.tri(z.shape[-2])
-        # z = nn.MultiHeadAttention(
-            # num_heads=self.num_heads,
-            # qkv_features=self.dim,
-            # dropout_rate=self.dropout,
-            # param_dtype=self.param_dtype,
-            # dtype=self.dtype,
-        # )(z, mask=causal_mask)
-        # x = x + z
-        # x = x.swapaxes(1, 2)
+# # --- Temporal attention ---
+# x = x.swapaxes(1, 2)
+# z = PositionalEncoding(self.dim)(x)
+# z = nn.LayerNorm(
+# param_dtype=self.param_dtype,
+# dtype=self.dtype,
+# )(z)
+# causal_mask = jnp.tri(z.shape[-2])
+# z = nn.MultiHeadAttention(
+# num_heads=self.num_heads,
+# qkv_features=self.dim,
+# dropout_rate=self.dropout,
+# param_dtype=self.param_dtype,
+# dtype=self.dtype,
+# )(z, mask=causal_mask)
+# x = x + z
+# x = x.swapaxes(1, 2)
 
-        # # --- Feedforward ---
-        # z = nn.LayerNorm(
-            # param_dtype=self.param_dtype,
-            # dtype=self.dtype,
-        # )(x)
-        # # FIXME (f.srambical): Here, the attention hidden dimension is the same as the FFN's. Usually, FFN hidden dimension is 4x model_dim
-        # z = nn.Dense(
-            # self.dim,
-            # param_dtype=self.param_dtype,
-            # dtype=self.dtype,
-        # )(z)
-        # z = nn.gelu(z)
-        # x = x + z
+# # --- Feedforward ---
+# z = nn.LayerNorm(
+# param_dtype=self.param_dtype,
+# dtype=self.dtype,
+# )(x)
+# # FIXME (f.srambical): Here, the attention hidden dimension is the same as the FFN's. Usually, FFN hidden dimension is 4x model_dim
+# z = nn.Dense(
+# self.dim,
+# param_dtype=self.param_dtype,
+# dtype=self.dtype,
+# )(z)
+# z = nn.gelu(z)
+# x = x + z
 
-        # return x
+# return x
 
 # class CausalTransformer(nn.Module):
-    # model_dim: int
-    # out_dim: int
-    # num_blocks: int
-    # num_heads: int
-    # dropout: float
-    # param_dtype: jnp.dtype
-    # dtype: jnp.dtype
+# model_dim: int
+# out_dim: int
+# num_blocks: int
+# num_heads: int
+# dropout: float
+# param_dtype: jnp.dtype
+# dtype: jnp.dtype
 
-    # @nn.compact
-    # def __call__(self, x: jax.Array) -> jax.Array:
-        # # Input projection and normalization
-        # x = nn.Sequential(
-            # [
-                # nn.LayerNorm(
-                    # param_dtype=self.param_dtype,
-                    # dtype=self.dtype,
-                # ),
-                # nn.Dense(self.model_dim,
-                # param_dtype=self.param_dtype,
-                # dtype=self.dtype,
-                # ),
-                # nn.LayerNorm(
-                    # param_dtype=self.param_dtype,
-                    # dtype=self.dtype,
-                # ),
-            # ]
-        # )(x)
-        # # Causal transformer blocks
-        # for _ in range(self.num_blocks):
-            # x = STBlock2(
-                # dim=self.model_dim,
-                # num_heads=self.num_heads,
-                # dropout=self.dropout,
-                # param_dtype=self.param_dtype,
-                # dtype=self.dtype,
-            # )(x)
+# @nn.compact
+# def __call__(self, x: jax.Array) -> jax.Array:
+# # Input projection and normalization
+# x = nn.Sequential(
+# [
+# nn.LayerNorm(
+# param_dtype=self.param_dtype,
+# dtype=self.dtype,
+# ),
+# nn.Dense(self.model_dim,
+# param_dtype=self.param_dtype,
+# dtype=self.dtype,
+# ),
+# nn.LayerNorm(
+# param_dtype=self.param_dtype,
+# dtype=self.dtype,
+# ),
+# ]
+# )(x)
+# # Causal transformer blocks
+# for _ in range(self.num_blocks):
+# x = STBlock2(
+# dim=self.model_dim,
+# num_heads=self.num_heads,
+# dropout=self.dropout,
+# param_dtype=self.param_dtype,
+# dtype=self.dtype,
+# )(x)
 
-        # # Output projection
-        # x = nn.Dense(
-            # self.out_dim,
-            # param_dtype=self.param_dtype,
-            # dtype=self.dtype,
-        # )(x)
-        # return x  # (B, T, E)
+# # Output projection
+# x = nn.Dense(
+# self.out_dim,
+# param_dtype=self.param_dtype,
+# dtype=self.dtype,
+# )(x)
+# return x  # (B, T, E)
 
 
 class STBlock(nn.Module):
@@ -153,15 +154,18 @@ class STBlock(nn.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
         )(z)
+        spatial_causal_mask = None if self.spatial_bert else jnp.tri(z.shape[-2])
         z = nn.MultiHeadAttention(
             num_heads=self.num_heads,
             qkv_features=self.dim,
             dropout_rate=self.dropout,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
-            attention_fn=_create_flash_attention_fn(self.use_flash_attention, is_causal=not self.spatial_bert),
+            attention_fn=_create_flash_attention_fn(
+                self.use_flash_attention, is_causal=not self.spatial_bert
+            ),
             # decode=True
-        )(z)
+        )(z, mask=spatial_causal_mask)
         x = x + z
 
         # --- Temporal attention ---
@@ -178,10 +182,12 @@ class STBlock(nn.Module):
             dropout_rate=self.dropout,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
-            attention_fn=_create_flash_attention_fn(self.use_flash_attention, is_causal=True),
+            attention_fn=_create_flash_attention_fn(
+                self.use_flash_attention, is_causal=True
+            ),
             # decode=True
-        # FIXME (f.srambical): check whether we should still pass the mask if we set is_causal=True
-        )(z)
+            # FIXME (f.srambical): check whether we should still pass the mask if we set is_causal=True
+        )(z, mask=causal_mask)
         x = x + z
         x = x.swapaxes(1, 2)
 
@@ -221,9 +227,10 @@ class STTransformer(nn.Module):
                     param_dtype=self.param_dtype,
                     dtype=self.dtype,
                 ),
-                nn.Dense(self.model_dim,
-                param_dtype=self.param_dtype,
-                dtype=self.dtype,
+                nn.Dense(
+                    self.model_dim,
+                    param_dtype=self.param_dtype,
+                    dtype=self.dtype,
                 ),
                 nn.LayerNorm(
                     param_dtype=self.param_dtype,
@@ -302,22 +309,26 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool):
     requires a sequence length that is a multiple of 4. We pad the sequence length to the nearest
     multiple of 4 and mask accordingly.
     """
-        
+
     def attention_fn(query, key, value, bias=None, mask=None, **kwargs):
-        implementation = 'cudnn' if use_flash_attention else None
+        implementation = "cudnn" if use_flash_attention else None
 
         def _rearrange(x):
-            return einops.rearrange(x, '... l h d -> (...) l h d')
+            return einops.rearrange(x, "... l h d -> (...) l h d")
+
         def _pad(x):
             return jnp.pad(x, ((0, 0), (0, pad_size), (0, 0), (0, 0)))
+
         def _fuse_masks(mask: jax.Array, attention_mask: jax.Array) -> jax.Array:
             mask_bool = mask.astype(jnp.bool_)
-            expanded_mask = jnp.pad(mask_bool, ((0, pad_size), (0, pad_size)), constant_values=False)
+            expanded_mask = jnp.pad(
+                mask_bool, ((0, pad_size), (0, pad_size)), constant_values=False
+            )
             return jnp.logical_and(attention_mask, expanded_mask)
-        
+
         original_shape = query.shape
         original_seq_len = query.shape[-3]
-        
+
         # Pad to nearest multiple of 4
         target_seq_len = ((original_seq_len + 3) // 4) * 4
         pad_size = target_seq_len - original_seq_len
@@ -325,16 +336,18 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool):
         query_4d = _pad(_rearrange(query))
         key_4d = _pad(_rearrange(key))
         value_4d = _pad(_rearrange(value))
-        
+
         attention_mask = jnp.ones((target_seq_len, target_seq_len), dtype=jnp.bool_)
         attention_mask = attention_mask.at[original_seq_len:, :].set(False)
         attention_mask = attention_mask.at[:, original_seq_len:].set(False)
 
-        mask_4d = _fuse_masks(mask, attention_mask) if mask is not None else attention_mask
+        mask_4d = (
+            _fuse_masks(mask, attention_mask) if mask is not None else attention_mask
+        )
         mask_4d = mask_4d[jnp.newaxis, jnp.newaxis, :, :]  # (1, 1, seq_len, seq_len)
-        
+
         bias_4d = _pad(_rearrange(bias)) if bias is not None else None
-        
+
         output_4d = jax.nn.dot_product_attention(
             query=query_4d,
             key=key_4d,
@@ -346,6 +359,5 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool):
             **kwargs
         )
         return output_4d[..., :original_seq_len, :, :].reshape(original_shape)
-    
-    return attention_fn
 
+    return attention_fn

@@ -20,6 +20,7 @@ from utils.dataloader import get_dataloader
 from utils.lr_utils import get_lr_schedule
 from utils.parameter_utils import count_parameters_by_component
 
+
 @dataclass
 class Args:
     # Experiment
@@ -37,9 +38,11 @@ class Args:
     init_lr: float = 0.0
     max_lr: float = 3e-5
     decay_end: float = 0.0
-    wsd_decay_steps: int = 10000 # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
+    wsd_decay_steps: int = (
+        10000  # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
+    )
     warmup_steps: int = 5000
-    lr_schedule : str = "wsd" # supported options: wsd, cos
+    lr_schedule: str = "wsd"  # supported options: wsd, cos
     # Tokenizer
     tokenizer_dim: int = 512
     latent_patch_dim: int = 32
@@ -95,25 +98,24 @@ def dynamics_loss_fn(params, state, inputs):
     )
     mask = outputs["mask"]
     outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
+    outputs["recon"] = outputs["recon"].astype(jnp.float32)
     logits = outputs["token_logits"]
     targets = outputs["video_tokens"]
 
     # if not args.use_maskgit:
-        # logits = outputs["token_logits"][:, :, :-1]
-        # targets = outputs["video_tokens"][:, :, 1:]
-        # mask = outputs["mask"][:, :, 1:] 
+    # logits = outputs["token_logits"][:, :, :-1]
+    # targets = outputs["video_tokens"][:, :, 1:]
+    # mask = outputs["mask"][:, :, 1:]
 
-    ce_loss = optax.softmax_cross_entropy_with_integer_labels(
-        logits, targets
-    )
+    ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets)
     ce_loss = (mask * ce_loss).sum() / mask.sum()
     acc = logits.argmax(-1) == targets
     acc = (mask * acc).sum() / mask.sum()
     select_probs = jax.nn.softmax(logits)
     gt = inputs["videos"].clip(0, 1).reshape(-1, *inputs["videos"].shape[2:])
     recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
-    psnr = pix.psnr(gt, recon).mean() # type: ignore
-    ssim = pix.ssim(gt, recon).mean() # type: ignore
+    psnr = pix.psnr(gt, recon).mean()  # type: ignore
+    ssim = pix.ssim(gt, recon).mean()  # type: ignore
     _, index_counts_lam = jnp.unique_counts(
         jnp.ravel(outputs["lam_indices"]), size=args.num_latent_actions, fill_value=0
     )
@@ -237,14 +239,22 @@ if __name__ == "__main__":
     print(param_counts)
 
     # --- Initialize optimizer ---
-    lr_schedule = get_lr_schedule(args.lr_schedule, 
-                                  args.init_lr, 
-                                  args.max_lr, 
-                                  args.decay_end, 
-                                  args.num_steps, 
-                                  args.warmup_steps, 
-                                  args.wsd_decay_steps)
-    tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
+    lr_schedule = get_lr_schedule(
+        args.lr_schedule,
+        args.init_lr,
+        args.max_lr,
+        args.decay_end,
+        args.num_steps,
+        args.warmup_steps,
+        args.wsd_decay_steps,
+    )
+    tx = optax.adamw(
+        learning_rate=lr_schedule,
+        b1=0.9,
+        b2=0.9,
+        weight_decay=1e-4,
+        mu_dtype=args.dtype,
+    )
     train_state = TrainState.create(apply_fn=genie.apply, params=init_params, tx=tx)
 
     device_mesh_arr = create_device_mesh((num_devices,))
@@ -263,8 +273,8 @@ if __name__ == "__main__":
     handler_registry.add(
         "model_state", ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler
     )
-    handler_registry.add("dataloader_state", grain.checkpoint.CheckpointSave, grain.checkpoint.CheckpointHandler)  # type: ignore
-    handler_registry.add("dataloader_state", grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler)  # type: ignore
+    # handler_registry.add("dataloader_state", grain.checkpoint.CheckpointSave, grain.checkpoint.CheckpointHandler)  # type: ignore
+    # handler_registry.add("dataloader_state", grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler)  # type: ignore
 
     checkpoint_options = ocp.CheckpointManagerOptions(
         save_interval_steps=args.log_checkpoint_interval,
@@ -286,52 +296,53 @@ if __name__ == "__main__":
         for x in os.listdir(args.data_dir)
         if x.endswith(".array_record")
     ]
-    grain_dataloader = get_dataloader(
-        array_record_files,
-        args.seq_len,
-        # NOTE: We deliberately pass the global batch size
-        # The dataloader shards the dataset across all processes
-        args.batch_size,
-        *image_shape,
-        num_workers=8,
-        prefetch_buffer_size=1,
-        seed=args.seed,
-    )
-    initial_state = grain_dataloader._create_initial_state()
-    grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
+    # grain_dataloader = get_dataloader(
+    # array_record_files,
+    # args.seq_len,
+    # # NOTE: We deliberately pass the global batch size
+    # # The dataloader shards the dataset across all processes
+    # args.batch_size,
+    # *image_shape,
+    # num_workers=8,
+    # prefetch_buffer_size=1,
+    # seed=args.seed,
+    # )
+    # initial_state = grain_dataloader._create_initial_state()
+    # grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
 
     # --- Restore checkpoint ---
     if args.restore_ckpt:
-        # Restore full dynamics model
-        abstract_train_state = jax.tree_util.tree_map(
-            ocp.utils.to_shape_dtype_struct, train_state
-        )
-        restored = checkpoint_manager.restore(
-            checkpoint_manager.latest_step(),
-            args=ocp.args.Composite(
-                model_state=ocp.args.StandardRestore(abstract_train_state),
-                dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
-            ),
-        )
-        train_state = restored["model_state"]
-        grain_iterator = restored["dataloader_state"]
-        step = checkpoint_manager.latest_step() or 0
-        print(f"Restored dataloader and model state from step {step}")
+        pass
+        # # Restore full dynamics model
+        # abstract_train_state = jax.tree_util.tree_map(
+        # ocp.utils.to_shape_dtype_struct, train_state
+        # )
+        # restored = checkpoint_manager.restore(
+        # checkpoint_manager.latest_step(),
+        # args=ocp.args.Composite(
+        # model_state=ocp.args.StandardRestore(abstract_train_state),
+        # dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
+        # ),
+        # )
+        # train_state = restored["model_state"]
+        # grain_iterator = restored["dataloader_state"]
+        # step = checkpoint_manager.latest_step() or 0
+        # print(f"Restored dataloader and model state from step {step}")
     else:
         # Restore from pre-trained tokenizer (and LAM)
         train_state = restore_genie_components(
-            train_state, replicated_sharding, grain_iterator, dummy_inputs, rng, args
+            train_state, replicated_sharding, dummy_inputs, rng, args
         )
 
     # --- TRAIN LOOP ---
-    dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in grain_iterator)  # type: ignore
+    # dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in grain_iterator)  # type: ignore
     while step < args.num_steps:
         # for videos in dataloader:
-            # for i in range(videos.shape[0]):
-                # video_i = videos[i:i+1]  # shape (1, T, H, W, C)
-                # np.save(f"overfit_dir/oai_sample_seed69_{i}.npy", video_i)
-            # jax.debug.breakpoint()
-        videos = np.load("overfit_dir/oai_sample_seed69_1.npy") # *255.
+        # for i in range(videos.shape[0]):
+        # video_i = videos[i:i+1]  # shape (1, T, H, W, C)
+        # np.save(f"overfit_dir/oai_sample_seed69_{i}.npy", video_i)
+        # jax.debug.breakpoint()
+        videos = np.load("overfit_dir/oai_sample_seed69_1.npy")  # *255.
         # videos = videos.astype(np.uint8)
         videos = jax.make_array_from_process_local_data(videos_sharding, videos)
         while True:
@@ -381,9 +392,9 @@ if __name__ == "__main__":
                     step,
                     args=ocp.args.Composite(
                         model_state=ocp.args.StandardSave(train_state),
-                        dataloader_state=grain.checkpoint.CheckpointSave(
-                            grain_iterator
-                        ),
+                        # dataloader_state=grain.checkpoint.CheckpointSave(
+                        # grain_iterator
+                        # ),
                     ),
                 )
                 print(f"Saved checkpoint at step {step}")
