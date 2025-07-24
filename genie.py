@@ -307,7 +307,7 @@ class MaskGITStep(nnx.Module):
 def restore_genie_components(
     optimizer: nnx.Optimizer,
     sharding: jax.sharding.NamedSharding,
-    grain_iterator: grain.DataLoaderIterator,
+    inputs: Dict[str, jax.Array],
     rng: jax.Array,
     args,
 ):

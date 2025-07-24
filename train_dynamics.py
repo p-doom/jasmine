@@ -68,8 +68,8 @@ class Args:
     dyna_num_heads: int = 8
     dropout: float = 0.0
     mask_limit: float = 0.5
-    param_dtype: jnp.dtype = jnp.float32
-    dtype: jnp.dtype = jnp.bfloat16
+    param_dtype = jnp.float32
+    dtype = jnp.bfloat16
     use_flash_attention: bool = True
     # Logging
     log: bool = False
@@ -322,8 +322,8 @@ if __name__ == "__main__":
         print(f"Restored dataloader and model state from step {step}")
     else:
         # Restore from pre-trained tokenizer (and LAM)
-        optimizer = restore_genie_components(
-            optimizer, replicated_sharding, grain_iterator, rng, args
+        train_state = restore_genie_components(
+            train_state, replicated_sharding, dummy_inputs, rng, args
         )
 
     # --- TRAIN LOOP ---
