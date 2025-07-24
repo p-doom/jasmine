@@ -50,16 +50,15 @@ class DynamicsMaskGIT(nn.Module):
         vid_embed = self.patch_embed(batch["video_tokens"])
         if training:
             batch_size = vid_embed.shape[0]
-            rng1, rng2 = jax.random.split(batch["mask_rng"])
+            _rng_prob, *_rngs_mask = jax.random.split(batch["mask_rng"], batch_size + 1)
             mask_prob = jax.random.uniform(
-                rng1, shape=(batch_size,), minval=self.mask_limit
+                _rng_prob, shape=(batch_size,), minval=self.mask_limit
             )
-            mask_rngs = jax.random.split(rng2, batch_size)
             per_sample_shape = vid_embed.shape[1:-1]
             mask = jax.vmap(
                 lambda rng, prob: jax.random.bernoulli(rng, prob, per_sample_shape),
                 in_axes=(0, 0),
-            )(mask_rngs, mask_prob)
+            )(_rngs_mask, mask_prob)
             mask = mask.at[:, 0].set(False)
             vid_embed = jnp.where(jnp.expand_dims(mask, -1), self.mask_token, vid_embed)
         else:
