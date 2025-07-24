@@ -39,25 +39,28 @@ class Args:
     start_frame: int = 0
     # Tokenizer checkpoint
     tokenizer_dim: int = 512
+    tokenizer_ffn_dim: int = 2048
     latent_patch_dim: int = 32
     num_patch_latents: int = 1024
     patch_size: int = 4
-    tokenizer_num_blocks: int = 8
+    tokenizer_num_blocks: int = 4
     tokenizer_num_heads: int = 8
     # LAM checkpoint
     lam_dim: int = 512
+    lam_ffn_dim: int = 2048
     latent_action_dim: int = 32
     num_latent_actions: int = 6
     lam_patch_size: int = 16
-    lam_num_blocks: int = 8
+    lam_num_blocks: int = 4
     lam_num_heads: int = 8
     lam_co_train: bool = True
     # Dynamics checkpoint
     dyna_dim: int = 512
-    dyna_num_blocks: int = 12
+    dyna_ffn_dim: int = 2048
+    dyna_num_blocks: int = 6
     dyna_num_heads: int = 8
-    param_dtype: jnp.dtype = jnp.float32
-    dtype: jnp.dtype = jnp.bfloat16
+    param_dtype = jnp.float32
+    dtype = jnp.bfloat16
     use_flash_attention: bool = True
 
 
@@ -69,6 +72,7 @@ genie = Genie(
     # Tokenizer
     in_dim=args.image_channels,
     tokenizer_dim=args.tokenizer_dim,
+    tokenizer_ffn_dim=args.tokenizer_ffn_dim,
     latent_patch_dim=args.latent_patch_dim,
     num_patch_latents=args.num_patch_latents,
     patch_size=args.patch_size,
@@ -76,6 +80,7 @@ genie = Genie(
     tokenizer_num_heads=args.tokenizer_num_heads,
     # LAM
     lam_dim=args.lam_dim,
+    lam_ffn_dim=args.lam_ffn_dim,
     latent_action_dim=args.latent_action_dim,
     num_latent_actions=args.num_latent_actions,
     lam_patch_size=args.lam_patch_size,
@@ -84,6 +89,7 @@ genie = Genie(
     lam_co_train=args.lam_co_train,
     # Dynamics
     dyna_dim=args.dyna_dim,
+    dyna_ffn_dim=args.dyna_ffn_dim,
     dyna_num_blocks=args.dyna_num_blocks,
     dyna_num_heads=args.dyna_num_heads,
     use_maskgit=False,
@@ -141,10 +147,7 @@ def _autoreg_sample(rng, video_batch, action_batch):
     sampling_fn = nn.apply(_sampling_wrapper, genie)
     rng, _rng = jax.random.split(rng)
     batch = dict(videos=vid, latent_actions=action_batch, rng=_rng)
-    generated_vid = sampling_fn(
-        params,
-        batch
-    )
+    generated_vid = sampling_fn(params, batch)
     return generated_vid
 
 def _get_dataloader_iterator():
@@ -194,11 +197,11 @@ print(f"SSIM: {ssim}")
 true_videos = (video_batch * 255).astype(np.uint8)
 pred_videos = (vid * 255).astype(np.uint8)
 video_comparison = np.zeros((2, *vid.shape), dtype=np.uint8)
-video_comparison[0] = true_videos[:, :args.seq_len]
+video_comparison[0] = true_videos[:, : args.seq_len]
 video_comparison[1] = pred_videos
 frames = einops.rearrange(video_comparison, "n b t h w c -> t (b h) (n w) c")
 
-# --- Save video --- 
+# --- Save video ---
 imgs = [Image.fromarray(img) for img in frames]
 # Write actions on each frame, on each row (i.e., for each video in the batch, on the GT row)
 for t, img in enumerate(imgs[1:]):

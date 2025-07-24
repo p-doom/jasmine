@@ -12,6 +12,7 @@ class DynamicsMaskGIT(nn.Module):
     """MaskGIT dynamics model"""
 
     model_dim: int
+    ffn_dim: int
     num_latents: int
     num_blocks: int
     num_heads: int
@@ -24,6 +25,7 @@ class DynamicsMaskGIT(nn.Module):
     def setup(self):
         self.dynamics = STTransformer(
             self.model_dim,
+            self.ffn_dim,
             self.num_latents,
             self.num_blocks,
             self.num_heads,
@@ -49,9 +51,16 @@ class DynamicsMaskGIT(nn.Module):
         # --- Mask videos ---
         vid_embed = self.patch_embed(batch["video_tokens"])
         if training:
-            rng1, rng2 = jax.random.split(batch["mask_rng"])
-            mask_prob = jax.random.uniform(rng1, minval=self.mask_limit)
-            mask = jax.random.bernoulli(rng2, mask_prob, vid_embed.shape[:-1])
+            batch_size = vid_embed.shape[0]
+            _rng_prob, *_rngs_mask = jax.random.split(batch["mask_rng"], batch_size + 1)
+            mask_prob = jax.random.uniform(
+                _rng_prob, shape=(batch_size,), minval=self.mask_limit
+            )
+            per_sample_shape = vid_embed.shape[1:-1]
+            mask = jax.vmap(
+                lambda rng, prob: jax.random.bernoulli(rng, prob, per_sample_shape),
+                in_axes=(0, 0),
+            )(jnp.asarray(_rngs_mask), mask_prob)
             mask = mask.at[:, 0].set(False)
             vid_embed = jnp.where(jnp.expand_dims(mask, -1), self.mask_token, vid_embed)
         else:
@@ -68,6 +77,7 @@ class DynamicsAutoregressive(nn.Module):
     """Autoregressive (causal) dynamics model"""
 
     model_dim: int
+    ffn_dim: int
     num_latents: int
     num_blocks: int
     num_heads: int
@@ -79,6 +89,7 @@ class DynamicsAutoregressive(nn.Module):
     def setup(self):
         self.dynamics = STTransformer(
             self.model_dim,
+            ffn_dim: int,
             self.num_latents,
             self.num_blocks,
             self.num_heads,
