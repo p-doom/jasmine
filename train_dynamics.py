@@ -345,15 +345,15 @@ if __name__ == "__main__":
     # --- TRAIN LOOP ---
     dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in grain_iterator)  # type: ignore
     while step < args.num_steps:
-        for videos in dataloader:
+        # for videos in dataloader:
         # for i in range(videos.shape[0]):
         # video_i = videos[i:i+1]  # shape (1, T, H, W, C)
         # np.save(f"overfit_dir/oai_sample_seed69_{i}.npy", video_i)
         # jax.debug.breakpoint()
-        # videos = np.load("overfit_dir/oai_sample_seed69_1.npy")  # *255.
+        videos = np.load("overfit_dir/oai_sample_seed69_1.npy")  # *255.
         # videos = videos.astype(np.uint8)
-        # videos = jax.make_array_from_process_local_data(videos_sharding, videos)
-        # while True:
+        videos = jax.make_array_from_process_local_data(videos_sharding, videos)
+        while True:
             # --- Train step ---
             rng, _rng, _rng_dropout, _rng_mask = jax.random.split(rng, 4)
 

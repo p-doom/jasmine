@@ -119,11 +119,11 @@ class DynamicsAutoregressive(nn.Module):
         # noise = jax.random.normal(_rng, vid_embed_padded.shape)
         # logits = self.dynamics(noise)[:, :, :-1]
 
-        rng1, _rng = jax.random.split(batch["mask_rng"])
-        noise = 0.25 * jax.random.normal(_rng, vid_embed_padded.shape)
-        logits = self.dynamics(vid_embed_padded + noise)[:, :, :-1]
+        # rng1, _rng = jax.random.split(batch["mask_rng"])
+        # noise = 0.25 * jax.random.normal(_rng, vid_embed_padded.shape)
+        # logits = self.dynamics(vid_embed_padded + noise)[:, :, :-1]
 
-        # logits = self.dynamics(vid_embed_padded)[:, :, :-1]
+        logits = self.dynamics(vid_embed_padded)[:, :, :-1]
 
         mask = jnp.ones(vid_embed.shape[:-1])
         return dict(token_logits=logits, mask=mask)
