@@ -237,11 +237,6 @@ class STTransformer(nn.Module):
                     param_dtype=self.param_dtype,
                     dtype=self.dtype,
                 ),
-                nn.Dense(
-                    self.model_dim,
-                    param_dtype=self.param_dtype,
-                    dtype=self.dtype,
-                ),
                 nn.LayerNorm(
                     param_dtype=self.param_dtype,
                     dtype=self.dtype,

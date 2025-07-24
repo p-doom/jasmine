@@ -89,7 +89,7 @@ class DynamicsAutoregressive(nn.Module):
     def setup(self):
         self.dynamics = STTransformer(
             self.model_dim,
-            ffn_dim: int,
+            self.ffn_dim,
             self.num_latents,
             self.num_blocks,
             self.num_heads,

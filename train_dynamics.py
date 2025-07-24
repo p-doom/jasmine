@@ -42,9 +42,6 @@ class Args:
     wsd_decay_steps: int = (
         10000  # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
     )
-    wsd_decay_steps: int = (
-        10000  # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
-    )
     warmup_steps: int = 5000
     lr_schedule: str = "wsd"  # supported options: wsd, cos
     # Tokenizer
