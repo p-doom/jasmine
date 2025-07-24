@@ -97,7 +97,7 @@ class LatentActionModel(nn.Module):
         # --- Encode ---
         z = self.encoder(padded_patches)  # (B, T, N, E)
         # Get latent action for all future frames
-        z = z[:, 1:, 0]  # (B, T-1, E)
+        z = z[:, 1:, -1]  # (B, T-1, E)
 
         # --- Vector quantize ---
         z = z.reshape(B * (T - 1), self.latent_dim)
