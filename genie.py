@@ -3,7 +3,7 @@ from typing import Dict, Any
 import optax
 import jax
 import jax.numpy as jnp
-import flax.linen as nn
+import flax.nnx as nnx
 from flax.training.train_state import TrainState
 import orbax.checkpoint as ocp
 
@@ -14,39 +14,67 @@ from models.tokenizer import TokenizerVQVAE
 import grain
 
 
-class Genie(nn.Module):
+class Genie(nnx.Module):
     """Genie model"""
 
-    # --- Tokenizer ---
-    in_dim: int
-    tokenizer_dim: int
-    tokenizer_ffn_dim: int
-    latent_patch_dim: int
-    num_patch_latents: int
-    patch_size: int
-    tokenizer_num_blocks: int
-    tokenizer_num_heads: int
-    # --- LAM ---
-    lam_dim: int
-    lam_ffn_dim: int
-    latent_action_dim: int
-    num_latent_actions: int
-    lam_patch_size: int
-    lam_num_blocks: int
-    lam_num_heads: int
-    lam_co_train: bool
-    # --- Dynamics ---
-    dyna_dim: int
-    dyna_ffn_dim: int
-    dyna_num_blocks: int
-    dyna_num_heads: int
-    param_dtype: jnp.dtype
-    dtype: jnp.dtype
-    use_flash_attention: bool
-    dropout: float = 0.0
-    mask_limit: float = 0.0
+    def __init__(
+        self,
+        in_dim: int,
+        tokenizer_dim: int,
+        tokenizer_ffn_dim: int,
+        latent_patch_dim: int,
+        num_patch_latents: int,
+        patch_size: int,
+        tokenizer_num_blocks: int,
+        tokenizer_num_heads: int,
+        lam_dim: int,
+        lam_ffn_dim: int,
+        latent_action_dim: int,
+        num_latent_actions: int,
+        lam_patch_size: int,
+        lam_num_blocks: int,
+        lam_num_heads: int,
+        lam_co_train: bool,
+        dyna_dim: int,
+        dyna_ffn_dim: int,
+        dyna_num_blocks: int,
+        dyna_num_heads: int,
+        param_dtype: jnp.dtype,
+        dtype: jnp.dtype,
+        use_flash_attention: bool,
+        rngs: nnx.Rngs,
+        dropout: float = 0.0,
+        mask_limit: float = 0.0,
+    ):
+        # --- Tokenizer ---
+        self.in_dim = in_dim
+        self.tokenizer_dim = tokenizer_dim
+        self.tokenizer_ffn_dim = tokenizer_ffn_dim
+        self.latent_patch_dim = latent_patch_dim
+        self.num_patch_latents = num_patch_latents
+        self.patch_size = patch_size
+        self.tokenizer_num_blocks = tokenizer_num_blocks
+        self.tokenizer_num_heads = tokenizer_num_heads
+        # --- LAM ---
+        self.lam_dim = lam_dim
+        self.lam_ffn_dim = lam_ffn_dim
+        self.latent_action_dim = latent_action_dim
+        self.num_latent_actions = num_latent_actions
+        self.lam_patch_size = lam_patch_size
+        self.lam_num_blocks = lam_num_blocks
+        self.lam_num_heads = lam_num_heads
+        self.lam_co_train = lam_co_train
+        # --- Dynamics ---
+        self.dyna_dim = dyna_dim
+        self.dyna_ffn_dim = dyna_ffn_dim
+        self.dyna_num_blocks = dyna_num_blocks
+        self.dyna_num_heads = dyna_num_heads
+        self.param_dtype = param_dtype
+        self.dtype = dtype
+        self.use_flash_attention = use_flash_attention
+        self.dropout = dropout
+        self.mask_limit = mask_limit
 
-    def setup(self):
         self.tokenizer = TokenizerVQVAE(
             in_dim=self.in_dim,
             model_dim=self.tokenizer_dim,
@@ -61,6 +89,7 @@ class Genie(nn.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             use_flash_attention=self.use_flash_attention,
+            rngs=rngs,
         )
         self.lam = LatentActionModel(
             in_dim=self.in_dim,
@@ -76,6 +105,7 @@ class Genie(nn.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             use_flash_attention=self.use_flash_attention,
+            rngs=rngs,
         )
         self.dynamics = DynamicsMaskGIT(
             model_dim=self.dyna_dim,
@@ -88,6 +118,7 @@ class Genie(nn.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             use_flash_attention=self.use_flash_attention,
+            rngs=rngs,
         )
 
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
@@ -112,7 +143,6 @@ class Genie(nn.Module):
         outputs["lam_indices"] = lam_outputs["indices"]
         return outputs
 
-    @nn.compact
     def sample(
         self,
         batch: Dict[str, Any],
@@ -152,21 +182,22 @@ class Genie(nn.Module):
         token_idxs = jnp.concatenate([token_idxs, pad], axis=1)  # (B, S, N)
         action_tokens = self.lam.vq.get_codes(batch["latent_actions"])
 
-        MaskGITLoop = nn.scan(
-            MaskGITStep,
-            variable_broadcast="params",
-            split_rngs={"params": False},
-            in_axes=0,
-            out_axes=0,
-            length=steps,
-        )
-
-        loop_fn = MaskGITLoop(
+        maskgit_step = MaskGITStep(
             dynamics=self.dynamics,
             tokenizer=self.tokenizer,
             temperature=temperature,
             sample_argmax=sample_argmax,
             steps=steps,
+        )
+
+        def maskgit_loop_fn(carry, module, x):
+            return module(carry, x)
+
+        scanned_maskgit_loop = nnx.scan(
+            maskgit_loop_fn,
+            in_axes=(nnx.Carry, None, 0),
+            out_axes=(nnx.Carry, 0),
+            length=steps,
         )
 
         def generation_step_fn(carry, step_t):
@@ -186,7 +217,11 @@ class Genie(nn.Module):
                 mask,
                 action_tokens,
             )
-            final_carry_maskgit, _ = loop_fn(init_carry_maskgit, jnp.arange(steps))
+            # FIXME (f.srambical): test whether sampling works with this
+            final_carry_maskgit, _ = scanned_maskgit_loop(
+                init_carry_maskgit, maskgit_step, jnp.arange(steps)
+            )
+            final_carry_maskgit = carry
             updated_token_idxs = final_carry_maskgit[1]
             new_carry = (rng, updated_token_idxs)
             return new_carry, None
@@ -212,14 +247,21 @@ class Genie(nn.Module):
         return lam_output["indices"]
 
 
-class MaskGITStep(nn.Module):
-    dynamics: nn.Module
-    tokenizer: nn.Module
-    temperature: float
-    sample_argmax: bool
-    steps: int
+class MaskGITStep(nnx.Module):
+    def __init__(
+        self,
+        dynamics: DynamicsMaskGIT,
+        tokenizer: TokenizerVQVAE,
+        temperature: float,
+        sample_argmax: bool,
+        steps: int,
+    ):
+        self.dynamics = dynamics
+        self.tokenizer = tokenizer
+        self.temperature = temperature
+        self.sample_argmax = sample_argmax
+        self.steps = steps
 
-    @nn.compact
     def __call__(self, carry, x):
         rng, token_idxs, mask, action_tokens = carry
         step = x
@@ -227,7 +269,7 @@ class MaskGITStep(nn.Module):
 
         # --- Construct + encode video ---
         vid_embed = self.dynamics.patch_embed(token_idxs)  # (B, S, N, D)
-        mask_token = self.dynamics.mask_token  # (1, 1, 1, D,)
+        mask_token = self.dynamics.mask_token.value  # (1, 1, 1, D,)
         mask_expanded = mask[..., None]  # (B, S, N, 1)
         vid_embed = jnp.where(mask_expanded, mask_token, vid_embed)
 
@@ -261,16 +303,16 @@ class MaskGITStep(nn.Module):
         return new_carry, None
 
 
+# FIXME (f.srambical): add conversion script for old checkpoints
 def restore_genie_components(
-    train_state: TrainState,
+    optimizer: nnx.Optimizer,
     sharding: jax.sharding.NamedSharding,
     grain_iterator: grain.DataLoaderIterator,
-    inputs: Dict[str, jax.Array],
     rng: jax.Array,
     args,
 ):
     """Restore pre-trained Genie components"""
-    rng, _rng = jax.random.split(rng)
+    rngs = nnx.Rngs(rng)
 
     # dummy values since we only use tx to initialize the dummy train states
     dummy_tx = optax.adamw(
@@ -306,22 +348,23 @@ def restore_genie_components(
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
+        rngs=rngs,
     )
-    tokenizer_init_params = dummy_tokenizer.init(_rng, inputs)
-    dummy_tokenizer_train_state = TrainState.create(
-        apply_fn=dummy_tokenizer.apply, params=tokenizer_init_params, tx=dummy_tx
-    )
-    abstract_sharded_tokenizer_state = _create_abstract_sharded_pytree(
-        dummy_tokenizer_train_state, sharding
+    dummy_tokenizer_optimizer = nnx.Optimizer(dummy_tokenizer, dummy_tx)
+    dummy_tokenizer_optimizer_state = nnx.state(dummy_tokenizer_optimizer)
+    abstract_sharded_tokenizer_optimizer_state = _create_abstract_sharded_pytree(
+        dummy_tokenizer_optimizer_state, sharding
     )
     restored_tokenizer = tokenizer_checkpoint_manager.restore(
         step=tokenizer_checkpoint_manager.latest_step(),
         args=ocp.args.Composite(
-            model_state=ocp.args.StandardRestore(abstract_sharded_tokenizer_state),
+            model_state=ocp.args.StandardRestore(
+                abstract_sharded_tokenizer_optimizer_state
+            ),
         ),
     )["model_state"]
-    restored_tokenizer_params = restored_tokenizer.params["params"]
-    train_state.params["params"]["tokenizer"].update(restored_tokenizer_params)
+    nnx.update(dummy_tokenizer_optimizer.model, restored_tokenizer)
+    optimizer.model.tokenizer = dummy_tokenizer_optimizer.model
     tokenizer_checkpoint_manager.close()
 
     if args.lam_checkpoint:
@@ -344,33 +387,27 @@ def restore_genie_components(
             param_dtype=args.param_dtype,
             dtype=args.dtype,
             use_flash_attention=args.use_flash_attention,
+            rngs=rngs,
         )
-        lam_init_params = dummy_lam.init(_rng, inputs)
-        dummy_lam_train_state = TrainState.create(
-            apply_fn=dummy_lam.apply, params=lam_init_params, tx=dummy_tx
+        dummy_lam_optimizer = nnx.Optimizer(dummy_lam, dummy_tx)
+        dummy_lam_optimizer_state = nnx.state(dummy_lam_optimizer)
+        abstract_sharded_lam_optimizer_state = _create_abstract_sharded_pytree(
+            dummy_lam_optimizer_state, sharding
         )
-        abstract_sharded_lam_state = _create_abstract_sharded_pytree(
-            dummy_lam_train_state, sharding
-        )
-        restored_lam = lam_checkpoint_manager.restore(
+        restored_lam_optimizer = lam_checkpoint_manager.restore(
             step=lam_checkpoint_manager.latest_step(),
             args=ocp.args.Composite(
-                model_state=ocp.args.StandardRestore(abstract_sharded_lam_state),
+                model_state=ocp.args.StandardRestore(
+                    abstract_sharded_lam_optimizer_state
+                ),
             ),
         )["model_state"]
-        restored_lam_params = restored_lam.params["params"]
-        # Genie does not initialize all LAM modules, thus we omit those extra modules during restoration
-        # (f.srambical) FIXME: Currently, this is a small HBM memory crunch since the LAM's decoder is loaded into HBM and immediately dicarded.
-        # A workaround would be to restore to host memory first, and only move the weights to HBM after pruning the decoder
-        restored_lam_params = {
-            k: v
-            for k, v in restored_lam_params.items()
-            if k in train_state.params["params"]["lam"]
-        }
-        train_state.params["params"]["lam"].update(restored_lam_params)
+        nnx.update(dummy_lam_optimizer.model, restored_lam_optimizer)
+        optimizer.model.lam = dummy_lam_optimizer.model
+        # FIXME: (f.srambical): remove the lam decoder
         lam_checkpoint_manager.close()
 
-    return train_state
+    return optimizer
 
 
 def _create_abstract_sharded_pytree(pytree_template, sharding_spec):

@@ -1,32 +1,49 @@
 from typing import Dict, Any
 
 import jax.numpy as jnp
-import flax.linen as nn
+import flax.nnx as nnx
 
 from utils.preprocess import patchify, unpatchify
 from utils.nn import STTransformer, VectorQuantizer
 
 
-class LatentActionModel(nn.Module):
+class LatentActionModel(nnx.Module):
     """Latent Action ST-ViVit VQ-VAE"""
 
-    in_dim: int
-    model_dim: int
-    ffn_dim: int
-    latent_dim: int
-    num_latents: int
-    patch_size: int
-    num_blocks: int
-    num_heads: int
-    dropout: float
-    codebook_dropout: float
-    param_dtype: jnp.dtype
-    dtype: jnp.dtype
-    use_flash_attention: bool
+    def __init__(
+        self,
+        in_dim: int,
+        model_dim: int,
+        ffn_dim: int,
+        latent_dim: int,
+        num_latents: int,
+        patch_size: int,
+        num_blocks: int,
+        num_heads: int,
+        dropout: float,
+        codebook_dropout: float,
+        param_dtype: jnp.dtype,
+        dtype: jnp.dtype,
+        use_flash_attention: bool,
+        rngs: nnx.Rngs,
+    ):
+        self.in_dim = in_dim
+        self.model_dim = model_dim
+        self.ffn_dim = ffn_dim
+        self.latent_dim = latent_dim
+        self.num_latents = num_latents
+        self.patch_size = patch_size
+        self.num_blocks = num_blocks
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.codebook_dropout = codebook_dropout
+        self.param_dtype = param_dtype
+        self.dtype = dtype
+        self.use_flash_attention = use_flash_attention
 
-    def setup(self):
         self.patch_token_dim = self.in_dim * self.patch_size**2
         self.encoder = STTransformer(
+            self.in_dim,
             self.model_dim,
             self.ffn_dim,
             self.latent_dim,
@@ -36,28 +53,35 @@ class LatentActionModel(nn.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
+            rngs=rngs,
         )
-        self.action_in = self.param(
-            "action_in",
-            nn.initializers.lecun_uniform(),
-            (1, 1, 1, self.patch_token_dim),
+        self.action_in = nnx.Param(
+            nnx.initializers.lecun_uniform()(
+                rngs.params(), (1, 1, 1, self.patch_token_dim)
+            )
         )
         self.vq = VectorQuantizer(
             self.latent_dim,
             self.num_latents,
             self.codebook_dropout,
+            rngs=rngs,
         )
-        self.patch_up = nn.Dense(
+        self.patch_up = nnx.Linear(
+            self.patch_token_dim,
             self.model_dim,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
+            rngs=rngs,
         )
-        self.action_up = nn.Dense(
+        self.action_up = nnx.Linear(
+            self.latent_dim,
             self.model_dim,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
+            rngs=rngs,
         )
         self.decoder = STTransformer(
+            self.model_dim,
             self.model_dim,
             self.ffn_dim,
             self.patch_token_dim,
@@ -67,6 +91,7 @@ class LatentActionModel(nn.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
+            rngs=rngs,
         )
 
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
@@ -81,7 +106,7 @@ class LatentActionModel(nn.Module):
         # --- Decode ---
         video_recon = self.decoder(video_action_patches)
         video_recon = video_recon.astype(jnp.float32)
-        video_recon = nn.sigmoid(video_recon)
+        video_recon = nnx.sigmoid(video_recon)
         video_recon = video_recon.astype(self.dtype)
         outputs["recon"] = unpatchify(video_recon, self.patch_size, H, W)
         return outputs
@@ -90,7 +115,9 @@ class LatentActionModel(nn.Module):
         # --- Preprocess videos ---
         B, T = videos.shape[:2]
         patches = patchify(videos, self.patch_size)
-        action_pad = jnp.broadcast_to(self.action_in, (B, T, 1, self.patch_token_dim))
+        action_pad = jnp.broadcast_to(
+            self.action_in.value, (B, T, 1, self.patch_token_dim)
+        )
         padded_patches = jnp.concatenate((action_pad, patches), axis=2)
 
         # --- Encode ---
