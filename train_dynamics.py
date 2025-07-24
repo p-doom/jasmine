@@ -19,6 +19,28 @@ from genie import Genie, restore_genie_components
 from utils.dataloader import get_dataloader
 from utils.lr_utils import get_lr_schedule
 from utils.parameter_utils import count_parameters_by_component
+from array_record.python import array_record_data_source
+
+
+def is_array_record_file_valid(path):
+    try:
+        ds = array_record_data_source.ArrayRecordDataSource([path])
+        _ = len(ds)  # Try to read metadata
+        return True
+    except Exception as e:
+        print(f"Skipping corrupted file: {path} -- {e}")
+        return False
+
+
+def get_valid_array_record_paths(array_record_dir):
+    valid_paths = []
+    for fname in os.listdir(array_record_dir):
+        if fname.endswith(".array_record"):
+            path = os.path.join(array_record_dir, fname)
+            if is_array_record_file_valid(path):
+                valid_paths.append(path)
+    return valid_paths
+
 
 @dataclass
 class Args:
@@ -37,9 +59,11 @@ class Args:
     init_lr: float = 0.0
     max_lr: float = 3e-5
     decay_end: float = 0.0
-    wsd_decay_steps: int = 10000 # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
+    wsd_decay_steps: int = (
+        10000  # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
+    )
     warmup_steps: int = 5000
-    lr_schedule : str = "wsd" # supported options: wsd, cos
+    lr_schedule: str = "wsd"  # supported options: wsd, cos
     # Tokenizer
     tokenizer_dim: int = 512
     latent_patch_dim: int = 32
@@ -50,7 +74,7 @@ class Args:
     tokenizer_checkpoint: str = ""
     # LAM
     lam_dim: int = 512
-    latent_action_dim: int = 32
+    latent_action_dim: int = 11 
     num_latent_actions: int = 6
     lam_patch_size: int = 16
     lam_num_blocks: int = 8
@@ -86,6 +110,9 @@ args = tyro.cli(Args)
 def dynamics_loss_fn(params, state, inputs):
     """Compute masked dynamics loss"""
     inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
+    inputs["actions"] = inputs["actions"].astype(args.dtype) 
+    # jax.debug.breakpoint()
+
     outputs = state.apply_fn(
         params,
         inputs,
@@ -103,8 +130,8 @@ def dynamics_loss_fn(params, state, inputs):
     select_probs = jax.nn.softmax(outputs["token_logits"])
     gt = inputs["videos"].clip(0, 1).reshape(-1, *inputs["videos"].shape[2:])
     recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
-    psnr = pix.psnr(gt, recon).mean() # type: ignore
-    ssim = pix.ssim(gt, recon).mean() # type: ignore
+    psnr = pix.psnr(gt, recon).mean()  # type: ignore
+    ssim = pix.ssim(gt, recon).mean()  # type: ignore
     _, index_counts_lam = jnp.unique_counts(
         jnp.ravel(outputs["lam_indices"]), size=args.num_latent_actions, fill_value=0
     )
@@ -130,6 +157,7 @@ def dynamics_loss_fn(params, state, inputs):
 @jax.jit
 def train_step(state, inputs):
     """Update state and compute metrics"""
+    # jax.debug.breakpoint()
     grad_fn = jax.value_and_grad(dynamics_loss_fn, has_aux=True, allow_int=True)
     (loss, (recon, metrics)), grads = grad_fn(state.params, state, inputs)
     state = state.apply_gradients(grads=grads)
@@ -192,8 +220,8 @@ if __name__ == "__main__":
             (per_device_batch_size_for_init, args.seq_len, *image_shape),
             dtype=args.dtype,
         ),
-        action=jnp.zeros(
-            (per_device_batch_size_for_init, args.seq_len), dtype=args.dtype
+        actions=jnp.zeros(
+            (per_device_batch_size_for_init, args.seq_len, args.latent_action_dim), dtype=args.dtype
         ),
         mask_rng=_rng,
     )
@@ -227,14 +255,22 @@ if __name__ == "__main__":
     print(param_counts)
 
     # --- Initialize optimizer ---
-    lr_schedule = get_lr_schedule(args.lr_schedule, 
-                                  args.init_lr, 
-                                  args.max_lr, 
-                                  args.decay_end, 
-                                  args.num_steps, 
-                                  args.warmup_steps, 
-                                  args.wsd_decay_steps)
-    tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
+    lr_schedule = get_lr_schedule(
+        args.lr_schedule,
+        args.init_lr,
+        args.max_lr,
+        args.decay_end,
+        args.num_steps,
+        args.warmup_steps,
+        args.wsd_decay_steps,
+    )
+    tx = optax.adamw(
+        learning_rate=lr_schedule,
+        b1=0.9,
+        b2=0.9,
+        weight_decay=1e-4,
+        mu_dtype=args.dtype,
+    )
     train_state = TrainState.create(apply_fn=genie.apply, params=init_params, tx=tx)
 
     device_mesh_arr = create_device_mesh((num_devices,))
@@ -242,6 +278,7 @@ if __name__ == "__main__":
 
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
     videos_sharding = NamedSharding(mesh, PartitionSpec("data", None, None, None, None))
+    actions_sharding = NamedSharding(mesh, PartitionSpec("data", None, None))
     train_state = jax.device_put(train_state, replicated_sharding)
 
     # --- Initialize checkpoint manager ---
@@ -270,17 +307,27 @@ if __name__ == "__main__":
         handler_registry=handler_registry,
     )
 
+
+
     # --- Create DataLoaderIterator from dataloader ---
-    array_record_files = [
+    MIN_SIZE = 64 * 1024  # 64KB
+
+    array_record_dir = args.data_dir
+    array_record_paths = get_valid_array_record_paths(array_record_dir)
+
+    # Optionally, warn if any files were skipped
+    all_files = [
         os.path.join(args.data_dir, x)
         for x in os.listdir(args.data_dir)
         if x.endswith(".array_record")
     ]
+    skipped = set(all_files) - set(array_record_paths)
+    if skipped:
+        print(f"Warning: Skipped {len(skipped)} ArrayRecord files smaller than 64KB:\n" + "\n".join(skipped))
+
     grain_dataloader = get_dataloader(
-        array_record_files,
+        array_record_paths,
         args.seq_len,
-        # NOTE: We deliberately pass the global batch size
-        # The dataloader shards the dataset across all processes
         args.batch_size,
         *image_shape,
         num_workers=8,
@@ -314,14 +361,26 @@ if __name__ == "__main__":
         )
 
     # --- TRAIN LOOP ---
-    dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in grain_iterator)  # type: ignore
+    # jax.debug.breakpoint()
+    dataloader = ((jax.make_array_from_process_local_data(videos_sharding, vid), (jax.make_array_from_process_local_data(actions_sharding, act))) for (vid, act) in grain_iterator)  # type: ignore
     while step < args.num_steps:
-        for videos in dataloader:
+
+        # for videos in dataloader:
+        for videos, actions in dataloader:
+            # jax.debug.breakpoint()
+            # print(f"Actions: {actions[0]}")
+            # print(f"Actions 1: {actions[1]}")
+            # print(f"Actions 2: {actions[2]}")
+
             # --- Train step ---
             rng, _rng, _rng_dropout, _rng_mask = jax.random.split(rng, 4)
 
+
+            # jax.debug.breakpoint()
+
             inputs = dict(
                 videos=videos,
+                actions=actions,
                 rng=_rng,
                 dropout_rng=_rng_dropout,
                 mask_rng=_rng_mask,

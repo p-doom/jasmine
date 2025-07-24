@@ -61,7 +61,7 @@ class Genie(nn.Module):
         self.lam = LatentActionModel(
             in_dim=self.in_dim,
             model_dim=self.lam_dim,
-            latent_dim=self.latent_patch_dim,
+            latent_dim=self.latent_action_dim,
             num_latents=self.num_latent_actions,
             patch_size=self.lam_patch_size,
             num_blocks=self.lam_num_blocks,
@@ -91,7 +91,13 @@ class Genie(nn.Module):
             self.lam_co_train,
             lambda: lam_outputs["z_q"],
             lambda: jax.lax.stop_gradient(lam_outputs["z_q"])
-        )
+        ) 
+        # print(f"latent_actions_old shape: {latent_actions_old.shape}")
+
+        # latent_actions = batch["actions"][:, :-1, :].reshape(latent_actions_old.shape)
+
+        # print(f"latent_actions shape: {latent_actions.shape}")
+
         outputs = dict(
             video_tokens=jax.lax.stop_gradient(tokenizer_outputs["indices"]),
             latent_actions=latent_actions,
@@ -375,3 +381,4 @@ def _create_abstract_sharded_pytree(pytree_template, sharding_spec):
         return leaf_template
 
     return jax.tree_util.tree_map(map_fn, pytree_template)
+

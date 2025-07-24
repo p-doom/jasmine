@@ -3,6 +3,8 @@ import numpy as np
 import grain
 from typing import Any
 import pickle
+import os
+from array_record.python import array_record_data_source
 
 
 class EpisodeLengthFilter(grain.transforms.Filter):
@@ -77,6 +79,8 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
         episode_tensor = np.frombuffer(element["raw_video"], dtype=np.uint8)
         episode_tensor = episode_tensor.reshape(video_shape)
 
+        action_tensor = element["actions"] # (12, 1000, 11)
+
         current_episode_len = episode_tensor.shape[0]
         if current_episode_len < self.seq_len:
             raise ValueError(f"Episode length {current_episode_len} is shorter than "
@@ -87,10 +91,13 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
         
         start_idx = rng.integers(0, max_start_idx + 1)
 
-        seq = episode_tensor[start_idx : start_idx + self.seq_len]
+        seq = episode_tensor[start_idx : start_idx + self.seq_len] # (12, 16, 90, 160, 3)
+        actions = action_tensor[start_idx : start_idx + self.seq_len] # (12, 16, 11)
+        # jax.debug.breakpoint()
+        return seq, actions
 
-        return seq
-
+        # gt_actions = element["actions"]
+        # return seq, gt_actions
 
 def get_dataloader(
     array_record_paths: list[str],
