@@ -29,7 +29,10 @@ def generate_dummy_arrayrecord(
             )
 
             actions = np.random.randint(
-                0, vocab_size, size=(episode_length, num_action_tokens)
+                0,
+                vocab_size,
+                size=(episode_length, num_action_tokens),
+                dtype=np.uint8,
             )
 
             record = {
