@@ -11,6 +11,8 @@ def generate_dummy_arrayrecord(
     height: int = 64,
     width: int = 64,
     channels: int = 3,
+    num_action_tokens: int = 11,
+    vocab_size: int = 68,  # default vocab size from minerl
     seed: int = 42,
 ):
     """Generates a dummy ArrayRecord file with synthetic video data for testing."""
@@ -26,9 +28,17 @@ def generate_dummy_arrayrecord(
                 0, 256, size=(episode_length, height, width, channels), dtype=np.uint8
             )
 
+            actions = np.random.randint(
+                0,
+                vocab_size,
+                size=(episode_length, num_action_tokens),
+                dtype=np.uint8,
+            )
+
             record = {
                 "raw_video": dummy_video.tobytes(),
                 "sequence_length": episode_length,
+                "actions": actions,
             }
 
             writer.write(pickle.dumps(record))
