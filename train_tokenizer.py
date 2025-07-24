@@ -55,8 +55,8 @@ class Args:
     num_heads: int = 8
     dropout: float = 0.0
     codebook_dropout: float = 0.01
-    param_dtype: jnp.dtype = jnp.float32
-    dtype: jnp.dtype = jnp.bfloat16
+    param_dtype = jnp.float32
+    dtype = jnp.bfloat16
     # Logging
     log: bool = False
     entity: str = ""
