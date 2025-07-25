@@ -7,9 +7,42 @@
         <img src="https://img.shields.io/badge/code%20style-black-000000.svg" /></a>
 </p>
 
-Jafar is a JAX-based implementation of the DeepMind paper "[Genie: Generative Interactive Environments](https://arxiv.org/abs/2402.15391)" (Bruce et al., 2024).
+This is a feature-complete fork of Jafar, a JAX-based implementation of the DeepMind paper "[Genie: Generative Interactive Environments](https://arxiv.org/abs/2402.15391)" (Bruce et al., 2024).
 
 Jafar supports training of all Genie components and can complete the CoinRun reproducibility experiment (Appendix F) on a single L40S GPU in under a week.
+
+This repository implements bugfixes and multitudes of additional features described below.
+
+<h2 name="overview" id="overview">Overview</h2>
+
+- Distributed checkpointing & loading
+    - also onto a different hardware topology (e.g. initial training on 1 node --> reinitialization onto 4 nodes)
+- Asynchronous checkpointing
+- Optimized dataloading (each GPU loads its shard in parallel)
+- Model+optimizer states+dataloader checkpointing (just resume your training run and everything is taken care of)
+- Full reproducibility with exact training curves (seeded dataloading + training)
+- Automatic checkpoint management (automatic deletion/retention according to specified retention policy)
+- Mixed precision (with correct full precision casting, e.g. before softmax)
+- Flash attention (from cudnn, which is more optimized than Tri Dao's)
+- int8-quantization is on the roadmap (via https://github.com/google/aqt)
+- KV caching for inference of causal Transformer (still in PR)
+    - Currently working on frame-level KV cache resets for accelerated spatiotemporal attention
+- Activation checkpointing (even onto host memory if desired)
+- Distributed Data parallelism (changing to FSDP requires changing one line of code)
+- wandb, cli and tensorboard logging (tb logging still in PR)
+- Just-in-time compiled train step
+- Cosine/ WSD learning rate schedules (no need to retrain if you realize that you want to train for longer)
+- Index shuffling during dataloading (doesn't require loading the dataset into memory for shuffling)
+- 'google-native' stack
+    - https://github.com/google/orbax for checkpointing
+    - https://github.com/google/grain for dataloading
+    - https://github.com/google-deepmind/dm_pix for image manipulation
+    - https://github.com/google/array_record as the data format
+- essentially, no other dependencies
+- We are currently working on migrating to the new flax.nnx API, after which we will also have:
+    - significantly less boilerplate
+    - easy model surgery
+    - model inspection
 
 <h2 name="start" id="start">Setup 🧗 </h2>
 
