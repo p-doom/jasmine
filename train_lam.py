@@ -226,10 +226,10 @@ if __name__ == "__main__":
     videos_sharding = NamedSharding(mesh, PartitionSpec("data", None, None, None, None))
 
     model_state = nnx.state(optimizer.model)
-    model_sharded_state = jax.device_put(model_state, replicated_sharding)
+    model_sharded_state = jax.lax.with_sharding_constraint(model_state, replicated_sharding)
     nnx.update(optimizer.model, model_sharded_state)
     optimizer_state = nnx.state(optimizer, nnx.optimizer.OptState)
-    optimizer_sharded_state = jax.device_put(optimizer_state, replicated_sharding)
+    optimizer_sharded_state = jax.lax.with_sharding_constraint(optimizer_state, replicated_sharding)
     nnx.update(optimizer, optimizer_sharded_state)
 
     # --- Initialize checkpoint manager ---
