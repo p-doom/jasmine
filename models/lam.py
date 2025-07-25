@@ -43,7 +43,7 @@ class LatentActionModel(nnx.Module):
 
         self.patch_token_dim = self.in_dim * self.patch_size**2
         self.encoder = STTransformer(
-            self.in_dim,
+            self.in_dim * self.patch_size**2,
             self.model_dim,
             self.ffn_dim,
             self.latent_dim,

@@ -14,13 +14,14 @@ class PositionalEncoding(nnx.Module):
         self.d_model = d_model
         self.max_len = max_len
 
-        self.pe = jnp.zeros((self.max_len, self.d_model))
+        pe = jnp.zeros((self.max_len, self.d_model))
         position = jnp.arange(0, self.max_len, dtype=jnp.float32)[:, None]
         div_term = jnp.exp(
             jnp.arange(0, self.d_model, 2) * (-math.log(10000.0) / self.d_model)
         )
-        self.pe = self.pe.at[:, 0::2].set(jnp.sin(position * div_term))
-        self.pe = self.pe.at[:, 1::2].set(jnp.cos(position * div_term))
+        pe = pe.at[:, 0::2].set(jnp.sin(position * div_term))
+        pe = pe.at[:, 1::2].set(jnp.cos(position * div_term))
+        self.pe = nnx.Variable(pe)
 
     def __call__(self, x):
         x = x + self.pe[: x.shape[2]]
@@ -65,6 +66,8 @@ class STBlock(nnx.Module):
                 self.use_flash_attention, is_causal=False
             ),
             rngs=rngs,
+            # FIXME (f.srambical): Propagate this up and change during sampling
+            decode=False,
         )
 
         self.temporal_pos_enc = PositionalEncoding(self.dim)
@@ -85,6 +88,7 @@ class STBlock(nnx.Module):
                 self.use_flash_attention, is_causal=True
             ),
             rngs=rngs,
+            decode=False,
         )
 
         self.ffn_norm = nnx.LayerNorm(
@@ -242,21 +246,21 @@ class VectorQuantizer(nnx.Module):
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         # --- Compute distances ---
         x = normalize(x)
-        normalized_codebook = normalize(self.codebook.value)
+        normalized_codebook = normalize(self.codebook)
         distance = -jnp.matmul(x, normalized_codebook.T)
         if training:
             distance = self.drop(distance)
 
         # --- Get indices and embeddings ---
         indices = jnp.argmin(distance, axis=-1)
-        z = self.codebook.value[indices]
+        z = self.codebook[indices]
 
         # --- Straight through estimator ---
         z_q = x + jax.lax.stop_gradient(z - x)
         return z_q, z, x, indices
 
     def get_codes(self, indices: jax.Array):
-        return self.codebook.value[indices]
+        return self.codebook[indices]
 
 
 def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool):
@@ -309,6 +313,7 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool):
 
         bias_4d = _pad(_rearrange(bias)) if bias is not None else None
 
+        # NOTE: jax.nn.dot_product_attention does not support dropout
         output_4d = jax.nn.dot_product_attention(
             query=query_4d,
             key=key_4d,
@@ -317,7 +322,6 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool):
             mask=mask_4d,
             implementation=implementation,
             is_causal=is_causal,
-            **kwargs
         )
         return output_4d[..., :original_seq_len, :, :].reshape(original_shape)
 

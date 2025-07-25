@@ -261,10 +261,10 @@ if __name__ == "__main__":
     step = 0
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add(
-        "model_state", ocp.args.StandardSave, ocp.handlers.StandardCheckpointHandler
+        "model_state", ocp.args.PyTreeSave, ocp.handlers.PyTreeCheckpointHandler
     )
     handler_registry.add(
-        "model_state", ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler
+        "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
     )
     handler_registry.add("dataloader_state", grain.checkpoint.CheckpointSave, grain.checkpoint.CheckpointHandler)  # type: ignore
     handler_registry.add("dataloader_state", grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler)  # type: ignore
@@ -306,12 +306,13 @@ if __name__ == "__main__":
 
     # --- Restore checkpoint ---
     if args.restore_ckpt:
-        optimizer_state = nnx.state(optimizer)
-        abstract_optimizer = nnx.eval_shape(optimizer_state)
+        # FIXME (f.srambical): pass sharding information for restoration onto different topology
+        abstract_optimizer = nnx.eval_shape(lambda: optimizer)
+        abstract_optimizer_state = nnx.state(abstract_optimizer)
         restored = checkpoint_manager.restore(
             checkpoint_manager.latest_step(),
             args=ocp.args.Composite(
-                model_state=ocp.args.StandardRestore(abstract_optimizer),
+                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),
                 dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
             ),
         )
@@ -322,9 +323,11 @@ if __name__ == "__main__":
         print(f"Restored dataloader and model state from step {step}")
     else:
         # Restore from pre-trained tokenizer (and LAM)
-        train_state = restore_genie_components(
-            train_state, replicated_sharding, dummy_inputs, rng, args
+        optimizer = restore_genie_components(
+            optimizer, replicated_sharding, rng, args
         )
+        # NOTE: We have to remove the tokenizer vq dropout due to a bug in flax.nnx
+        del optimizer.model.tokenizer.vq.drop
 
     # --- TRAIN LOOP ---
     dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in grain_iterator)  # type: ignore
@@ -371,10 +374,8 @@ if __name__ == "__main__":
                 checkpoint_manager.save(
                     step,
                     args=ocp.args.Composite(
-                        model_state=ocp.args.StandardSave(optimizer_state),
-                        dataloader_state=grain.checkpoint.CheckpointSave(
-                            grain_iterator
-                        ),
+                        model_state=ocp.args.PyTreeSave(optimizer_state),
+                        dataloader_state=grain.checkpoint.CheckpointSave(grain_iterator),
                     ),
                 )
                 print(f"Saved checkpoint at step {step}")

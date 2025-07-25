@@ -42,7 +42,7 @@ class TokenizerVQVAE(nnx.Module):
         self.use_flash_attention = use_flash_attention
 
         self.encoder = STTransformer(
-            self.in_dim,
+            self.in_dim * self.patch_size**2,
             self.model_dim,
             self.ffn_dim,
             self.latent_dim,

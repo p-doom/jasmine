@@ -15,6 +15,7 @@ class DynamicsMaskGIT(nnx.Module):
         model_dim: int,
         ffn_dim: int,
         num_latents: int,
+        latent_action_dim: int,
         num_blocks: int,
         num_heads: int,
         dropout: float,
@@ -27,6 +28,7 @@ class DynamicsMaskGIT(nnx.Module):
         self.model_dim = model_dim
         self.ffn_dim = ffn_dim
         self.num_latents = num_latents
+        self.latent_action_dim = latent_action_dim
         self.num_blocks = num_blocks
         self.num_heads = num_heads
         self.dropout = dropout
@@ -53,7 +55,7 @@ class DynamicsMaskGIT(nnx.Module):
             nnx.initializers.lecun_uniform()(rngs.params(), (1, 1, 1, self.model_dim))
         )
         self.action_up = nnx.Linear(
-            self.num_latents,
+            self.latent_action_dim,
             self.model_dim,
             param_dtype=self.param_dtype,
             dtype=self.dtype,

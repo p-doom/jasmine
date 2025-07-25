@@ -19,25 +19,19 @@ def count_parameters_by_component(params):
     """Count parameters for each component of the model.
 
     Args:
-        params: Model parameters dictionary
-        component_names: List of component names to count. If None, counts all components.
+        params: Model parameters from nnx.split(model, nnx.Param, ...)
 
     Returns:
         Dictionary with parameter counts for each component
     """
-
-    component_names = list(params["params"].keys())
+    component_names = list(params.keys())
     print(f"Counting all components: {component_names}")
 
     counts = {}
     total_params = 0
 
     for name in component_names:
-        if "params" in params and name in params["params"]:
-            component_params = params["params"][name]
-        else:
-            component_params = params
-
+        component_params = params[name]
         count = _count_component(component_params)
         counts[name] = count
         total_params += count

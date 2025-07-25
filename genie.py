@@ -111,6 +111,7 @@ class Genie(nnx.Module):
             model_dim=self.dyna_dim,
             ffn_dim=self.dyna_ffn_dim,
             num_latents=self.num_patch_latents,
+            latent_action_dim=self.latent_action_dim,
             num_blocks=self.dyna_num_blocks,
             num_heads=self.dyna_num_heads,
             dropout=self.dropout,
@@ -307,7 +308,6 @@ class MaskGITStep(nnx.Module):
 def restore_genie_components(
     optimizer: nnx.Optimizer,
     sharding: jax.sharding.NamedSharding,
-    inputs: Dict[str, jax.Array],
     rng: jax.Array,
     args,
 ):
@@ -323,7 +323,7 @@ def restore_genie_components(
     )
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add(
-        "model_state", ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler
+        "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
     )
 
     checkpoint_options = ocp.CheckpointManagerOptions(
@@ -358,12 +358,12 @@ def restore_genie_components(
     restored_tokenizer = tokenizer_checkpoint_manager.restore(
         step=tokenizer_checkpoint_manager.latest_step(),
         args=ocp.args.Composite(
-            model_state=ocp.args.StandardRestore(
+            model_state=ocp.args.PyTreeRestore(
                 abstract_sharded_tokenizer_optimizer_state
             ),
         ),
     )["model_state"]
-    nnx.update(dummy_tokenizer_optimizer.model, restored_tokenizer)
+    nnx.update(dummy_tokenizer_optimizer.model, restored_tokenizer.model)
     optimizer.model.tokenizer = dummy_tokenizer_optimizer.model
     tokenizer_checkpoint_manager.close()
 
@@ -397,14 +397,15 @@ def restore_genie_components(
         restored_lam_optimizer = lam_checkpoint_manager.restore(
             step=lam_checkpoint_manager.latest_step(),
             args=ocp.args.Composite(
-                model_state=ocp.args.StandardRestore(
+                model_state=ocp.args.PyTreeRestore(
                     abstract_sharded_lam_optimizer_state
                 ),
             ),
         )["model_state"]
-        nnx.update(dummy_lam_optimizer.model, restored_lam_optimizer)
+        nnx.update(dummy_lam_optimizer.model, restored_lam_optimizer.model)
         optimizer.model.lam = dummy_lam_optimizer.model
-        # FIXME: (f.srambical): remove the lam decoder
+        # Remove the LAM decoder to save memory and avoid unnecessary computation.
+        del optimizer.model.lam.decoder
         lam_checkpoint_manager.close()
 
     return optimizer

@@ -234,10 +234,10 @@ if __name__ == "__main__":
     step = 0
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add(
-        "model_state", ocp.args.StandardSave, ocp.handlers.StandardCheckpointHandler
+        "model_state", ocp.args.PyTreeSave, ocp.handlers.PyTreeCheckpointHandler
     )
     handler_registry.add(
-        "model_state", ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler
+        "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
     )
     handler_registry.add("dataloader_state", grain.checkpoint.CheckpointSave, grain.checkpoint.CheckpointHandler)  # type: ignore
     handler_registry.add("dataloader_state", grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler)  # type: ignore
@@ -279,12 +279,14 @@ if __name__ == "__main__":
 
     # --- Restore checkpoint ---
     if args.restore_ckpt:
-        optimizer_state = nnx.state(optimizer)
-        abstract_optimizer = nnx.eval_shape(optimizer_state)
+        # FIXME (f.srambical): change all checkpointing/ restore logic to separately checkpoint model and optimizer
+        abstract_optimizer = nnx.eval_shape(lambda: optimizer)
+        abstract_optimizer_state = nnx.state(abstract_optimizer)
+        # FIXME (f.srambical): also checkpoint optimizer state
         restored = checkpoint_manager.restore(
             checkpoint_manager.latest_step(),
             args=ocp.args.Composite(
-                model_state=ocp.args.StandardRestore(abstract_optimizer),
+                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),
                 dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
             ),
         )
@@ -300,9 +302,7 @@ if __name__ == "__main__":
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
-            rng, _rng, _rng_dropout = jax.random.split(rng, 3)
-
-            inputs = dict(videos=videos, rng=_rng, dropout_rng=_rng_dropout)
+            inputs = dict(videos=videos)
             loss, recon, metrics = train_step(tokenizer, optimizer, inputs)
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
@@ -343,7 +343,7 @@ if __name__ == "__main__":
                 checkpoint_manager.save(
                     step,
                     args=ocp.args.Composite(
-                        model_state=ocp.args.StandardSave(optimizer_state),
+                        model_state=ocp.args.PyTreeSave(optimizer_state),
                         dataloader_state=grain.checkpoint.CheckpointSave(
                             grain_iterator
                         ),

@@ -129,7 +129,7 @@ def train_step(lam, optimizer, inputs, action_last_active, rng):
     new_codebook = jnp.where(
         jnp.expand_dims(do_reset, -1), codebook[reset_idxs], codebook
     )
-    lam.vq.codebook = new_codebook
+    lam.vq.codebook.value = new_codebook
     action_last_active = jnp.where(do_reset, 0, action_last_active)
     return loss, recon, action_last_active, metrics
 
@@ -236,10 +236,10 @@ if __name__ == "__main__":
     step = 0
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add(
-        "model_state", ocp.args.StandardSave, ocp.handlers.StandardCheckpointHandler
+        "model_state", ocp.args.PyTreeSave, ocp.handlers.PyTreeCheckpointHandler
     )
     handler_registry.add(
-        "model_state", ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler
+        "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
     )
     handler_registry.add("dataloader_state", grain.checkpoint.CheckpointSave, grain.checkpoint.CheckpointHandler)  # type: ignore
     handler_registry.add("dataloader_state", grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler)  # type: ignore
@@ -281,12 +281,12 @@ if __name__ == "__main__":
 
     # --- Restore checkpoint ---
     if args.restore_ckpt:
-        optimizer_state = nnx.state(optimizer)
-        abstract_optimizer = nnx.eval_shape(optimizer_state)
+        abstract_optimizer = nnx.eval_shape(lambda: optimizer)
+        abstract_optimizer_state = nnx.state(abstract_optimizer)
         restored = checkpoint_manager.restore(
             checkpoint_manager.latest_step(),
             args=ocp.args.Composite(
-                model_state=ocp.args.StandardRestore(abstract_optimizer),
+                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),
                 dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
             ),
         )
@@ -349,7 +349,7 @@ if __name__ == "__main__":
                 checkpoint_manager.save(
                     step,
                     args=ocp.args.Composite(
-                        model_state=ocp.args.StandardSave(optimizer_state),
+                        model_state=ocp.args.PyTreeSave(optimizer_state),
                         dataloader_state=grain.checkpoint.CheckpointSave(
                             grain_iterator
                         ),
