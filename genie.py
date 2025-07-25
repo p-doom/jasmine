@@ -183,23 +183,44 @@ class Genie(nnx.Module):
         token_idxs = jnp.concatenate([token_idxs, pad], axis=1)  # (B, S, N)
         action_tokens = self.lam.vq.get_codes(batch["latent_actions"])
 
-        maskgit_step = MaskGITStep(
-            dynamics=self.dynamics,
-            tokenizer=self.tokenizer,
-            temperature=temperature,
-            sample_argmax=sample_argmax,
-            steps=steps,
-        )
+        def maskgit_step_fn(carry, step):
+            rng, token_idxs, mask, action_tokens = carry
+            N = token_idxs.shape[2]
 
-        def maskgit_loop_fn(carry, module, x):
-            return module(carry, x)
+            # --- Construct + encode video ---
+            vid_embed = self.dynamics.patch_embed(token_idxs)  # (B, S, N, D)
+            mask_token = self.dynamics.mask_token.value  # (1, 1, 1, D,)
+            mask_expanded = mask[..., None]  # (B, S, N, 1)
+            vid_embed = jnp.where(mask_expanded, mask_token, vid_embed)
 
-        scanned_maskgit_loop = nnx.scan(
-            maskgit_loop_fn,
-            in_axes=(nnx.Carry, None, 0),
-            out_axes=(nnx.Carry, 0),
-            length=steps,
-        )
+            # --- Predict transition ---
+            act_embed = self.dynamics.action_up(action_tokens)
+            vid_embed += jnp.pad(act_embed, ((0, 0), (1, 0), (0, 0), (0, 0)))
+            unmasked_ratio = jnp.cos(jnp.pi * (step + 1) / (steps * 2))
+            step_temp = temperature * (1.0 - unmasked_ratio)
+            final_logits = self.dynamics.dynamics(vid_embed) / step_temp
+
+            # --- Sample new tokens for final frame ---
+            if sample_argmax:
+                sampled_token_idxs = jnp.argmax(final_logits, axis=-1)
+            else:
+                rng, _rng = jax.random.split(rng)
+                sampled_token_idxs = jax.random.categorical(_rng, final_logits)
+            gather_fn = jax.vmap(jax.vmap(jax.vmap(lambda x, y: x[y])))
+            final_token_probs = gather_fn(jax.nn.softmax(final_logits), sampled_token_idxs)
+            final_token_probs += ~mask
+            # Update masked tokens only
+            token_idxs = jnp.where(mask, sampled_token_idxs, token_idxs)
+
+            # --- Update mask ---
+            num_unmasked_tokens = jnp.round(N * (1.0 - unmasked_ratio)).astype(int)
+            idx_mask = jnp.arange(final_token_probs.shape[-1]) > num_unmasked_tokens
+            sorted_idxs = jnp.argsort(final_token_probs, axis=-1, descending=True)
+            mask_update_fn = jax.vmap(lambda msk, ids: msk.at[ids].set(idx_mask))
+            new_mask = mask_update_fn(mask, sorted_idxs)
+
+            new_carry = (rng, token_idxs, new_mask, action_tokens)
+            return new_carry, None
 
         def generation_step_fn(carry, step_t):
             rng, current_token_idxs = carry
@@ -207,8 +228,7 @@ class Genie(nnx.Module):
 
             # Mask current and future frames (i.e., t >= step_t)
             mask = jnp.arange(seq_len) >= step_t  # (S,)
-            mask = jnp.broadcast_to(mask[None, :, None], (B, seq_len, N))  # (B, S, N)
-            mask = mask.astype(bool)
+            mask = jnp.broadcast_to(mask[None, :, None], (B, seq_len, N)).astype(bool)  # (B, S, N)
             masked_token_idxs = current_token_idxs * ~mask
 
             # --- Initialize and run MaskGIT loop ---
@@ -218,16 +238,14 @@ class Genie(nnx.Module):
                 mask,
                 action_tokens,
             )
-            # FIXME (f.srambical): test whether sampling works with this
-            final_carry_maskgit, _ = scanned_maskgit_loop(
-                init_carry_maskgit, maskgit_step, jnp.arange(steps)
+            final_carry_maskgit, _ = jax.lax.scan(
+                maskgit_step_fn, init_carry_maskgit, jnp.arange(steps)
             )
-            final_carry_maskgit = carry
             updated_token_idxs = final_carry_maskgit[1]
             new_carry = (rng, updated_token_idxs)
             return new_carry, None
 
-        # --- Run the autoregressive generation using scan ---
+        # --- Run the autoregressive generation using jax.lax.scan ---
         initial_carry = (batch["rng"], token_idxs)
         timesteps_to_scan = jnp.arange(T, seq_len)
         final_carry, _ = jax.lax.scan(
@@ -248,60 +266,7 @@ class Genie(nnx.Module):
         return lam_output["indices"]
 
 
-class MaskGITStep(nnx.Module):
-    def __init__(
-        self,
-        dynamics: DynamicsMaskGIT,
-        tokenizer: TokenizerVQVAE,
-        temperature: float,
-        sample_argmax: bool,
-        steps: int,
-    ):
-        self.dynamics = dynamics
-        self.tokenizer = tokenizer
-        self.temperature = temperature
-        self.sample_argmax = sample_argmax
-        self.steps = steps
 
-    def __call__(self, carry, x):
-        rng, token_idxs, mask, action_tokens = carry
-        step = x
-        N = token_idxs.shape[2]
-
-        # --- Construct + encode video ---
-        vid_embed = self.dynamics.patch_embed(token_idxs)  # (B, S, N, D)
-        mask_token = self.dynamics.mask_token.value  # (1, 1, 1, D,)
-        mask_expanded = mask[..., None]  # (B, S, N, 1)
-        vid_embed = jnp.where(mask_expanded, mask_token, vid_embed)
-
-        # --- Predict transition ---
-        act_embed = self.dynamics.action_up(action_tokens)
-        vid_embed += jnp.pad(act_embed, ((0, 0), (1, 0), (0, 0), (0, 0)))
-        unmasked_ratio = jnp.cos(jnp.pi * (step + 1) / (self.steps * 2))
-        step_temp = self.temperature * (1.0 - unmasked_ratio)
-        final_logits = self.dynamics.dynamics(vid_embed) / step_temp
-
-        # --- Sample new tokens for final frame ---
-        if self.sample_argmax:
-            sampled_token_idxs = jnp.argmax(final_logits, axis=-1)
-        else:
-            rng, _rng = jax.random.split(rng)
-            sampled_token_idxs = jax.random.categorical(_rng, final_logits)
-        gather_fn = jax.vmap(jax.vmap(jax.vmap(lambda x, y: x[y])))
-        final_token_probs = gather_fn(jax.nn.softmax(final_logits), sampled_token_idxs)
-        final_token_probs += ~mask
-        # Update masked tokens only
-        token_idxs = jnp.where(mask, sampled_token_idxs, token_idxs)
-
-        # --- Update mask ---
-        num_unmasked_tokens = jnp.round(N * (1.0 - unmasked_ratio)).astype(int)
-        idx_mask = jnp.arange(final_token_probs.shape[-1]) > num_unmasked_tokens
-        sorted_idxs = jnp.argsort(final_token_probs, axis=-1, descending=True)
-        mask_update_fn = jax.vmap(lambda msk, ids: msk.at[ids].set(idx_mask))
-        new_mask = mask_update_fn(mask, sorted_idxs)
-
-        new_carry = (rng, token_idxs, new_mask, action_tokens)
-        return new_carry, None
 
 
 # FIXME (f.srambical): add conversion script for old checkpoints
