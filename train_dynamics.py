@@ -16,7 +16,7 @@ import wandb
 import grain
 import flax.nnx as nnx
 
-from dynamics import Dynamics, restore_components
+from jasmine import Jasmine, restore_components
 from utils.dataloader import get_dataloader
 from utils.lr_utils import get_lr_schedule
 from utils.parameter_utils import count_parameters_by_component
@@ -92,7 +92,7 @@ args = tyro.cli(Args)
 
 
 def dynamics_loss_fn(
-    model: Dynamics, inputs: dict
+    model: Jasmine, inputs: dict
 ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
     """Compute masked dynamics loss"""
     inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
@@ -135,18 +135,18 @@ def dynamics_loss_fn(
 
 @nnx.jit
 def train_step(
-    model: Dynamics, optimizer: nnx.Optimizer, inputs: dict
+    model: Jasmine, optimizer: nnx.Optimizer, inputs: dict
 ) -> tuple[jax.Array, jax.Array, dict]:
     """Update state and compute metrics"""
 
-    def loss_fn(model: Dynamics) -> tuple[jax.Array, tuple[jax.Array, dict]]:
+    def loss_fn(model: Jasmine) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         return dynamics_loss_fn(model, inputs)
 
     (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     optimizer.update(grads)
     if args.log_gradients:
         metrics["gradients_std/"] = jax.tree.map(
-            lambda x: x.std(), grads["params"]["dynamics"]
+            lambda x: x.std(), grads["params"]["jasmine"]
         )
     return loss, recon, metrics
 
@@ -171,7 +171,7 @@ if __name__ == "__main__":
     # --- Initialize model ---
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
-    dynamics = Dynamics(
+    jasmine = Jasmine(
         # Tokenizer
         in_dim=args.image_channels,
         tokenizer_dim=args.tokenizer_dim,
@@ -201,10 +201,11 @@ if __name__ == "__main__":
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
+        decode=False,
         rngs=rngs,
     )
 
-    _, params, _ = nnx.split(dynamics, nnx.Param, ...)
+    _, params, _ = nnx.split(jasmine, nnx.Param, ...)
     param_counts = count_parameters_by_component(params)
 
     if args.log and jax.process_index() == 0:
@@ -248,7 +249,7 @@ if __name__ == "__main__":
         weight_decay=1e-4,
         mu_dtype=args.dtype,
     )
-    optimizer = nnx.Optimizer(dynamics, tx)
+    optimizer = nnx.Optimizer(jasmine, tx)
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
     device_mesh_arr = create_device_mesh((num_devices,))
@@ -356,7 +357,7 @@ if __name__ == "__main__":
             # --- Train step ---
             rng, _rng_mask = jax.random.split(rng, 2)
             inputs = dict(videos=videos, mask_rng=_rng_mask)
-            loss, recon, metrics = train_step(dynamics, optimizer, inputs)
+            loss, recon, metrics = train_step(jasmine, optimizer, inputs)
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1

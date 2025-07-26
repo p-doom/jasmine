@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw
 import tyro
 from flax import nnx
 
-from dynamics import Dynamics
+from jasmine import Jasmine
 from utils.dataloader import get_dataloader
 
 
@@ -71,7 +71,7 @@ if __name__ == "__main__":
 
     # --- Load Dynamics model checkpoint ---
     rngs = nnx.Rngs(rng)
-    dynamics = Dynamics(
+    jasmine = Jasmine(
         # Tokenizer
         in_dim=args.image_channels,
         tokenizer_dim=args.tokenizer_dim,
@@ -99,6 +99,7 @@ if __name__ == "__main__":
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
+        decode=False,
         rngs=rngs,
     )
 
@@ -125,7 +126,7 @@ if __name__ == "__main__":
         weight_decay=1e-4,
         mu_dtype=args.dtype,
     )
-    dummy_optimizer = nnx.Optimizer(dynamics, dummy_tx)
+    dummy_optimizer = nnx.Optimizer(jasmine, dummy_tx)
 
     abstract_optimizer = nnx.eval_shape(lambda: dummy_optimizer)
     abstract_optimizer_state = nnx.state(abstract_optimizer)
@@ -139,8 +140,8 @@ if __name__ == "__main__":
     nnx.update(dummy_optimizer, restored_optimizer_state)
 
     # --- Define sampling function ---
-    def _sampling_fn(model: Dynamics, batch: dict) -> jax.Array:
-        """Runs Dynamics.sample with pre-defined generation hyper-parameters."""
+    def _sampling_fn(model: Jasmine, batch: dict) -> jax.Array:
+        """Runs Jasmine.sample with pre-defined generation hyper-parameters."""
         if args.dynamics_type == "maskgit":
             return model.sample_maskgit(
                 batch,
@@ -163,7 +164,7 @@ if __name__ == "__main__":
         vid = video_batch[:, : args.start_frame + 1]
         rng, _rng = jax.random.split(rng)
         batch = dict(videos=vid, latent_actions=action_batch, rng=_rng)
-        generated_vid = _sampling_fn(dynamics, batch)
+        generated_vid = _sampling_fn(jasmine, batch)
         return generated_vid
 
     # --- Get video + latent actions ---
@@ -189,12 +190,38 @@ if __name__ == "__main__":
     video_batch = video_batch.astype(args.dtype) / 255.0
     # Get latent actions for all videos in the batch
     batch = dict(videos=video_batch)
-    action_batch = dynamics.vq_encode(batch, training=False)
+    action_batch = jasmine.vq_encode(batch, training=False)
     action_batch = jnp.asarray(action_batch).reshape(
         video_batch.shape[0], args.seq_len - 1, 1
     )
 
     # --- Sample + evaluate video ---
+    # The autoregressive cache needs to be initialized with the shape of the tokenized inputs, not the raw video.
+    # The number of spatial tokens is derived from the image dimensions and patch size.
+    # It appears the 90x160 image is padded to 92x160, and a CLS token is added.
+    # (92 // args.patch_size) * (160 // args.patch_size) + 1 = 23 * 40 + 1 = 921
+    num_patches = ((args.image_height + 3) // 4 * 4 // args.patch_size) * (
+        args.image_width // args.patch_size
+    ) + 1
+    # Shape for spatial attention: (batch, time, patches, num_heads, head_dim)
+    spatial_token_shape = (
+        args.batch_size,
+        1,
+        num_patches,
+        args.dyna_dim,
+    )
+    # Shape for temporal attention: (batch, patches, time, num_heads, head_dim)
+    temporal_token_shape = (
+        args.batch_size,
+        num_patches,
+        1,
+        args.dyna_dim,
+    )
+    if args.dynamics_type == "causal":
+        transformer_blocks = jasmine.dynamics.transformer.blocks
+        for block in transformer_blocks:
+            block.spatial_attention.init_cache(spatial_token_shape)
+            block.temporal_attention.init_cache(temporal_token_shape)
     vid = _autoreg_sample(rng, video_batch, action_batch)
     gt = video_batch[:, : vid.shape[1]].clip(0, 1).reshape(-1, *video_batch.shape[2:])
     recon = vid.clip(0, 1).reshape(-1, *vid.shape[2:])

@@ -39,6 +39,7 @@ class STBlock(nnx.Module):
         dtype: jnp.dtype,
         use_flash_attention: bool,
         spatial_causal: bool,
+        decode: bool,
         rngs: nnx.Rngs,
     ):
         self.dim = dim
@@ -49,6 +50,7 @@ class STBlock(nnx.Module):
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
         self.spatial_causal = spatial_causal
+        self.decode = decode
 
         self.spatial_pos_enc = PositionalEncoding(self.dim)
         self.spatial_norm = nnx.LayerNorm(
@@ -68,6 +70,7 @@ class STBlock(nnx.Module):
                 self.use_flash_attention, is_causal=self.spatial_causal
             ),
             rngs=rngs,
+            # decode=self.decode,
             decode=False,
         )
 
@@ -89,7 +92,7 @@ class STBlock(nnx.Module):
                 self.use_flash_attention, is_causal=True
             ),
             rngs=rngs,
-            decode=False,
+            decode=self.decode,
         )
 
         self.ffn_norm = nnx.LayerNorm(
@@ -155,6 +158,7 @@ class STTransformer(nnx.Module):
         dtype: jnp.dtype,
         use_flash_attention: bool,
         spatial_causal: bool,
+        decode: bool,
         rngs: nnx.Rngs,
     ):
         self.input_dim = input_dim
@@ -168,6 +172,7 @@ class STTransformer(nnx.Module):
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
         self.spatial_causal = spatial_causal
+        self.decode = decode
 
         self.input_norm1 = nnx.LayerNorm(
             num_features=self.input_dim,
@@ -189,7 +194,7 @@ class STTransformer(nnx.Module):
             rngs=rngs,
         )
 
-        self.blocks = []
+        self.blocks: list[STBlock] = []
         for _ in range(self.num_blocks):
             self.blocks.append(
                 STBlock(
@@ -201,6 +206,7 @@ class STTransformer(nnx.Module):
                     dtype=self.dtype,
                     use_flash_attention=self.use_flash_attention,
                     spatial_causal=self.spatial_causal,
+                    decode=self.decode,
                     rngs=rngs,
                 )
             )

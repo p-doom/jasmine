@@ -6,14 +6,14 @@ import jax.numpy as jnp
 import flax.nnx as nnx
 import orbax.checkpoint as ocp
 
-from models.causal import DynamicsCausal
-from models.maskgit import DynamicsMaskGIT
+from models.dynamics_causal import DynamicsCausal
+from models.dynamics_maskgit import DynamicsMaskGIT
 from models.lam import LatentActionModel
 from models.tokenizer import TokenizerVQVAE
 
 
-class Dynamics(nnx.Module):
-    """Dynamics model"""
+class Jasmine(nnx.Module):
+    """World model with three components: a tokenizer, a latent action model (LAM), and a dynamics model for predicting future tokens."""
 
     def __init__(
         self,
@@ -41,6 +41,7 @@ class Dynamics(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
+        decode: bool,
         rngs: nnx.Rngs,
         dropout: float = 0.0,
         mask_limit: float = 0.0,
@@ -72,6 +73,7 @@ class Dynamics(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
+        self.decode = decode
         self.dropout = dropout
         self.mask_limit = mask_limit
 
@@ -134,6 +136,7 @@ class Dynamics(nnx.Module):
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
                 use_flash_attention=self.use_flash_attention,
+                decode=self.decode,
                 rngs=rngs,
             )
         else:
@@ -212,6 +215,8 @@ class Dynamics(nnx.Module):
 
             # --- Construct + encode video ---
             vid_embed = self.dynamics.patch_embed(token_idxs)  # (B, S, N, D)
+            if not isinstance(self.dynamics, DynamicsMaskGIT):
+                raise TypeError("`sample_maskgit` requires `DynamicsMaskGIT`.")
             mask_token = self.dynamics.mask_token.value  # (1, 1, 1, D,)
             mask_expanded = mask[..., None]  # (B, S, N, 1)
             vid_embed = jnp.where(mask_expanded, mask_token, vid_embed)
@@ -221,7 +226,7 @@ class Dynamics(nnx.Module):
             vid_embed += jnp.pad(act_embed, ((0, 0), (1, 0), (0, 0), (0, 0)))
             unmasked_ratio = jnp.cos(jnp.pi * (step + 1) / (steps * 2))
             step_temp = temperature * (1.0 - unmasked_ratio)
-            final_logits = self.dynamics.dynamics(vid_embed) / step_temp
+            final_logits = self.dynamics.transformer(vid_embed) / step_temp
 
             # --- Sample new tokens for final frame ---
             if sample_argmax:
@@ -331,13 +336,21 @@ class Dynamics(nnx.Module):
             rng, token_idxs_full, action_tokens = carry
             t = token_idx // N
             n = token_idx % N
-            
+
+            # For autoregressive decoding, we only need to pass the token from the previous step.
+            # The model internally uses a KV cache to remember previous tokens.
+            current_token_sequence = jax.lax.dynamic_slice(
+                token_idxs_full, (0, t, 0), (B, 1, N)
+            )
+
             dyna_inputs = {
-                "video_tokens": token_idxs_full,
+                "video_tokens": current_token_sequence,
                 "latent_actions": action_tokens,
             }
+            # The model will output logits for all patches in the sequence (which is just one frame).
             next_token_logits, _ = self.dynamics(dyna_inputs, training=False)
-            next_token_logits = next_token_logits[:, t, n, :].astype(
+            # We select the logits for the specific patch `n` we are currently generating.
+            next_token_logits = next_token_logits[:, 0, n, :].astype(
                 jnp.float32
             )  # (B, vocab_size)
 
@@ -349,9 +362,9 @@ class Dynamics(nnx.Module):
                     step_rng, next_token_logits / temperature, axis=-1
                 )  # (B,)
 
-            # Insert the generated tokens into the sequence
+            # Insert the generated token into the full sequence.
             token_idxs_full = token_idxs_full.at[:, t, n].set(next_token)
-            
+
             new_carry = (rng, token_idxs_full, action_tokens)
             return new_carry, None
 
@@ -360,7 +373,7 @@ class Dynamics(nnx.Module):
         total_future_tokens = future_frames * N
         start_token_idx = T * N
         step_indices = jnp.arange(start_token_idx, start_token_idx + total_future_tokens)
-        
+
         initial_carry = (batch["rng"], token_idxs_full, action_tokens)
         final_carry, _ = jax.lax.scan(
             token_step_fn, initial_carry, step_indices
