@@ -245,7 +245,6 @@ class VectorQuantizer(nnx.Module):
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         # --- Compute distances ---
         x = normalize(x)
-        # FIXME (f.srambical): check whether we should use self.codebook.value here
         normalized_codebook = normalize(self.codebook.value)
         distance = -jnp.matmul(x, normalized_codebook.T)
         if training:
