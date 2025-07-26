@@ -66,7 +66,6 @@ class STBlock(nnx.Module):
                 self.use_flash_attention, is_causal=False
             ),
             rngs=rngs,
-            # FIXME (f.srambical): Propagate this up and change during sampling
             decode=False,
         )
 
