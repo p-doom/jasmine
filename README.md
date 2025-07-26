@@ -27,7 +27,7 @@ Jasmine scales from single hosts to hundreds of xPUs thanks to XLA and strives t
 - Activation checkpointing (even onto host memory if desired)
 - DDP (changing to FSDP requires changing **a single line of code**)
 - WSD learning rate schedule
-    -  No need to retrain from scratch upon realize that you want to train for longer
+    -  No need to retrain from scratch if you want to train for longer
 - Index-shuffling during dataloading
 - Google-native stack
     - https://github.com/google/orbax for checkpointing
