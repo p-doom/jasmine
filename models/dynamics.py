@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict
 
 import jax
 import jax.numpy as jnp
@@ -62,8 +62,9 @@ class DynamicsMaskGIT(nnx.Module):
             rngs=rngs,
         )
 
-    # FIXME (f.srambical): stricter typing
-    def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
+    def __call__(
+        self, batch: Dict[str, jax.Array], training: bool = True
+    ) -> tuple[jax.Array, jax.Array | None]:
         # --- Mask videos ---
         vid_embed = self.patch_embed(batch["video_tokens"])
         if training:
@@ -88,4 +89,4 @@ class DynamicsMaskGIT(nnx.Module):
         act_embed = self.action_up(batch["latent_actions"])
         vid_embed += jnp.pad(act_embed, ((0, 0), (1, 0), (0, 0), (0, 0)))
         logits = self.dynamics(vid_embed)
-        return dict(token_logits=logits, mask=mask)
+        return logits, mask

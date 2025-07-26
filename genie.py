@@ -1,17 +1,14 @@
-from typing import Dict, Any
+from typing import Dict
 
 import optax
 import jax
 import jax.numpy as jnp
 import flax.nnx as nnx
-from flax.training.train_state import TrainState
 import orbax.checkpoint as ocp
 
 from models.dynamics import DynamicsMaskGIT
 from models.lam import LatentActionModel
 from models.tokenizer import TokenizerVQVAE
-
-import grain
 
 
 class Genie(nnx.Module):
@@ -122,8 +119,9 @@ class Genie(nnx.Module):
             rngs=rngs,
         )
 
-    # FIXME (f.srambical): stricter typing
-    def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
+    def __call__(
+        self, batch: Dict[str, jax.Array], training: bool = True
+    ) -> Dict[str, jax.Array]:
         tokenizer_outputs = self.tokenizer.vq_encode(batch["videos"], training=False)
         lam_outputs = self.lam.vq_encode(batch["videos"], training=False)
         latent_actions = jax.lax.cond(
@@ -136,24 +134,24 @@ class Genie(nnx.Module):
             latent_actions=latent_actions,
         )
         outputs["mask_rng"] = batch["mask_rng"]
-        dyna_outputs = self.dynamics(outputs, training)
-        outputs.update(dyna_outputs)
+        dyna_logits, dyna_mask = self.dynamics(outputs, training)
+        outputs["token_logits"] = dyna_logits
+        if dyna_mask is not None:
+            outputs["mask"] = dyna_mask
         mle_indices = jnp.argmax(outputs["token_logits"], axis=-1)
-        outputs["recon"] = self.tokenizer.decode(
-            mle_indices, batch["videos"].shape[2:4]
-        )
+        H, W = batch["videos"].shape[2:4]
+        outputs["recon"] = self.tokenizer.decode(mle_indices, (H, W))
         outputs["lam_indices"] = lam_outputs["indices"]
         return outputs
 
-    # FIXME (f.srambical): stricter typing
     def sample(
         self,
-        batch: Dict[str, Any],
+        batch: Dict[str, jax.Array],
         seq_len: int,
         steps: int = 25,
         temperature: float = 1,
         sample_argmax: bool = False,
-    ) -> Any:
+    ) -> jax.Array:
         """
         Autoregressively samples up to `seq_len` future frames, following Figure 8 of the paper.
 
@@ -264,13 +262,14 @@ class Genie(nnx.Module):
         final_token_idxs = final_carry[1]
 
         # --- Decode all tokens at once at the end ---
+        H, W = batch["videos"].shape[2:4]
         final_frames = self.tokenizer.decode(
             final_token_idxs,
-            video_hw=batch["videos"].shape[2:4],
+            video_hw=(H, W),
         )
         return final_frames
 
-    def vq_encode(self, batch: Dict[str, Any], training: bool) -> Dict[str, Any]:
+    def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
         # --- Preprocess videos ---
         lam_output = self.lam.vq_encode(batch["videos"], training=training)
         return lam_output["indices"]

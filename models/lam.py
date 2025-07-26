@@ -1,5 +1,6 @@
-from typing import Dict, Any
+from typing import Dict
 
+import jax
 import jax.numpy as jnp
 import flax.nnx as nnx
 
@@ -94,8 +95,9 @@ class LatentActionModel(nnx.Module):
             rngs=rngs,
         )
 
-    # FIXME (f.srambical): stricter typing
-    def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
+    def __call__(
+        self, batch: Dict[str, jax.Array], training: bool = True
+    ) -> Dict[str, jax.Array]:
         # --- Encode + VQ ---
         H, W = batch["videos"].shape[2:4]
         outputs = self.vq_encode(batch["videos"], training)
@@ -112,8 +114,9 @@ class LatentActionModel(nnx.Module):
         outputs["recon"] = unpatchify(video_recon, self.patch_size, H, W)
         return outputs
 
-    # FIXME (f.srambical): stricter typing
-    def vq_encode(self, videos: Any, training: bool = True) -> Dict[str, Any]:
+    def vq_encode(
+        self, videos: jax.Array, training: bool = True
+    ) -> Dict[str, jax.Array]:
         # --- Preprocess videos ---
         B, T = videos.shape[:2]
         patches = patchify(videos, self.patch_size)
