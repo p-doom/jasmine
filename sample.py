@@ -116,29 +116,27 @@ if __name__ == "__main__":
     )
 
     dummy_tx = optax.adamw(
-            learning_rate=optax.linear_schedule(0.0001, 0.0001, 10000),
-            b1=0.9,
-            b2=0.9,
-            weight_decay=1e-4,
-            mu_dtype=args.dtype,
-        )
+        learning_rate=optax.linear_schedule(0.0001, 0.0001, 10000),
+        b1=0.9,
+        b2=0.9,
+        weight_decay=1e-4,
+        mu_dtype=args.dtype,
+    )
     dummy_optimizer = nnx.Optimizer(genie, dummy_tx)
 
     abstract_optimizer = nnx.eval_shape(lambda: dummy_optimizer)
     abstract_optimizer_state = nnx.state(abstract_optimizer)
     restored = checkpoint_manager.restore(
-                checkpoint_manager.latest_step(),
-                args=ocp.args.Composite(
-                    model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),
-                ),
-            )
+        checkpoint_manager.latest_step(),
+        args=ocp.args.Composite(
+            model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),
+        ),
+    )
     restored_optimizer_state = restored["model_state"]
     nnx.update(dummy_optimizer, restored_optimizer_state)
 
     # --- Define sampling function ---
-    # @nnx.jit
-    # @jax.jit
-    def _sampling_fn(model, batch):
+    def _sampling_fn(model: Genie, batch: dict) -> jax.Array:
         """Runs Genie.sample with pre-defined generation hyper-parameters."""
         return model.sample(
             batch,
@@ -148,15 +146,14 @@ if __name__ == "__main__":
             args.sample_argmax,
         )
 
-
     # --- Define autoregressive sampling loop ---
+    @nnx.jit
     def _autoreg_sample(rng, video_batch, action_batch):
         vid = video_batch[:, : args.start_frame + 1]
         rng, _rng = jax.random.split(rng)
         batch = dict(videos=vid, latent_actions=action_batch, rng=_rng)
-        generated_vid = genie.sample(batch, args.seq_len, args.maskgit_steps, args.temperature, args.sample_argmax)
+        generated_vid = _sampling_fn(genie, batch)
         return generated_vid
-
 
     # --- Get video + latent actions ---
     array_record_files = [
@@ -171,46 +168,52 @@ if __name__ == "__main__":
         args.image_height,
         args.image_width,
         args.image_channels,
-        num_workers=8,
+        # We don't use workers in order to avoid grain shutdown issues (https://github.com/google/grain/issues/398)
+        num_workers=0,
         prefetch_buffer_size=1,
         seed=args.seed,
     )
-    video_batch = next(iter(dataloader))
+    dataloader = iter(dataloader)
+    video_batch = next(dataloader)
+    video_batch = video_batch.astype(args.dtype) / 255.0
     # Get latent actions for all videos in the batch
     batch = dict(videos=video_batch)
     action_batch = genie.vq_encode(batch, training=False)  # type: ignore[arg-type]
-    action_batch = jnp.asarray(action_batch).reshape(video_batch.shape[0], args.seq_len - 1, 1)
+    action_batch = jnp.asarray(action_batch).reshape(
+        video_batch.shape[0], args.seq_len - 1, 1
+    )
 
     # --- Sample + evaluate video ---
     vid = _autoreg_sample(rng, video_batch, action_batch)
     gt = video_batch[:, : vid.shape[1]].clip(0, 1).reshape(-1, *video_batch.shape[2:])
     recon = vid.clip(0, 1).reshape(-1, *vid.shape[2:])
-    # FIXME (f.srambical): investigate why this is needed
-    gt = gt.astype(jnp.float32)
-    ssim = pix.ssim(gt[:, args.start_frame + 1 :], recon[:, args.start_frame + 1 :]).mean()
+    ssim = pix.ssim(
+        gt[:, args.start_frame + 1 :], recon[:, args.start_frame + 1 :]
+    ).mean()
     print(f"SSIM: {ssim}")
 
     # --- Construct video ---
-    true_videos = (video_batch * 255).astype(np.uint8)
-    pred_videos = (vid * 255).astype(np.uint8)
-    video_comparison = np.zeros((2, *vid.shape), dtype=np.uint8)
-    video_comparison[0] = true_videos[:, : args.seq_len]
-    video_comparison[1] = pred_videos
-    frames = einops.rearrange(video_comparison, "n b t h w c -> t (b h) (n w) c")
-
-    # --- Save video ---
-    imgs = [Image.fromarray(img) for img in frames]
-    # Write actions on each frame, on each row (i.e., for each video in the batch, on the GT row)
-    for t, img in enumerate(imgs[1:]):
-        d = ImageDraw.Draw(img)
-        for row in range(action_batch.shape[0]):
-            action = action_batch[row, t, 0]
-            y_offset = row * video_batch.shape[2] + 2
-            d.text((2, y_offset), f"{action}", fill=255)
-    imgs[0].save(
-        f"generation_{time.time()}.gif",
-        save_all=True,
-        append_images=imgs[1:],
-        duration=250,
-        loop=0,
-    )
+#    true_videos = (video_batch * 255).astype(np.uint8)
+#    pred_videos = (vid * 255).astype(np.uint8)
+#    video_comparison = np.zeros((2, *vid.shape), dtype=np.uint8)
+#    video_comparison[0] = true_videos[:, : args.seq_len]
+#    video_comparison[1] = pred_videos
+#    frames = einops.rearrange(video_comparison, "n b t h w c -> t (b h) (n w) c")
+#
+#    # --- Save video ---
+#    imgs = [Image.fromarray(img) for img in frames]
+#    # Write actions on each frame, on each row (i.e., for each video in the batch, on the GT row)
+#    for t, img in enumerate(imgs[1:]):
+#        d = ImageDraw.Draw(img)
+#        for row in range(action_batch.shape[0]):
+#            action = action_batch[row, t, 0]
+#            y_offset = row * video_batch.shape[2] + 2
+#            d.text((2, y_offset), f"{action}", fill=255)
+#    imgs[0].save(
+#        f"generation_{time.time()}.gif",
+#        save_all=True,
+#        append_images=imgs[1:],
+#        duration=250,
+#        loop=0,
+#    )
+#

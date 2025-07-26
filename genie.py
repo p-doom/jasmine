@@ -122,6 +122,7 @@ class Genie(nnx.Module):
             rngs=rngs,
         )
 
+    # FIXME (f.srambical): stricter typing
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
         tokenizer_outputs = self.tokenizer.vq_encode(batch["videos"], training=False)
         lam_outputs = self.lam.vq_encode(batch["videos"], training=False)
@@ -144,6 +145,7 @@ class Genie(nnx.Module):
         outputs["lam_indices"] = lam_outputs["indices"]
         return outputs
 
+    # FIXME (f.srambical): stricter typing
     def sample(
         self,
         batch: Dict[str, Any],
@@ -183,7 +185,9 @@ class Genie(nnx.Module):
         token_idxs = jnp.concatenate([token_idxs, pad], axis=1)  # (B, S, N)
         action_tokens = self.lam.vq.get_codes(batch["latent_actions"])
 
-        def maskgit_step_fn(carry, step):
+        def maskgit_step_fn(
+            carry: tuple[jax.Array, jax.Array, jax.Array, jax.Array], step: jax.Array
+        ) -> tuple[tuple[jax.Array, jax.Array, jax.Array, jax.Array], None]:
             rng, token_idxs, mask, action_tokens = carry
             N = token_idxs.shape[2]
 
@@ -207,7 +211,9 @@ class Genie(nnx.Module):
                 rng, _rng = jax.random.split(rng)
                 sampled_token_idxs = jax.random.categorical(_rng, final_logits)
             gather_fn = jax.vmap(jax.vmap(jax.vmap(lambda x, y: x[y])))
-            final_token_probs = gather_fn(jax.nn.softmax(final_logits), sampled_token_idxs)
+            final_token_probs = gather_fn(
+                jax.nn.softmax(final_logits), sampled_token_idxs
+            )
             final_token_probs += ~mask
             # Update masked tokens only
             token_idxs = jnp.where(mask, sampled_token_idxs, token_idxs)
@@ -222,13 +228,17 @@ class Genie(nnx.Module):
             new_carry = (rng, token_idxs, new_mask, action_tokens)
             return new_carry, None
 
-        def generation_step_fn(carry, step_t):
+        def generation_step_fn(
+            carry: tuple[jax.Array, jax.Array], step_t: jax.Array
+        ) -> tuple[tuple[jax.Array, jax.Array], None]:
             rng, current_token_idxs = carry
             rng, step_rng = jax.random.split(rng)
 
             # Mask current and future frames (i.e., t >= step_t)
             mask = jnp.arange(seq_len) >= step_t  # (S,)
-            mask = jnp.broadcast_to(mask[None, :, None], (B, seq_len, N)).astype(bool)  # (B, S, N)
+            mask = jnp.broadcast_to(mask[None, :, None], (B, seq_len, N)).astype(
+                bool
+            )  # (B, S, N)
             masked_token_idxs = current_token_idxs * ~mask
 
             # --- Initialize and run MaskGIT loop ---
@@ -260,13 +270,10 @@ class Genie(nnx.Module):
         )
         return final_frames
 
-    def vq_encode(self, batch, training) -> Dict[str, Any]:
+    def vq_encode(self, batch: Dict[str, Any], training: bool) -> Dict[str, Any]:
         # --- Preprocess videos ---
         lam_output = self.lam.vq_encode(batch["videos"], training=training)
         return lam_output["indices"]
-
-
-
 
 
 # FIXME (f.srambical): add conversion script for old checkpoints
@@ -275,7 +282,7 @@ def restore_genie_components(
     sharding: jax.sharding.NamedSharding,
     rng: jax.Array,
     args,
-):
+) -> nnx.Optimizer:
     """Restore pre-trained Genie components"""
     rngs = nnx.Rngs(rng)
 
@@ -376,7 +383,9 @@ def restore_genie_components(
     return optimizer
 
 
-def _create_abstract_sharded_pytree(pytree_template, sharding_spec):
+def _create_abstract_sharded_pytree(
+    pytree_template: nnx.GraphState, sharding_spec: jax.sharding.NamedSharding
+) -> jax.Array:
     """Replaces arrays in a pytree with ShapeDtypeStructs having the given sharding."""
 
     def map_fn(leaf_template):
