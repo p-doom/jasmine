@@ -94,6 +94,7 @@ class LatentActionModel(nnx.Module):
             rngs=rngs,
         )
 
+    # FIXME (f.srambical): stricter typing
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
         # --- Encode + VQ ---
         H, W = batch["videos"].shape[2:4]
@@ -111,6 +112,7 @@ class LatentActionModel(nnx.Module):
         outputs["recon"] = unpatchify(video_recon, self.patch_size, H, W)
         return outputs
 
+    # FIXME (f.srambical): stricter typing
     def vq_encode(self, videos: Any, training: bool = True) -> Dict[str, Any]:
         # --- Preprocess videos ---
         B, T = videos.shape[:2]

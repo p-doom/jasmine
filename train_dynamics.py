@@ -89,7 +89,9 @@ class Args:
 args = tyro.cli(Args)
 
 
-def dynamics_loss_fn(model, inputs):
+def dynamics_loss_fn(
+    model: Genie, inputs: dict
+) -> tuple[jax.Array, tuple[jax.Array, dict]]:
     """Compute masked dynamics loss"""
     inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
     model.train()
@@ -130,10 +132,12 @@ def dynamics_loss_fn(model, inputs):
 
 
 @nnx.jit
-def train_step(model, optimizer, inputs):
+def train_step(
+    model: Genie, optimizer: nnx.Optimizer, inputs: dict
+) -> tuple[jax.Array, jax.Array, dict]:
     """Update state and compute metrics"""
 
-    def loss_fn(model):
+    def loss_fn(model: Genie) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         return dynamics_loss_fn(model, inputs)
 
     (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
@@ -251,10 +255,14 @@ if __name__ == "__main__":
     videos_sharding = NamedSharding(mesh, PartitionSpec("data", None, None, None, None))
 
     model_state = nnx.state(optimizer.model)
-    model_sharded_state = jax.lax.with_sharding_constraint(model_state, replicated_sharding)
+    model_sharded_state = jax.lax.with_sharding_constraint(
+        model_state, replicated_sharding
+    )
     nnx.update(optimizer.model, model_sharded_state)
     optimizer_state = nnx.state(optimizer, nnx.optimizer.OptState)
-    optimizer_sharded_state = jax.lax.with_sharding_constraint(optimizer_state, replicated_sharding)
+    optimizer_sharded_state = jax.lax.with_sharding_constraint(
+        optimizer_state, replicated_sharding
+    )
     nnx.update(optimizer, optimizer_sharded_state)
 
     # --- Initialize checkpoint manager ---
@@ -323,9 +331,7 @@ if __name__ == "__main__":
         print(f"Restored dataloader and model state from step {step}")
     else:
         # Restore from pre-trained tokenizer (and LAM)
-        optimizer = restore_genie_components(
-            optimizer, replicated_sharding, rng, args
-        )
+        optimizer = restore_genie_components(optimizer, replicated_sharding, rng, args)
         # NOTE: We have to remove the tokenizer vq dropout due to a bug in flax.nnx
         del optimizer.model.tokenizer.vq.drop
 
@@ -375,7 +381,9 @@ if __name__ == "__main__":
                     step,
                     args=ocp.args.Composite(
                         model_state=ocp.args.PyTreeSave(optimizer_state),
-                        dataloader_state=grain.checkpoint.CheckpointSave(grain_iterator),
+                        dataloader_state=grain.checkpoint.CheckpointSave(
+                            grain_iterator
+                        ),
                     ),
                 )
                 print(f"Saved checkpoint at step {step}")

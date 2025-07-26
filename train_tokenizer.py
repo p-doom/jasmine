@@ -75,7 +75,9 @@ class Args:
 args = tyro.cli(Args)
 
 
-def tokenizer_loss_fn(model, inputs):
+def tokenizer_loss_fn(
+    model: TokenizerVQVAE, inputs: dict
+) -> tuple[jax.Array, tuple[jax.Array, dict]]:
     # --- Compute loss ---
     # FIXME (f.srambical): Can we even do native int8 training without casting the video at all?
     # FIXME (f.srambical): If the tokenizer is the reason for the dynamics model being memory-bound,
@@ -112,8 +114,10 @@ def tokenizer_loss_fn(model, inputs):
 
 
 @nnx.jit
-def train_step(tokenizer, optimizer, inputs):
-    def loss_fn(model):
+def train_step(
+    tokenizer: TokenizerVQVAE, optimizer: nnx.Optimizer, inputs: dict
+) -> tuple[jax.Array, jax.Array, dict]:
+    def loss_fn(model: TokenizerVQVAE) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         return tokenizer_loss_fn(model, inputs)
 
     (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
@@ -224,10 +228,14 @@ if __name__ == "__main__":
     videos_sharding = NamedSharding(mesh, PartitionSpec("data", None, None, None, None))
 
     model_state = nnx.state(optimizer.model)
-    model_sharded_state = jax.lax.with_sharding_constraint(model_state, replicated_sharding)
+    model_sharded_state = jax.lax.with_sharding_constraint(
+        model_state, replicated_sharding
+    )
     nnx.update(optimizer.model, model_sharded_state)
     optimizer_state = nnx.state(optimizer, nnx.optimizer.OptState)
-    optimizer_sharded_state = jax.lax.with_sharding_constraint(optimizer_state, replicated_sharding)
+    optimizer_sharded_state = jax.lax.with_sharding_constraint(
+        optimizer_state, replicated_sharding
+    )
     nnx.update(optimizer, optimizer_sharded_state)
 
     # --- Initialize checkpoint manager ---

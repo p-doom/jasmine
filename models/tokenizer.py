@@ -2,6 +2,7 @@ from typing import Dict, Any, Tuple
 
 import flax.nnx as nnx
 import jax.numpy as jnp
+import jax
 
 from utils.preprocess import patchify, unpatchify
 from utils.nn import STTransformer, VectorQuantizer
@@ -75,6 +76,7 @@ class TokenizerVQVAE(nnx.Module):
             rngs=rngs,
         )
 
+    # FIXME (f.srambical): stricter typing
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
         H, W = batch["videos"].shape[2:4]
         outputs = self.vq_encode(batch["videos"], training)
@@ -85,6 +87,7 @@ class TokenizerVQVAE(nnx.Module):
         outputs["recon"] = unpatchify(recon, self.patch_size, H, W)
         return outputs
 
+    # FIXME (f.srambical): stricter typing
     def vq_encode(self, videos: Any, training: bool = True) -> Dict[str, Any]:
         # --- Preprocess + encode ---
         B, T = videos.shape[:2]
@@ -99,7 +102,7 @@ class TokenizerVQVAE(nnx.Module):
         indices = indices.reshape(B, T, N)
         return dict(z_q=z_q, z=z, emb=emb, indices=indices)
 
-    def decode(self, indices: Any, video_hw: Tuple[int, int]):
+    def decode(self, indices: Any, video_hw: Tuple[int, int]) -> jax.Array:
         z = self.vq.codebook[indices]
         recon = self.decoder(z)
         recon = recon.astype(jnp.float32)

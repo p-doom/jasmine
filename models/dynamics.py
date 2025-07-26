@@ -62,6 +62,7 @@ class DynamicsMaskGIT(nnx.Module):
             rngs=rngs,
         )
 
+    # FIXME (f.srambical): stricter typing
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
         # --- Mask videos ---
         vid_embed = self.patch_embed(batch["video_tokens"])

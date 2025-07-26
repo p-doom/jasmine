@@ -75,7 +75,9 @@ class Args:
 args = tyro.cli(Args)
 
 
-def lam_loss_fn(model: LatentActionModel, inputs: dict):
+def lam_loss_fn(
+    model: LatentActionModel, inputs: dict
+) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict]]:
     # --- Compute loss ---
     inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
     model.train()
@@ -108,8 +110,16 @@ def lam_loss_fn(model: LatentActionModel, inputs: dict):
 
 
 @nnx.jit
-def train_step(lam, optimizer, inputs, action_last_active, rng):
-    def loss_fn(model):
+def train_step(
+    lam: LatentActionModel,
+    optimizer: nnx.Optimizer,
+    inputs: dict,
+    action_last_active: jax.Array,
+    rng: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array, dict]:
+    def loss_fn(
+        model: LatentActionModel,
+    ) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict]]:
         return lam_loss_fn(model, inputs)
 
     # --- Update model ---
@@ -226,10 +236,14 @@ if __name__ == "__main__":
     videos_sharding = NamedSharding(mesh, PartitionSpec("data", None, None, None, None))
 
     model_state = nnx.state(optimizer.model)
-    model_sharded_state = jax.lax.with_sharding_constraint(model_state, replicated_sharding)
+    model_sharded_state = jax.lax.with_sharding_constraint(
+        model_state, replicated_sharding
+    )
     nnx.update(optimizer.model, model_sharded_state)
     optimizer_state = nnx.state(optimizer, nnx.optimizer.OptState)
-    optimizer_sharded_state = jax.lax.with_sharding_constraint(optimizer_state, replicated_sharding)
+    optimizer_sharded_state = jax.lax.with_sharding_constraint(
+        optimizer_state, replicated_sharding
+    )
     nnx.update(optimizer, optimizer_sharded_state)
 
     # --- Initialize checkpoint manager ---

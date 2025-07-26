@@ -1,5 +1,5 @@
 import math
-from typing import Tuple
+from typing import Tuple, Callable
 
 from flax import nnx
 import jax
@@ -23,7 +23,7 @@ class PositionalEncoding(nnx.Module):
         pe = pe.at[:, 1::2].set(jnp.cos(position * div_term))
         self.pe = nnx.Variable(pe)
 
-    def __call__(self, x):
+    def __call__(self, x: jax.Array) -> jax.Array:
         x = x + self.pe[: x.shape[2]]
         return x
 
@@ -220,7 +220,7 @@ class STTransformer(nnx.Module):
         return x  # (B, T, E)
 
 
-def normalize(x):
+def normalize(x: jax.Array) -> jax.Array:
     return x / (jnp.linalg.norm(x, ord=2, axis=-1, keepdims=True) + 1e-8)
 
 
@@ -246,6 +246,7 @@ class VectorQuantizer(nnx.Module):
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         # --- Compute distances ---
         x = normalize(x)
+        # FIXME (f.srambical): check whether we should use self.codebook.value here
         normalized_codebook = normalize(self.codebook)
         distance = -jnp.matmul(x, normalized_codebook.T)
         if training:
@@ -259,11 +260,11 @@ class VectorQuantizer(nnx.Module):
         z_q = x + jax.lax.stop_gradient(z - x)
         return z_q, z, x, indices
 
-    def get_codes(self, indices: jax.Array):
+    def get_codes(self, indices: jax.Array) -> jax.Array:
         return self.codebook[indices]
 
 
-def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool):
+def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool) -> Callable:
     """
     Create an attention function that uses flash attention if enabled.
 
