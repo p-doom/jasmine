@@ -137,7 +137,7 @@ def train_step(
     reset_idxs = jax.random.choice(rng, num_codes, shape=(num_codes,), p=p_code)
     do_reset = action_last_active >= args.vq_reset_thresh
     new_codebook = jnp.where(
-        jnp.expand_dims(do_reset, -1), codebook[reset_idxs], codebook
+        jnp.expand_dims(do_reset, -1), codebook[reset_idxs], codebook.value
     )
     lam.vq.codebook.value = new_codebook
     action_last_active = jnp.where(do_reset, 0, action_last_active)
