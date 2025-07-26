@@ -329,8 +329,8 @@ def restore_genie_components(
     restored_tokenizer = tokenizer_checkpoint_manager.restore(
         step=tokenizer_checkpoint_manager.latest_step(),
         args=ocp.args.Composite(
-            model_state=ocp.args.PyTreeRestore(
-                abstract_sharded_tokenizer_optimizer_state
+            model_state=ocp.args.PyTreeRestore(  # type: ignore
+                abstract_sharded_tokenizer_optimizer_state  # type: ignore
             ),
         ),
     )["model_state"]
@@ -368,8 +368,8 @@ def restore_genie_components(
         restored_lam_optimizer = lam_checkpoint_manager.restore(
             step=lam_checkpoint_manager.latest_step(),
             args=ocp.args.Composite(
-                model_state=ocp.args.PyTreeRestore(
-                    abstract_sharded_lam_optimizer_state
+                model_state=ocp.args.PyTreeRestore(  # type: ignore
+                    abstract_sharded_lam_optimizer_state  # type: ignore
                 ),
             ),
         )["model_state"]

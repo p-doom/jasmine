@@ -129,7 +129,7 @@ if __name__ == "__main__":
     restored = checkpoint_manager.restore(
         checkpoint_manager.latest_step(),
         args=ocp.args.Composite(
-            model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),
+            model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
         ),
     )
     restored_optimizer_state = restored["model_state"]
@@ -178,7 +178,7 @@ if __name__ == "__main__":
     video_batch = video_batch.astype(args.dtype) / 255.0
     # Get latent actions for all videos in the batch
     batch = dict(videos=video_batch)
-    action_batch = genie.vq_encode(batch, training=False)  # type: ignore[arg-type]
+    action_batch = genie.vq_encode(batch, training=False)
     action_batch = jnp.asarray(action_batch).reshape(
         video_batch.shape[0], args.seq_len - 1, 1
     )
@@ -187,8 +187,8 @@ if __name__ == "__main__":
     vid = _autoreg_sample(rng, video_batch, action_batch)
     gt = video_batch[:, : vid.shape[1]].clip(0, 1).reshape(-1, *video_batch.shape[2:])
     recon = vid.clip(0, 1).reshape(-1, *vid.shape[2:])
-    ssim = pix.ssim(
-        gt[:, args.start_frame + 1 :], recon[:, args.start_frame + 1 :]
+    ssim = jnp.asarray(
+        pix.ssim(gt[:, args.start_frame + 1 :], recon[:, args.start_frame + 1 :])
     ).mean()
     print(f"SSIM: {ssim}")
 

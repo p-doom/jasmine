@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 import os
+from typing import cast
 
 import einops
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
@@ -93,8 +94,8 @@ def lam_loss_fn(
     # --- Compute validation metrics ---
     gt = gt_future_frames.clip(0, 1).reshape(-1, *gt_future_frames.shape[2:])
     recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
-    psnr = pix.psnr(gt, recon).mean()  # type: ignore
-    ssim = pix.ssim(gt, recon).mean()  # type: ignore
+    psnr = jnp.asarray(pix.psnr(gt, recon)).mean()
+    ssim = jnp.asarray(pix.ssim(gt, recon)).mean()
     count_fn = jax.vmap(lambda i: (outputs["indices"] == i).sum())
     index_counts = count_fn(jnp.arange(args.num_latents))
     metrics = dict(
@@ -255,8 +256,16 @@ if __name__ == "__main__":
     handler_registry.add(
         "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
     )
-    handler_registry.add("dataloader_state", grain.checkpoint.CheckpointSave, grain.checkpoint.CheckpointHandler)  # type: ignore
-    handler_registry.add("dataloader_state", grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler)  # type: ignore
+    handler_registry.add(
+        "dataloader_state",
+        grain.checkpoint.CheckpointSave,
+        cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
+    )
+    handler_registry.add(
+        "dataloader_state",
+        grain.checkpoint.CheckpointRestore,
+        cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
+    )
 
     checkpoint_options = ocp.CheckpointManagerOptions(
         save_interval_steps=args.log_checkpoint_interval,
@@ -300,8 +309,8 @@ if __name__ == "__main__":
         restored = checkpoint_manager.restore(
             checkpoint_manager.latest_step(),
             args=ocp.args.Composite(
-                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),
-                dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
+                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
+                dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),  # type: ignore
             ),
         )
         restored_optimizer_state = restored["model_state"]
@@ -311,7 +320,10 @@ if __name__ == "__main__":
         print(f"Restored dataloader and model state from step {step}")
 
     # --- TRAIN LOOP ---
-    dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in grain_iterator)  # type: ignore
+    dataloader = (
+        jax.make_array_from_process_local_data(videos_sharding, elem)
+        for elem in grain_iterator
+    )
     print(f"Starting training from step {step}...")
     action_last_active = jnp.zeros(args.num_latents, dtype=jnp.int32)
     while step < args.num_steps:
@@ -363,9 +375,9 @@ if __name__ == "__main__":
                 checkpoint_manager.save(
                     step,
                     args=ocp.args.Composite(
-                        model_state=ocp.args.PyTreeSave(optimizer_state),
-                        dataloader_state=grain.checkpoint.CheckpointSave(
-                            grain_iterator
+                        model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
+                        dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
+                            grain_iterator  # type: ignore
                         ),
                     ),
                 )
