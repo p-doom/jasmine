@@ -314,7 +314,6 @@ if __name__ == "__main__":
 
     # --- Restore checkpoint ---
     if args.restore_ckpt:
-        # FIXME (f.srambical): pass sharding information for restoration onto different topology
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
         abstract_optimizer_state = nnx.state(abstract_optimizer)
         restored = checkpoint_manager.restore(
