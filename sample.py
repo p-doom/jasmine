@@ -193,27 +193,26 @@ if __name__ == "__main__":
     print(f"SSIM: {ssim}")
 
     # --- Construct video ---
-#    true_videos = (video_batch * 255).astype(np.uint8)
-#    pred_videos = (vid * 255).astype(np.uint8)
-#    video_comparison = np.zeros((2, *vid.shape), dtype=np.uint8)
-#    video_comparison[0] = true_videos[:, : args.seq_len]
-#    video_comparison[1] = pred_videos
-#    frames = einops.rearrange(video_comparison, "n b t h w c -> t (b h) (n w) c")
-#
-#    # --- Save video ---
-#    imgs = [Image.fromarray(img) for img in frames]
-#    # Write actions on each frame, on each row (i.e., for each video in the batch, on the GT row)
-#    for t, img in enumerate(imgs[1:]):
-#        d = ImageDraw.Draw(img)
-#        for row in range(action_batch.shape[0]):
-#            action = action_batch[row, t, 0]
-#            y_offset = row * video_batch.shape[2] + 2
-#            d.text((2, y_offset), f"{action}", fill=255)
-#    imgs[0].save(
-#        f"generation_{time.time()}.gif",
-#        save_all=True,
-#        append_images=imgs[1:],
-#        duration=250,
-#        loop=0,
-#    )
-#
+    true_videos = (video_batch * 255).astype(np.uint8)
+    pred_videos = (vid * 255).astype(np.uint8)
+    video_comparison = np.zeros((2, *vid.shape), dtype=np.uint8)
+    video_comparison[0] = true_videos[:, : args.seq_len]
+    video_comparison[1] = pred_videos
+    frames = einops.rearrange(video_comparison, "n b t h w c -> t (b h) (n w) c")
+
+    # --- Save video ---
+    imgs = [Image.fromarray(img) for img in frames]
+    # Write actions on each frame, on each row (i.e., for each video in the batch, on the GT row)
+    for t, img in enumerate(imgs[1:]):
+        d = ImageDraw.Draw(img)
+        for row in range(action_batch.shape[0]):
+            action = action_batch[row, t, 0]
+            y_offset = row * video_batch.shape[2] + 2
+            d.text((2, y_offset), f"{action}", fill=255)
+    imgs[0].save(
+        f"generation_{time.time()}.gif",
+        save_all=True,
+        append_images=imgs[1:],
+        duration=250,
+        loop=0,
+    )
