@@ -324,34 +324,52 @@ class Dynamics(nnx.Module):
 
         # --- Prepare latent actions ---
         action_tokens = self.lam.vq.get_codes(batch["latent_actions"])  # (B, S-1, )
-        # --- Autoregressive generation loop ---
-        rng = batch["rng"]
-        for t in range(T, seq_len):
-            for n in range(N):
-                jax.debug.print("Sampling token {} from frame {}", n, t)
-                dyna_inputs = {
-                    "video_tokens": token_idxs_full,
-                    "latent_actions": action_tokens,
-                }
-                next_token_logits, _ = self.dynamics(dyna_inputs, training=False)
-                next_token_logits = next_token_logits[:, t, n, :].astype(
-                    jnp.float32
-                )  # (B, 1, vocab_size)
 
-                if sample_argmax:
-                    next_token = jnp.argmax(next_token_logits, axis=-1)  # (B, 1)
-                else:
-                    rng, step_rng = jax.random.split(rng)
-                    next_token = jax.random.categorical(
-                        step_rng, next_token_logits / temperature, axis=-1
-                    )  # (B, 1)
+        def token_step_fn(
+            carry: tuple[jax.Array, jax.Array, jax.Array], token_idx: jax.Array
+        ) -> tuple[tuple[jax.Array, jax.Array, jax.Array], None]:
+            rng, token_idxs_full, action_tokens = carry
+            t = token_idx // N
+            n = token_idx % N
+            
+            dyna_inputs = {
+                "video_tokens": token_idxs_full,
+                "latent_actions": action_tokens,
+            }
+            next_token_logits, _ = self.dynamics(dyna_inputs, training=False)
+            next_token_logits = next_token_logits[:, t, n, :].astype(
+                jnp.float32
+            )  # (B, vocab_size)
 
-                # Insert the generated tokens into the sequence
-                token_idxs_full = token_idxs_full.at[:, t, n].set(next_token)
+            if sample_argmax:
+                next_token = jnp.argmax(next_token_logits, axis=-1)  # (B,)
+            else:
+                rng, step_rng = jax.random.split(rng)
+                next_token = jax.random.categorical(
+                    step_rng, next_token_logits / temperature, axis=-1
+                )  # (B,)
+
+            # Insert the generated tokens into the sequence
+            token_idxs_full = token_idxs_full.at[:, t, n].set(next_token)
+            
+            new_carry = (rng, token_idxs_full, action_tokens)
+            return new_carry, None
+
+        # --- Autoregressive generation ---
+        future_frames = seq_len - T
+        total_future_tokens = future_frames * N
+        start_token_idx = T * N
+        step_indices = jnp.arange(start_token_idx, start_token_idx + total_future_tokens)
+        
+        initial_carry = (batch["rng"], token_idxs_full, action_tokens)
+        final_carry, _ = jax.lax.scan(
+            token_step_fn, initial_carry, step_indices
+        )
+        final_token_idxs = final_carry[1]
 
         # --- Decode all tokens at once at the end ---
         H, W = batch["videos"].shape[2:4]
-        final_frames = self.tokenizer.decode(token_idxs_full, video_hw=(H, W))
+        final_frames = self.tokenizer.decode(final_token_idxs, video_hw=(H, W))
         return final_frames
 
     def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
