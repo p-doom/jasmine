@@ -16,7 +16,7 @@ import wandb
 import grain
 import flax.nnx as nnx
 
-from genie import Genie, restore_genie_components
+from dynamics import Dynamics, restore_components
 from utils.dataloader import get_dataloader
 from utils.lr_utils import get_lr_schedule
 from utils.parameter_utils import count_parameters_by_component
@@ -62,6 +62,7 @@ class Args:
     lam_num_blocks: int = 4
     lam_num_heads: int = 8
     lam_checkpoint: str = ""
+    dynamics_type: str = "maskgit"  # supported options: maskgit, causal
     # Dynamics
     dyna_dim: int = 512
     dyna_ffn_dim: int = 2048
@@ -91,7 +92,7 @@ args = tyro.cli(Args)
 
 
 def dynamics_loss_fn(
-    model: Genie, inputs: dict
+    model: Dynamics, inputs: dict
 ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
     """Compute masked dynamics loss"""
     inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
@@ -134,11 +135,11 @@ def dynamics_loss_fn(
 
 @nnx.jit
 def train_step(
-    model: Genie, optimizer: nnx.Optimizer, inputs: dict
+    model: Dynamics, optimizer: nnx.Optimizer, inputs: dict
 ) -> tuple[jax.Array, jax.Array, dict]:
     """Update state and compute metrics"""
 
-    def loss_fn(model: Genie) -> tuple[jax.Array, tuple[jax.Array, dict]]:
+    def loss_fn(model: Dynamics) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         return dynamics_loss_fn(model, inputs)
 
     (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
@@ -170,7 +171,7 @@ if __name__ == "__main__":
     # --- Initialize model ---
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
-    genie = Genie(
+    dynamics = Dynamics(
         # Tokenizer
         in_dim=args.image_channels,
         tokenizer_dim=args.tokenizer_dim,
@@ -190,6 +191,7 @@ if __name__ == "__main__":
         lam_num_heads=args.lam_num_heads,
         lam_co_train=not args.lam_checkpoint,
         # Dynamics
+        dynamics_type=args.dynamics_type,
         dyna_dim=args.dyna_dim,
         dyna_ffn_dim=args.dyna_ffn_dim,
         dyna_num_blocks=args.dyna_num_blocks,
@@ -202,7 +204,7 @@ if __name__ == "__main__":
         rngs=rngs,
     )
 
-    _, params, _ = nnx.split(genie, nnx.Param, ...)
+    _, params, _ = nnx.split(dynamics, nnx.Param, ...)
     param_counts = count_parameters_by_component(params)
 
     if args.log and jax.process_index() == 0:
@@ -246,7 +248,7 @@ if __name__ == "__main__":
         weight_decay=1e-4,
         mu_dtype=args.dtype,
     )
-    optimizer = nnx.Optimizer(genie, tx)
+    optimizer = nnx.Optimizer(dynamics, tx)
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
     device_mesh_arr = create_device_mesh((num_devices,))
@@ -339,7 +341,7 @@ if __name__ == "__main__":
         print(f"Restored dataloader and model state from step {step}")
     else:
         # Restore from pre-trained tokenizer (and LAM)
-        optimizer = restore_genie_components(optimizer, replicated_sharding, rng, args)
+        optimizer = restore_components(optimizer, replicated_sharding, rng, args)
         # NOTE: We have to remove the tokenizer vq dropout due to a bug in flax.nnx
         del optimizer.model.tokenizer.vq.drop
 
@@ -354,7 +356,7 @@ if __name__ == "__main__":
             # --- Train step ---
             rng, _rng_mask = jax.random.split(rng, 2)
             inputs = dict(videos=videos, mask_rng=_rng_mask)
-            loss, recon, metrics = train_step(genie, optimizer, inputs)
+            loss, recon, metrics = train_step(dynamics, optimizer, inputs)
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1

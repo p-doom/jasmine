@@ -54,6 +54,7 @@ class LatentActionModel(nnx.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
+            spatial_causal=False,
             rngs=rngs,
         )
         self.action_in = nnx.Param(
@@ -92,6 +93,7 @@ class LatentActionModel(nnx.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
+            spatial_causal=False,
             rngs=rngs,
         )
 

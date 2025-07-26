@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw
 import tyro
 from flax import nnx
 
-from genie import Genie
+from dynamics import Dynamics
 from utils.dataloader import get_dataloader
 
 
@@ -43,6 +43,7 @@ class Args:
     tokenizer_num_blocks: int = 4
     tokenizer_num_heads: int = 8
     # LAM checkpoint
+    lam_co_train: bool = False
     lam_dim: int = 512
     lam_ffn_dim: int = 2048
     latent_action_dim: int = 32
@@ -58,6 +59,7 @@ class Args:
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
     use_flash_attention: bool = True
+    dynamics_type: str = "maskgit"
 
 
 args = tyro.cli(Args)
@@ -67,9 +69,9 @@ if __name__ == "__main__":
 
     rng = jax.random.PRNGKey(args.seed)
 
-    # --- Load Genie checkpoint ---
+    # --- Load Dynamics model checkpoint ---
     rngs = nnx.Rngs(rng)
-    genie = Genie(
+    dynamics = Dynamics(
         # Tokenizer
         in_dim=args.image_channels,
         tokenizer_dim=args.tokenizer_dim,
@@ -87,8 +89,9 @@ if __name__ == "__main__":
         lam_patch_size=args.lam_patch_size,
         lam_num_blocks=args.lam_num_blocks,
         lam_num_heads=args.lam_num_heads,
-        lam_co_train=False,
+        lam_co_train=args.lam_co_train,
         # Dynamics
+        dynamics_type=args.dynamics_type,
         dyna_dim=args.dyna_dim,
         dyna_ffn_dim=args.dyna_ffn_dim,
         dyna_num_blocks=args.dyna_num_blocks,
@@ -122,7 +125,7 @@ if __name__ == "__main__":
         weight_decay=1e-4,
         mu_dtype=args.dtype,
     )
-    dummy_optimizer = nnx.Optimizer(genie, dummy_tx)
+    dummy_optimizer = nnx.Optimizer(dynamics, dummy_tx)
 
     abstract_optimizer = nnx.eval_shape(lambda: dummy_optimizer)
     abstract_optimizer_state = nnx.state(abstract_optimizer)
@@ -136,15 +139,23 @@ if __name__ == "__main__":
     nnx.update(dummy_optimizer, restored_optimizer_state)
 
     # --- Define sampling function ---
-    def _sampling_fn(model: Genie, batch: dict) -> jax.Array:
-        """Runs Genie.sample with pre-defined generation hyper-parameters."""
-        return model.sample(
-            batch,
-            args.seq_len,
-            args.maskgit_steps,
-            args.temperature,
-            args.sample_argmax,
-        )
+    def _sampling_fn(model: Dynamics, batch: dict) -> jax.Array:
+        """Runs Dynamics.sample with pre-defined generation hyper-parameters."""
+        if args.dynamics_type == "maskgit":
+            return model.sample_maskgit(
+                batch,
+                args.seq_len,
+                args.maskgit_steps,
+                args.temperature,
+                args.sample_argmax,
+            )
+        else:
+            return model.sample_causal(
+                batch,
+                args.seq_len,
+                args.temperature,
+                args.sample_argmax,
+            )
 
     # --- Define autoregressive sampling loop ---
     @nnx.jit
@@ -152,7 +163,7 @@ if __name__ == "__main__":
         vid = video_batch[:, : args.start_frame + 1]
         rng, _rng = jax.random.split(rng)
         batch = dict(videos=vid, latent_actions=action_batch, rng=_rng)
-        generated_vid = _sampling_fn(genie, batch)
+        generated_vid = _sampling_fn(dynamics, batch)
         return generated_vid
 
     # --- Get video + latent actions ---
@@ -178,7 +189,7 @@ if __name__ == "__main__":
     video_batch = video_batch.astype(args.dtype) / 255.0
     # Get latent actions for all videos in the batch
     batch = dict(videos=video_batch)
-    action_batch = genie.vq_encode(batch, training=False)
+    action_batch = dynamics.vq_encode(batch, training=False)
     action_batch = jnp.asarray(action_batch).reshape(
         video_batch.shape[0], args.seq_len - 1, 1
     )

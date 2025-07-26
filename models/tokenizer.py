@@ -53,6 +53,7 @@ class TokenizerVQVAE(nnx.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
+            spatial_causal=False,
             rngs=rngs,
         )
         self.vq = VectorQuantizer(
@@ -73,6 +74,7 @@ class TokenizerVQVAE(nnx.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
+            spatial_causal=False,
             rngs=rngs,
         )
 

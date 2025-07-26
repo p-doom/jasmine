@@ -38,6 +38,7 @@ class STBlock(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
+        spatial_causal: bool,
         rngs: nnx.Rngs,
     ):
         self.dim = dim
@@ -47,6 +48,7 @@ class STBlock(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
+        self.spatial_causal = spatial_causal
 
         self.spatial_pos_enc = PositionalEncoding(self.dim)
         self.spatial_norm = nnx.LayerNorm(
@@ -63,7 +65,7 @@ class STBlock(nnx.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             attention_fn=_create_flash_attention_fn(
-                self.use_flash_attention, is_causal=False
+                self.use_flash_attention, is_causal=self.spatial_causal
             ),
             rngs=rngs,
             decode=False,
@@ -123,6 +125,7 @@ class STBlock(nnx.Module):
         x = x.swapaxes(1, 2)
         z = self.temporal_pos_enc(x)
         z = self.temporal_norm(z)
+        # FIXME (f.srambical): no need to pass mask if is_causal=True
         causal_mask = jnp.tri(z.shape[-2])
         z = self.temporal_attention(z, mask=causal_mask)
         x = x + z
@@ -151,6 +154,7 @@ class STTransformer(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
+        spatial_causal: bool,
         rngs: nnx.Rngs,
     ):
         self.input_dim = input_dim
@@ -163,6 +167,7 @@ class STTransformer(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
+        self.spatial_causal = spatial_causal
 
         self.input_norm1 = nnx.LayerNorm(
             num_features=self.input_dim,
@@ -195,6 +200,7 @@ class STTransformer(nnx.Module):
                     param_dtype=self.param_dtype,
                     dtype=self.dtype,
                     use_flash_attention=self.use_flash_attention,
+                    spatial_causal=self.spatial_causal,
                     rngs=rngs,
                 )
             )
