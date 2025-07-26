@@ -1,4 +1,4 @@
-<h1 align="center">Jafar: A JAX-based Genie Implementation 🧞</h1>
+<h1 align="center">🧞‍♀️ Jasmine: A simple, performant and scalable JAX-based world modeling codebase 🧞‍♀️</h1>
 
 <p align="center">
     <a href= "https://github.com/FLAIROx/jafar/blob/main/LICENSE">
@@ -7,69 +7,63 @@
         <img src="https://img.shields.io/badge/code%20style-black-000000.svg" /></a>
 </p>
 
-This is a feature-complete fork of Jafar, a JAX-based implementation of the DeepMind paper "[Genie: Generative Interactive Environments](https://arxiv.org/abs/2402.15391)" (Bruce et al., 2024).
+Jasmine is a production-ready JAX-based world modeling codebase. It currently implements the high-level architecture of [Genie: Generative Interactive Environments](https://arxiv.org/abs/2402.15391) (Bruce et al., 2024) with [MaskGIT](https://arxiv.org/abs/2202.04200) (Chang et al., 2022), as well as an autoregressive (causal) baseline. A diffusion baseline is coming soon.
 
-Jafar supports training of all Genie components and can complete the CoinRun reproducibility experiment (Appendix F) on a single L40S GPU in under a week.
-
-This repository implements bugfixes and multitudes of additional features described below.
+Jasmine scales from single hosts to hundreds of xPUs thanks to XLA and strives to be an easily hackable, batteries-included foundation for world modeling research.
 
 <h2 name="overview" id="overview">Overview</h2>
 
-- Distributed checkpointing & loading
-    - also onto a different hardware topology (e.g. initial training on 1 node --> reinitialization onto 4 nodes)
-- Asynchronous checkpointing
-- Optimized dataloading (each GPU loads its shard in parallel)
-- Model+optimizer states+dataloader checkpointing (just resume your training run and everything is taken care of)
-- Full reproducibility with exact training curves (seeded dataloading + training)
-- Automatic checkpoint management (automatic deletion/retention according to specified retention policy)
-- Mixed precision (with correct full precision casting, e.g. before softmax)
-- Flash attention (from cudnn, which is more optimized than Tri Dao's)
-- int8-quantization is on the roadmap (via https://github.com/google/aqt)
-- KV caching for inference of causal Transformer (still in PR)
-    - Currently working on frame-level KV cache resets for accelerated spatiotemporal attention
+- Asynchronous & distributed checkpointing thanks to [orbax.checkpoint](https://github.com/google/orbax)
+    - Jasmine also supports mixing and matching hardware topologies (e.g. train on four nodes, load the checkpoint on a single node)
+- Optimized dataloading thanks to [Grain](https://github.com/google/grain)
+    - Dataloading scales with the number of processes (i.e. nodes/xPUs)
+- Checkpointing of model weights, optimizer and dataloader states
+- Full reproducibility with **exact** training curves (thanks to seeded dataloading and training, and [JAX' approach to pseudo random numbers](https://docs.jax.dev/en/latest/random-numbers.html))
+- Automatic checkpoint deletion/retention according to specified retention policy thanks to `orbax.checkpoint.CheckpointManager`
+- Mixed precision training using `bfloat16`
+    - `int8` training is on the roadmap via [aqt](https://github.com/google/aqt)
+- FlashAttention thanks to [cuDNN SDPA](https://github.com/jax-ml/jax/blob/a155c5a9997924170e0067d552351a9833c12c11/jax/_src/cudnn/fused_attention_stablehlo.py#L842)
+- Frame-level KV cache resets for accelerated spatiotemporal attention in causal baseline (still in PR)
 - Activation checkpointing (even onto host memory if desired)
-- Distributed Data parallelism (changing to FSDP requires changing one line of code)
-- wandb, cli and tensorboard logging (tb logging still in PR)
-- Just-in-time compiled train step
-- Cosine/ WSD learning rate schedules (no need to retrain if you realize that you want to train for longer)
-- Index shuffling during dataloading (doesn't require loading the dataset into memory for shuffling)
-- 'google-native' stack
+- DDP (changing to FSDP requires changing **a single line of code**)
+- WSD learning rate schedule
+    -  No need to retrain from scratch upon realize that you want to train for longer
+- Index-shuffling during dataloading
+- Google-native stack
     - https://github.com/google/orbax for checkpointing
     - https://github.com/google/grain for dataloading
     - https://github.com/google-deepmind/dm_pix for image manipulation
     - https://github.com/google/array_record as the data format
-- essentially, no other dependencies
-- We are currently working on migrating to the new flax.nnx API, after which we will also have:
-    - significantly less boilerplate
-    - easy model surgery
-    - model inspection
+- Easy model inspection thanks to [treescope](https://github.com/google-deepmind/treescope)
+- Easy model surgery thanks to the new [flax.nnx](https://flax.readthedocs.io/en/latest/guides/linen_to_nnx.html) API
 
 <h2 name="start" id="start">Setup 🧗 </h2>
 
-Jafar was built with `python 3.10` and `jax 0.4.30`. To install requirements, run:
+Jasmin requires `python 3.10`, `jax 0.6.2` and `flax 0.10.7`. To install the requirements, run:
 
 ```bash
 pip install -r requirements.txt
 pre-commit install
 ```
 
-Before training the models, generate the CoinRun dataset by running:
+Download OpenAI's VPT dataset by running:
 
 ```bash
-python generate_dataset.py --num_episodes 10000
+bash input_pipeline/download/openai/download_index_files.sh
+python input_pipeline/download/openai/download_videos.py
 ```
 
-Note: this is a large dataset (around 100GB) and may take a while to generate.
+Note: this is a large dataset and may take a while to download.
 
-For performant distributed training, we additionally preprocess the dataset into `TFRecord`s:
+For performant distributed training, we additionally preprocess the dataset into `arrayrecords`:
 
 ```bash
-python preprocess_dataset.py
+python input_pipeline/preprocess/video_to_array_records.py
 ```
 
 <h2 name="train" id="train">Quick Start 🚀 </h2>
 
-Genie has three components: a [video tokenizer](models/tokenizer.py), a [latent action model](models/lam.py), and a [dynamics model](models/dynamics.py). Each of these components are trained separately, however, the dynamics model requires a pre-trained video tokenizer and latent action model.
+Genie has three components: a [video tokenizer](models/tokenizer.py), a [latent action model](models/lam.py), and a [dynamics model](models/dynamics.py). Each of these components are trained separately, however, the dynamics model requires a pre-trained video tokenizer (and latent action model).
 
 To train the video tokenizer (similar for the LAM), run:
 
@@ -97,10 +91,21 @@ python train_tokenizer.py --log --entity <wandb-entity> --project <wandb-project
 
 <h2 name="cite" id="cite">Citing Jafar 📜 </h2>
 
-Jafar was built by [Matthew Jackson](https://matthewtjackson.com) and [Timon Willi](https://www.timonwilli.com).
+Jasmine was built by [Mihir Mahajan](https://maharajamihir.github.io/), [Alfred Nguyen](https://avocadoali.github.io/) and [Franz Srambical](https://srambical.fr/), but started as a fork of [Jafar](https://github.com/flairox/jafar), built by [Matthew Jackson](https://matthewtjackson.com) and [Timon Willi](https://www.timonwilli.com).
 
-If you use Jafar in your work, please cite us and the original Genie paper as follows:
+If you use Jasmine in your work, please cite us, Jafar, and the original Genie paper as follows:
 
+```
+@inproceedings{
+    mahajan2025jasmine,
+    title={Jasmine: : A simple, performant and scalable JAX-based world modeling codebase},
+    author={Mihir Mahajan and Alfred Nguyen and Franz Srambical and Stefan Bauer},
+    journal = {p(doom) blog},
+    year={2025},
+    url={https://pdoom.org/jasmine.html}
+    note = {https://pdoom.org/blog.html}
+}
+```
 ```
 @inproceedings{
     willi2024jafar,
