@@ -96,9 +96,9 @@ Jasmine was built by [Mihir Mahajan](https://maharajamihir.github.io/), [Alfred 
 If you use Jasmine in your work, please cite us, Jafar, and the original Genie paper as follows:
 
 ```
-@inproceedings{
+@article{
     mahajan2025jasmine,
-    title={Jasmine: : A simple, performant and scalable JAX-based world modeling codebase},
+    title={Jasmine: A simple, performant and scalable JAX-based world modeling codebase},
     author={Mihir Mahajan and Alfred Nguyen and Franz Srambical and Stefan Bauer},
     journal = {p(doom) blog},
     year={2025},
