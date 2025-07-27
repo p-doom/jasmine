@@ -89,7 +89,7 @@ Training can then be logged by setting the `--log` flag:
 python train_tokenizer.py --log --entity <wandb-entity> --project <wandb-project>
 ```
 
-<h2 name="cite" id="cite">Citing Jafar 📜 </h2>
+<h2 name="cite" id="cite">Citing 📜 </h2>
 
 Jasmine was built by [Mihir Mahajan](https://maharajamihir.github.io/), [Alfred Nguyen](https://avocadoali.github.io/) and [Franz Srambical](https://srambical.fr/), but started as a fork of [Jafar](https://github.com/flairox/jafar), built by [Matthew Jackson](https://matthewtjackson.com) and [Timon Willi](https://www.timonwilli.com).
 
