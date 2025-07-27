@@ -99,7 +99,7 @@ if __name__ == "__main__":
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
-        decode=False,
+        decode=True,
         rngs=rngs,
     )
 
@@ -220,8 +220,8 @@ if __name__ == "__main__":
     if args.dynamics_type == "causal":
         transformer_blocks = jasmine.dynamics.transformer.blocks
         for block in transformer_blocks:
-            block.spatial_attention.init_cache(spatial_token_shape)
-            block.temporal_attention.init_cache(temporal_token_shape)
+            block.spatial_attention.init_cache(spatial_token_shape, dtype=args.dtype)
+            block.temporal_attention.init_cache(temporal_token_shape, dtype=args.dtype)
     vid = _autoreg_sample(rng, video_batch, action_batch)
     gt = video_batch[:, : vid.shape[1]].clip(0, 1).reshape(-1, *video_batch.shape[2:])
     recon = vid.clip(0, 1).reshape(-1, *vid.shape[2:])

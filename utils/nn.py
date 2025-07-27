@@ -67,7 +67,8 @@ class STBlock(nnx.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             attention_fn=_create_flash_attention_fn(
-                self.use_flash_attention, is_causal=self.spatial_causal
+                self.use_flash_attention,
+                is_causal=self.spatial_causal,
             ),
             rngs=rngs,
             # decode=self.decode,
@@ -218,11 +219,13 @@ class STTransformer(nnx.Module):
         )
 
     def __call__(self, x: jax.Array) -> jax.Array:
+        # x.shape (1, 1, 921, 512)
         x = self.input_norm1(x)
         x = self.input_dense(x)
         x = self.input_norm2(x)
 
         for block in self.blocks:
+            # x.shape (1, 1, 921, 512)
             x = block(x)
 
         x = self.output_dense(x)
@@ -293,13 +296,6 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool) -> Ca
         def _pad(x):
             return jnp.pad(x, ((0, 0), (0, pad_size), (0, 0), (0, 0)))
 
-        def _fuse_masks(mask: jax.Array, attention_mask: jax.Array) -> jax.Array:
-            mask_bool = mask.astype(jnp.bool_)
-            expanded_mask = jnp.pad(
-                mask_bool, ((0, pad_size), (0, pad_size)), constant_values=False
-            )
-            return jnp.logical_and(attention_mask, expanded_mask)
-
         original_shape = query.shape
         original_seq_len = query.shape[-3]
 
@@ -315,10 +311,17 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool) -> Ca
         attention_mask = attention_mask.at[original_seq_len:, :].set(False)
         attention_mask = attention_mask.at[:, original_seq_len:].set(False)
 
-        mask_4d = (
-            _fuse_masks(mask, attention_mask) if mask is not None else attention_mask
-        )
-        mask_4d = mask_4d[jnp.newaxis, jnp.newaxis, :, :]  # (1, 1, seq_len, seq_len)
+        # Handle causal mask for cached decoder self-attention (from nnx.MultiHeadAttention)
+        if mask is not None:
+            mask_4d = _rearrange(mask)
+            # NOTE: We need to broadcast T and S dimensions to target_seq_len since cudnn attention strictly checks the mask shape
+            # https://github.com/jax-ml/jax/issues/28974
+            # https://github.com/jax-ml/jax/blob/08c7677393672ccb85c10f1ed0bd506905c3c994/jax/_src/cudnn/fused_attention_stablehlo.py#L1830
+            # https://github.com/jax-ml/jax/blob/08c7677393672ccb85c10f1ed0bd506905c3c994/jax/_src/cudnn/fused_attention_stablehlo.py#L337
+            mask_4d = einops.repeat(mask_4d, "... 1 1 -> ... t s", t=target_seq_len, s=target_seq_len)
+            mask_4d = mask_4d.astype(jnp.bool)
+        else:
+            mask_4d = attention_mask[jnp.newaxis, jnp.newaxis, :, :]  # (1, 1, seq_len, seq_len)
 
         bias_4d = _pad(_rearrange(bias)) if bias is not None else None
 
