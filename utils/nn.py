@@ -128,9 +128,7 @@ class STBlock(nnx.Module):
         x = x.swapaxes(1, 2)
         z = self.temporal_pos_enc(x)
         z = self.temporal_norm(z)
-        # FIXME (f.srambical): no need to pass mask if is_causal=True
-        causal_mask = jnp.tri(z.shape[-2])
-        z = self.temporal_attention(z, mask=causal_mask)
+        z = self.temporal_attention(z)
         x = x + z
         x = x.swapaxes(1, 2)
 
