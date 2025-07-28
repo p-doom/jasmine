@@ -191,9 +191,12 @@ class Genie(nn.Module):
                     next_token = jax.random.categorical(
                         step_rng, next_token_logits / temperature, axis=-1
                     )  # (B, 1)
-
+                
                 # Insert the generated tokens into the sequence
                 token_idxs_full = token_idxs_full.at[:, t, n].set(next_token)
+                # FIXME @mihir: HACK
+                # token_idxs_full = jnp.argmax(dyna_outputs["token_logits"].astype(jnp.float32) , axis=-1)
+                # break
 
         # --- Decode all tokens at once at the end ---
         final_frames = self.tokenizer.decode(
