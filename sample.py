@@ -65,7 +65,7 @@ args = tyro.cli(Args)
 if __name__ == "__main__":
     jax.distributed.initialize()
 
-    rng = jax.random.PRNGKey(args.seed)
+    rng = jax.random.key(args.seed)
 
     # --- Load Genie checkpoint ---
     rngs = nnx.Rngs(rng)
