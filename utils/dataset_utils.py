@@ -1,6 +1,8 @@
 import os
+import pickle
 import multiprocessing as mp
 import tensorflow as tf
+import numpy as np
 from typing import Optional
 from array_record.python.array_record_module import ArrayRecordWriter, ArrayRecordReader
 from pathlib import Path

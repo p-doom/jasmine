@@ -1,9 +1,8 @@
 from dataclasses import dataclass, field
 import os
+from typing import cast
 
 import einops
-from flax.training import orbax_utils
-from flax.training.train_state import TrainState
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.mesh_utils import create_device_mesh
 import optax
@@ -15,6 +14,7 @@ import jax.numpy as jnp
 import tyro
 import wandb
 import grain
+import flax.nnx as nnx
 
 from models.tokenizer import TokenizerVQVAE
 from utils.dataloader import get_dataloader
@@ -76,18 +76,16 @@ class Args:
 args = tyro.cli(Args)
 
 
-def tokenizer_loss_fn(params, state, inputs):
+def tokenizer_loss_fn(
+    model: TokenizerVQVAE, inputs: dict
+) -> tuple[jax.Array, tuple[jax.Array, dict]]:
     # --- Compute loss ---
     # FIXME (f.srambical): Can we even do native int8 training without casting the video at all?
     # FIXME (f.srambical): If the tokenizer is the reason for the dynamics model being memory-bound,
     # should we at least train the tokenizer natively in int8?
     inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
-    outputs = state.apply_fn(
-        params,
-        inputs,
-        training=True,
-        rngs={"params": inputs["rng"], "dropout": inputs["dropout_rng"]},
-    )
+    model.train()
+    outputs = model(inputs, training=True)
     mse = jnp.square(inputs["videos"] - outputs["recon"]).mean()
     q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()
     commitment_loss = jnp.square(
@@ -98,8 +96,8 @@ def tokenizer_loss_fn(params, state, inputs):
     # --- Compute validation metrics ---
     gt = inputs["videos"].clip(0, 1).reshape(-1, *inputs["videos"].shape[2:])
     recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
-    psnr = pix.psnr(gt, recon).mean()  # type: ignore
-    ssim = pix.ssim(gt, recon).mean()  # type: ignore
+    psnr = jnp.asarray(pix.psnr(gt, recon)).mean()
+    ssim = jnp.asarray(pix.ssim(gt, recon)).mean()
     _, index_counts = jnp.unique_counts(
         jnp.ravel(outputs["indices"]), size=args.num_latents, fill_value=0
     )
@@ -116,11 +114,17 @@ def tokenizer_loss_fn(params, state, inputs):
     return loss, (outputs["recon"], metrics)
 
 
-@jax.jit
-def train_step(state, inputs):
-    grad_fn = jax.value_and_grad(tokenizer_loss_fn, has_aux=True, allow_int=True)
-    (loss, (recon, metrics)), grads = grad_fn(state.params, state, inputs)
-    state = state.apply_gradients(grads=grads)
+@nnx.jit
+def train_step(
+    tokenizer: TokenizerVQVAE, optimizer: nnx.Optimizer, inputs: dict
+) -> tuple[jax.Array, jax.Array, dict]:
+    def loss_fn(model: TokenizerVQVAE) -> tuple[jax.Array, tuple[jax.Array, dict]]:
+        return tokenizer_loss_fn(model, inputs)
+
+    (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
+        tokenizer
+    )
+    optimizer.update(grads)
     if args.log_gradients:
         metrics["encoder_gradients_std/"] = jax.tree.map(
             lambda x: x.std(), grads["params"]["encoder"]
@@ -131,7 +135,7 @@ def train_step(state, inputs):
         metrics["decoder_gradients_std/"] = jax.tree.map(
             lambda x: x.std(), grads["params"]["decoder"]
         )
-    return state, loss, recon, metrics
+    return loss, recon, metrics
 
 
 if __name__ == "__main__":
@@ -149,9 +153,11 @@ if __name__ == "__main__":
 
     per_device_batch_size_for_init = args.batch_size // num_devices
 
-    rng = jax.random.PRNGKey(args.seed)
+    rng = jax.random.key(args.seed)
 
     # --- Initialize model ---
+    rng, _rng = jax.random.split(rng)
+    rngs = nnx.Rngs(_rng)
     tokenizer = TokenizerVQVAE(
         in_dim=args.image_channels,
         model_dim=args.model_dim,
@@ -166,18 +172,11 @@ if __name__ == "__main__":
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
+        rngs=rngs,
     )
-    rng, _rng = jax.random.split(rng)
-    image_shape = (args.image_height, args.image_width, args.image_channels)
-    inputs = dict(
-        videos=jnp.zeros(
-            (per_device_batch_size_for_init, args.seq_len, *image_shape),
-            dtype=args.dtype,
-        ),
-    )
-    init_params = tokenizer.init(_rng, inputs)
 
-    param_counts = count_parameters_by_component(init_params)
+    _, params, _ = nnx.split(tokenizer, nnx.Param, ...)
+    param_counts = count_parameters_by_component(params)
 
     if args.log and jax.process_index() == 0:
         wandb_init_kwargs = {
@@ -220,7 +219,7 @@ if __name__ == "__main__":
         weight_decay=1e-4,
         mu_dtype=args.dtype,
     )
-    train_state = TrainState.create(apply_fn=tokenizer.apply, params=init_params, tx=tx)
+    optimizer = nnx.Optimizer(tokenizer, tx)
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
     device_mesh_arr = create_device_mesh((num_devices,))
@@ -228,19 +227,37 @@ if __name__ == "__main__":
 
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
     videos_sharding = NamedSharding(mesh, PartitionSpec("data", None, None, None, None))
-    train_state = jax.device_put(train_state, replicated_sharding)
+
+    model_state = nnx.state(optimizer.model)
+    model_sharded_state = jax.lax.with_sharding_constraint(
+        model_state, replicated_sharding
+    )
+    nnx.update(optimizer.model, model_sharded_state)
+    optimizer_state = nnx.state(optimizer, nnx.optimizer.OptState)
+    optimizer_sharded_state = jax.lax.with_sharding_constraint(
+        optimizer_state, replicated_sharding
+    )
+    nnx.update(optimizer, optimizer_sharded_state)
 
     # --- Initialize checkpoint manager ---
     step = 0
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add(
-        "model_state", ocp.args.StandardSave, ocp.handlers.StandardCheckpointHandler
+        "model_state", ocp.args.PyTreeSave, ocp.handlers.PyTreeCheckpointHandler
     )
     handler_registry.add(
-        "model_state", ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler
+        "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
     )
-    handler_registry.add("dataloader_state", grain.checkpoint.CheckpointSave, grain.checkpoint.CheckpointHandler)  # type: ignore
-    handler_registry.add("dataloader_state", grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler)  # type: ignore
+    handler_registry.add(
+        "dataloader_state",
+        grain.checkpoint.CheckpointSave,
+        cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
+    )
+    handler_registry.add(
+        "dataloader_state",
+        grain.checkpoint.CheckpointRestore,
+        cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
+    )
 
     checkpoint_options = ocp.CheckpointManagerOptions(
         save_interval_steps=args.log_checkpoint_interval,
@@ -257,6 +274,7 @@ if __name__ == "__main__":
     )
 
     # --- Create DataLoaderIterator from dataloader ---
+    image_shape = (args.image_height, args.image_width, args.image_channels)
     array_record_files = [
         os.path.join(args.data_dir, x)
         for x in os.listdir(args.data_dir)
@@ -278,31 +296,32 @@ if __name__ == "__main__":
 
     # --- Restore checkpoint ---
     if args.restore_ckpt:
-        abstract_train_state = jax.tree_util.tree_map(
-            ocp.utils.to_shape_dtype_struct, train_state
-        )
+        abstract_optimizer = nnx.eval_shape(lambda: optimizer)
+        abstract_optimizer_state = nnx.state(abstract_optimizer)
         restored = checkpoint_manager.restore(
             checkpoint_manager.latest_step(),
             args=ocp.args.Composite(
-                model_state=ocp.args.StandardRestore(abstract_train_state),
-                dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
+                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
+                dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),  # type: ignore
             ),
         )
-        train_state = restored["model_state"]
+        restored_optimizer_state = restored["model_state"]
+        nnx.update(optimizer, restored_optimizer_state)
         grain_iterator = restored["dataloader_state"]
         step = checkpoint_manager.latest_step() or 0
         print(f"Restored dataloader and model state from step {step}")
 
     # --- TRAIN LOOP ---
-    dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in grain_iterator)  # type: ignore
+    dataloader = (
+        jax.make_array_from_process_local_data(videos_sharding, elem)
+        for elem in grain_iterator
+    )
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
-            rng, _rng, _rng_dropout = jax.random.split(rng, 3)
-
-            inputs = dict(videos=videos, rng=_rng, dropout_rng=_rng_dropout)
-            train_state, loss, recon, metrics = train_step(train_state, inputs)
+            inputs = dict(videos=videos)
+            loss, recon, metrics = train_step(tokenizer, optimizer, inputs)
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1
@@ -338,12 +357,13 @@ if __name__ == "__main__":
                         wandb.log(log_images)
             # --- Checkpointing ---
             if args.save_ckpt and step % args.log_checkpoint_interval == 0:
+                optimizer_state = nnx.state(optimizer)
                 checkpoint_manager.save(
                     step,
                     args=ocp.args.Composite(
-                        model_state=ocp.args.StandardSave(train_state),
-                        dataloader_state=grain.checkpoint.CheckpointSave(
-                            grain_iterator
+                        model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
+                        dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
+                            grain_iterator  # type: ignore
                         ),
                     ),
                 )

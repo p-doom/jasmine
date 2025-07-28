@@ -1,52 +1,77 @@
-from typing import Dict, Any
+from typing import Dict
 
 import optax
 import jax
 import jax.numpy as jnp
-import flax.linen as nn
-from flax.training.train_state import TrainState
+import flax.nnx as nnx
 import orbax.checkpoint as ocp
 
 from models.dynamics import DynamicsMaskGIT
 from models.lam import LatentActionModel
 from models.tokenizer import TokenizerVQVAE
 
-import grain
 
-
-class Genie(nn.Module):
+class Genie(nnx.Module):
     """Genie model"""
 
-    # --- Tokenizer ---
-    in_dim: int
-    tokenizer_dim: int
-    tokenizer_ffn_dim: int
-    latent_patch_dim: int
-    num_patch_latents: int
-    patch_size: int
-    tokenizer_num_blocks: int
-    tokenizer_num_heads: int
-    # --- LAM ---
-    lam_dim: int
-    lam_ffn_dim: int
-    latent_action_dim: int
-    num_latent_actions: int
-    lam_patch_size: int
-    lam_num_blocks: int
-    lam_num_heads: int
-    lam_co_train: bool
-    # --- Dynamics ---
-    dyna_dim: int
-    dyna_ffn_dim: int
-    dyna_num_blocks: int
-    dyna_num_heads: int
-    param_dtype: jnp.dtype
-    dtype: jnp.dtype
-    use_flash_attention: bool
-    dropout: float = 0.0
-    mask_limit: float = 0.0
+    def __init__(
+        self,
+        in_dim: int,
+        tokenizer_dim: int,
+        tokenizer_ffn_dim: int,
+        latent_patch_dim: int,
+        num_patch_latents: int,
+        patch_size: int,
+        tokenizer_num_blocks: int,
+        tokenizer_num_heads: int,
+        lam_dim: int,
+        lam_ffn_dim: int,
+        latent_action_dim: int,
+        num_latent_actions: int,
+        lam_patch_size: int,
+        lam_num_blocks: int,
+        lam_num_heads: int,
+        lam_co_train: bool,
+        dyna_dim: int,
+        dyna_ffn_dim: int,
+        dyna_num_blocks: int,
+        dyna_num_heads: int,
+        param_dtype: jnp.dtype,
+        dtype: jnp.dtype,
+        use_flash_attention: bool,
+        rngs: nnx.Rngs,
+        dropout: float = 0.0,
+        mask_limit: float = 0.0,
+    ):
+        # --- Tokenizer ---
+        self.in_dim = in_dim
+        self.tokenizer_dim = tokenizer_dim
+        self.tokenizer_ffn_dim = tokenizer_ffn_dim
+        self.latent_patch_dim = latent_patch_dim
+        self.num_patch_latents = num_patch_latents
+        self.patch_size = patch_size
+        self.tokenizer_num_blocks = tokenizer_num_blocks
+        self.tokenizer_num_heads = tokenizer_num_heads
+        # --- LAM ---
+        self.lam_dim = lam_dim
+        self.lam_ffn_dim = lam_ffn_dim
+        self.latent_action_dim = latent_action_dim
+        self.num_latent_actions = num_latent_actions
+        self.lam_patch_size = lam_patch_size
+        self.lam_num_blocks = lam_num_blocks
+        self.lam_num_heads = lam_num_heads
+        self.lam_co_train = lam_co_train
+        # --- Dynamics ---
+        self.dyna_dim = dyna_dim
+        self.dyna_ffn_dim = dyna_ffn_dim
+        self.dyna_num_blocks = dyna_num_blocks
+        self.dyna_num_heads = dyna_num_heads
+        self.param_dtype = param_dtype
+        self.dtype = dtype
+        self.use_flash_attention = use_flash_attention
+        self.dropout = dropout
+        self.mask_limit = mask_limit
 
-    def setup(self):
         self.tokenizer = TokenizerVQVAE(
             in_dim=self.in_dim,
             model_dim=self.tokenizer_dim,
@@ -61,6 +86,7 @@ class Genie(nn.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             use_flash_attention=self.use_flash_attention,
+            rngs=rngs,
         )
         self.lam = LatentActionModel(
             in_dim=self.in_dim,
@@ -76,11 +102,13 @@ class Genie(nn.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             use_flash_attention=self.use_flash_attention,
+            rngs=rngs,
         )
         self.dynamics = DynamicsMaskGIT(
             model_dim=self.dyna_dim,
             ffn_dim=self.dyna_ffn_dim,
             num_latents=self.num_patch_latents,
+            latent_action_dim=self.latent_action_dim,
             num_blocks=self.dyna_num_blocks,
             num_heads=self.dyna_num_heads,
             dropout=self.dropout,
@@ -88,9 +116,12 @@ class Genie(nn.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             use_flash_attention=self.use_flash_attention,
+            rngs=rngs,
         )
 
-    def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
+    def __call__(
+        self, batch: Dict[str, jax.Array], training: bool = True
+    ) -> Dict[str, jax.Array]:
         tokenizer_outputs = self.tokenizer.vq_encode(batch["videos"], training=False)
         lam_outputs = self.lam.vq_encode(batch["videos"], training=False)
         latent_actions = jax.lax.cond(
@@ -103,24 +134,24 @@ class Genie(nn.Module):
             latent_actions=latent_actions,
         )
         outputs["mask_rng"] = batch["mask_rng"]
-        dyna_outputs = self.dynamics(outputs, training)
-        outputs.update(dyna_outputs)
+        dyna_logits, dyna_mask = self.dynamics(outputs, training)
+        outputs["token_logits"] = dyna_logits
+        if dyna_mask is not None:
+            outputs["mask"] = dyna_mask
         mle_indices = jnp.argmax(outputs["token_logits"], axis=-1)
-        outputs["recon"] = self.tokenizer.decode(
-            mle_indices, batch["videos"].shape[2:4]
-        )
+        H, W = batch["videos"].shape[2:4]
+        outputs["recon"] = self.tokenizer.decode(mle_indices, (H, W))
         outputs["lam_indices"] = lam_outputs["indices"]
         return outputs
 
-    @nn.compact
     def sample(
         self,
-        batch: Dict[str, Any],
+        batch: Dict[str, jax.Array],
         seq_len: int,
         steps: int = 25,
         temperature: float = 1,
         sample_argmax: bool = False,
-    ) -> Any:
+    ) -> jax.Array:
         """
         Autoregressively samples up to `seq_len` future frames, following Figure 8 of the paper.
 
@@ -152,31 +183,60 @@ class Genie(nn.Module):
         token_idxs = jnp.concatenate([token_idxs, pad], axis=1)  # (B, S, N)
         action_tokens = self.lam.vq.get_codes(batch["latent_actions"])
 
-        MaskGITLoop = nn.scan(
-            MaskGITStep,
-            variable_broadcast="params",
-            split_rngs={"params": False},
-            in_axes=0,
-            out_axes=0,
-            length=steps,
-        )
+        def maskgit_step_fn(
+            carry: tuple[jax.Array, jax.Array, jax.Array, jax.Array], step: jax.Array
+        ) -> tuple[tuple[jax.Array, jax.Array, jax.Array, jax.Array], None]:
+            rng, token_idxs, mask, action_tokens = carry
+            N = token_idxs.shape[2]
 
-        loop_fn = MaskGITLoop(
-            dynamics=self.dynamics,
-            tokenizer=self.tokenizer,
-            temperature=temperature,
-            sample_argmax=sample_argmax,
-            steps=steps,
-        )
+            # --- Construct + encode video ---
+            vid_embed = self.dynamics.patch_embed(token_idxs)  # (B, S, N, D)
+            mask_token = self.dynamics.mask_token.value  # (1, 1, 1, D,)
+            mask_expanded = mask[..., None]  # (B, S, N, 1)
+            vid_embed = jnp.where(mask_expanded, mask_token, vid_embed)
 
-        def generation_step_fn(carry, step_t):
+            # --- Predict transition ---
+            act_embed = self.dynamics.action_up(action_tokens)
+            vid_embed += jnp.pad(act_embed, ((0, 0), (1, 0), (0, 0), (0, 0)))
+            unmasked_ratio = jnp.cos(jnp.pi * (step + 1) / (steps * 2))
+            step_temp = temperature * (1.0 - unmasked_ratio)
+            final_logits = self.dynamics.dynamics(vid_embed) / step_temp
+
+            # --- Sample new tokens for final frame ---
+            if sample_argmax:
+                sampled_token_idxs = jnp.argmax(final_logits, axis=-1)
+            else:
+                rng, _rng = jax.random.split(rng)
+                sampled_token_idxs = jax.random.categorical(_rng, final_logits)
+            gather_fn = jax.vmap(jax.vmap(jax.vmap(lambda x, y: x[y])))
+            final_token_probs = gather_fn(
+                jax.nn.softmax(final_logits), sampled_token_idxs
+            )
+            final_token_probs += ~mask
+            # Update masked tokens only
+            token_idxs = jnp.where(mask, sampled_token_idxs, token_idxs)
+
+            # --- Update mask ---
+            num_unmasked_tokens = jnp.round(N * (1.0 - unmasked_ratio)).astype(int)
+            idx_mask = jnp.arange(final_token_probs.shape[-1]) > num_unmasked_tokens
+            sorted_idxs = jnp.argsort(final_token_probs, axis=-1, descending=True)
+            mask_update_fn = jax.vmap(lambda msk, ids: msk.at[ids].set(idx_mask))
+            new_mask = mask_update_fn(mask, sorted_idxs)
+
+            new_carry = (rng, token_idxs, new_mask, action_tokens)
+            return new_carry, None
+
+        def generation_step_fn(
+            carry: tuple[jax.Array, jax.Array], step_t: jax.Array
+        ) -> tuple[tuple[jax.Array, jax.Array], None]:
             rng, current_token_idxs = carry
             rng, step_rng = jax.random.split(rng)
 
             # Mask current and future frames (i.e., t >= step_t)
             mask = jnp.arange(seq_len) >= step_t  # (S,)
-            mask = jnp.broadcast_to(mask[None, :, None], (B, seq_len, N))  # (B, S, N)
-            mask = mask.astype(bool)
+            mask = jnp.broadcast_to(mask[None, :, None], (B, seq_len, N)).astype(
+                bool
+            )  # (B, S, N)
             masked_token_idxs = current_token_idxs * ~mask
 
             # --- Initialize and run MaskGIT loop ---
@@ -186,12 +246,14 @@ class Genie(nn.Module):
                 mask,
                 action_tokens,
             )
-            final_carry_maskgit, _ = loop_fn(init_carry_maskgit, jnp.arange(steps))
+            final_carry_maskgit, _ = jax.lax.scan(
+                maskgit_step_fn, init_carry_maskgit, jnp.arange(steps)
+            )
             updated_token_idxs = final_carry_maskgit[1]
             new_carry = (rng, updated_token_idxs)
             return new_carry, None
 
-        # --- Run the autoregressive generation using scan ---
+        # --- Run the autoregressive generation using jax.lax.scan ---
         initial_carry = (batch["rng"], token_idxs)
         timesteps_to_scan = jnp.arange(T, seq_len)
         final_carry, _ = jax.lax.scan(
@@ -200,76 +262,28 @@ class Genie(nn.Module):
         final_token_idxs = final_carry[1]
 
         # --- Decode all tokens at once at the end ---
+        H, W = batch["videos"].shape[2:4]
         final_frames = self.tokenizer.decode(
             final_token_idxs,
-            video_hw=batch["videos"].shape[2:4],
+            video_hw=(H, W),
         )
         return final_frames
 
-    def vq_encode(self, batch, training) -> Dict[str, Any]:
+    def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
         # --- Preprocess videos ---
         lam_output = self.lam.vq_encode(batch["videos"], training=training)
         return lam_output["indices"]
 
 
-class MaskGITStep(nn.Module):
-    dynamics: nn.Module
-    tokenizer: nn.Module
-    temperature: float
-    sample_argmax: bool
-    steps: int
-
-    @nn.compact
-    def __call__(self, carry, x):
-        rng, token_idxs, mask, action_tokens = carry
-        step = x
-        N = token_idxs.shape[2]
-
-        # --- Construct + encode video ---
-        vid_embed = self.dynamics.patch_embed(token_idxs)  # (B, S, N, D)
-        mask_token = self.dynamics.mask_token  # (1, 1, 1, D,)
-        mask_expanded = mask[..., None]  # (B, S, N, 1)
-        vid_embed = jnp.where(mask_expanded, mask_token, vid_embed)
-
-        # --- Predict transition ---
-        act_embed = self.dynamics.action_up(action_tokens)
-        vid_embed += jnp.pad(act_embed, ((0, 0), (1, 0), (0, 0), (0, 0)))
-        unmasked_ratio = jnp.cos(jnp.pi * (step + 1) / (self.steps * 2))
-        step_temp = self.temperature * (1.0 - unmasked_ratio)
-        final_logits = self.dynamics.dynamics(vid_embed) / step_temp
-
-        # --- Sample new tokens for final frame ---
-        if self.sample_argmax:
-            sampled_token_idxs = jnp.argmax(final_logits, axis=-1)
-        else:
-            rng, _rng = jax.random.split(rng)
-            sampled_token_idxs = jax.random.categorical(_rng, final_logits)
-        gather_fn = jax.vmap(jax.vmap(jax.vmap(lambda x, y: x[y])))
-        final_token_probs = gather_fn(jax.nn.softmax(final_logits), sampled_token_idxs)
-        final_token_probs += ~mask
-        # Update masked tokens only
-        token_idxs = jnp.where(mask, sampled_token_idxs, token_idxs)
-
-        # --- Update mask ---
-        num_unmasked_tokens = jnp.round(N * (1.0 - unmasked_ratio)).astype(int)
-        idx_mask = jnp.arange(final_token_probs.shape[-1]) > num_unmasked_tokens
-        sorted_idxs = jnp.argsort(final_token_probs, axis=-1, descending=True)
-        mask_update_fn = jax.vmap(lambda msk, ids: msk.at[ids].set(idx_mask))
-        new_mask = mask_update_fn(mask, sorted_idxs)
-
-        new_carry = (rng, token_idxs, new_mask, action_tokens)
-        return new_carry, None
-
-
+# FIXME (f.srambical): add conversion script for old checkpoints
 def restore_genie_components(
-    train_state: TrainState,
+    optimizer: nnx.Optimizer,
     sharding: jax.sharding.NamedSharding,
-    inputs: Dict[str, jax.Array],
     rng: jax.Array,
     args,
-):
+) -> nnx.Optimizer:
     """Restore pre-trained Genie components"""
-    rng, _rng = jax.random.split(rng)
+    rngs = nnx.Rngs(rng)
 
     # dummy values since we only use tx to initialize the dummy train states
     dummy_tx = optax.adamw(
@@ -280,7 +294,7 @@ def restore_genie_components(
     )
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add(
-        "model_state", ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler
+        "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
     )
 
     checkpoint_options = ocp.CheckpointManagerOptions(
@@ -305,22 +319,23 @@ def restore_genie_components(
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
+        rngs=rngs,
     )
-    tokenizer_init_params = dummy_tokenizer.init(_rng, inputs)
-    dummy_tokenizer_train_state = TrainState.create(
-        apply_fn=dummy_tokenizer.apply, params=tokenizer_init_params, tx=dummy_tx
-    )
-    abstract_sharded_tokenizer_state = _create_abstract_sharded_pytree(
-        dummy_tokenizer_train_state, sharding
+    dummy_tokenizer_optimizer = nnx.Optimizer(dummy_tokenizer, dummy_tx)
+    dummy_tokenizer_optimizer_state = nnx.state(dummy_tokenizer_optimizer)
+    abstract_sharded_tokenizer_optimizer_state = _create_abstract_sharded_pytree(
+        dummy_tokenizer_optimizer_state, sharding
     )
     restored_tokenizer = tokenizer_checkpoint_manager.restore(
         step=tokenizer_checkpoint_manager.latest_step(),
         args=ocp.args.Composite(
-            model_state=ocp.args.StandardRestore(abstract_sharded_tokenizer_state),
+            model_state=ocp.args.PyTreeRestore(  # type: ignore
+                abstract_sharded_tokenizer_optimizer_state  # type: ignore
+            ),
         ),
     )["model_state"]
-    restored_tokenizer_params = restored_tokenizer.params["params"]
-    train_state.params["params"]["tokenizer"].update(restored_tokenizer_params)
+    nnx.update(dummy_tokenizer_optimizer.model, restored_tokenizer.model)
+    optimizer.model.tokenizer = dummy_tokenizer_optimizer.model
     tokenizer_checkpoint_manager.close()
 
     if args.lam_checkpoint:
@@ -343,36 +358,33 @@ def restore_genie_components(
             param_dtype=args.param_dtype,
             dtype=args.dtype,
             use_flash_attention=args.use_flash_attention,
+            rngs=rngs,
         )
-        lam_init_params = dummy_lam.init(_rng, inputs)
-        dummy_lam_train_state = TrainState.create(
-            apply_fn=dummy_lam.apply, params=lam_init_params, tx=dummy_tx
+        dummy_lam_optimizer = nnx.Optimizer(dummy_lam, dummy_tx)
+        dummy_lam_optimizer_state = nnx.state(dummy_lam_optimizer)
+        abstract_sharded_lam_optimizer_state = _create_abstract_sharded_pytree(
+            dummy_lam_optimizer_state, sharding
         )
-        abstract_sharded_lam_state = _create_abstract_sharded_pytree(
-            dummy_lam_train_state, sharding
-        )
-        restored_lam = lam_checkpoint_manager.restore(
+        restored_lam_optimizer = lam_checkpoint_manager.restore(
             step=lam_checkpoint_manager.latest_step(),
             args=ocp.args.Composite(
-                model_state=ocp.args.StandardRestore(abstract_sharded_lam_state),
+                model_state=ocp.args.PyTreeRestore(  # type: ignore
+                    abstract_sharded_lam_optimizer_state  # type: ignore
+                ),
             ),
         )["model_state"]
-        restored_lam_params = restored_lam.params["params"]
-        # Genie does not initialize all LAM modules, thus we omit those extra modules during restoration
-        # (f.srambical) FIXME: Currently, this is a small HBM memory crunch since the LAM's decoder is loaded into HBM and immediately dicarded.
-        # A workaround would be to restore to host memory first, and only move the weights to HBM after pruning the decoder
-        restored_lam_params = {
-            k: v
-            for k, v in restored_lam_params.items()
-            if k in train_state.params["params"]["lam"]
-        }
-        train_state.params["params"]["lam"].update(restored_lam_params)
+        nnx.update(dummy_lam_optimizer.model, restored_lam_optimizer.model)
+        optimizer.model.lam = dummy_lam_optimizer.model
+        # Remove the LAM decoder to save memory and avoid unnecessary computation.
+        del optimizer.model.lam.decoder
         lam_checkpoint_manager.close()
 
-    return train_state
+    return optimizer
 
 
-def _create_abstract_sharded_pytree(pytree_template, sharding_spec):
+def _create_abstract_sharded_pytree(
+    pytree_template: nnx.GraphState, sharding_spec: jax.sharding.NamedSharding
+) -> jax.Array:
     """Replaces arrays in a pytree with ShapeDtypeStructs having the given sharding."""
 
     def map_fn(leaf_template):
