@@ -165,7 +165,7 @@ if __name__ == "__main__":
 
     per_device_batch_size_for_init = args.batch_size // num_devices
 
-    rng = jax.random.PRNGKey(args.seed)
+    rng = jax.random.key(args.seed)
 
     # --- Initialize model ---
     rng, _rng = jax.random.split(rng)
@@ -340,7 +340,10 @@ if __name__ == "__main__":
     else:
         # Restore from pre-trained tokenizer (and LAM)
         optimizer = restore_genie_components(optimizer, replicated_sharding, rng, args)
-        # NOTE: We have to remove the tokenizer vq dropout due to a bug in flax.nnx
+        # NOTE: We have to remove the (unused) tokenizer vq dropout due flax.nnx lazily initializing modules.
+        # Specifically, the first dynamics model checkpoint will contain the vq dropout module,
+        # but the first full restore will fail due to nnx not initializing the module when
+        # dropout is set to 0.0.
         del optimizer.model.tokenizer.vq.drop
 
     # --- TRAIN LOOP ---
