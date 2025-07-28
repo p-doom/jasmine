@@ -83,6 +83,7 @@ def lam_loss_fn(
     inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
     model.train()
     outputs = model(inputs, training=True)
+    outputs["recon"] = outputs["recon"].astype(jnp.float32)
     gt_future_frames = inputs["videos"][:, 1:]
     mse = jnp.square(gt_future_frames - outputs["recon"]).mean()
     q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()

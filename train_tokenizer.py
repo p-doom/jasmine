@@ -86,6 +86,7 @@ def tokenizer_loss_fn(
     inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
     model.train()
     outputs = model(inputs, training=True)
+    outputs["recon"] = outputs["recon"].astype(jnp.float32)
     mse = jnp.square(inputs["videos"] - outputs["recon"]).mean()
     q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()
     commitment_loss = jnp.square(
