@@ -122,26 +122,30 @@ class Genie(nnx.Module):
     def __call__(
         self, batch: Dict[str, jax.Array], training: bool = True
     ) -> Dict[str, jax.Array]:
-        tokenizer_outputs = self.tokenizer.vq_encode(batch["videos"], training=False)
-        lam_outputs = self.lam.vq_encode(batch["videos"], training=False)
-        latent_actions = jax.lax.cond(
+        videos_BTHWC = batch["videos"]
+        tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
+        token_indices_BTN = tokenizer_outputs["indices"]
+        lam_outputs = self.lam.vq_encode(videos_BTHWC, training=False)
+        z_q_BTm11L = lam_outputs["z_q"]
+        action_indices_E = lam_outputs["indices"]
+        latent_actions_BTm11L = jax.lax.cond(
             self.lam_co_train,
-            lambda: lam_outputs["z_q"],
-            lambda: jax.lax.stop_gradient(lam_outputs["z_q"]),
+            lambda: z_q_BTm11L,
+            lambda: jax.lax.stop_gradient(z_q_BTm11L),
         )
         outputs = dict(
-            video_tokens=jax.lax.stop_gradient(tokenizer_outputs["indices"]),
-            latent_actions=latent_actions,
+            video_tokens=jax.lax.stop_gradient(token_indices_BTN),
+            latent_actions=latent_actions_BTm11L,
         )
         outputs["mask_rng"] = batch["mask_rng"]
-        dyna_logits, dyna_mask = self.dynamics(outputs, training)
-        outputs["token_logits"] = dyna_logits
+        dyna_logits_BTNV, dyna_mask = self.dynamics(outputs, training)
+        outputs["token_logits"] = dyna_logits_BTNV
         if dyna_mask is not None:
             outputs["mask"] = dyna_mask
-        mle_indices = jnp.argmax(outputs["token_logits"], axis=-1)
+        mle_indices_BTN = jnp.argmax(outputs["token_logits"], axis=-1)
         H, W = batch["videos"].shape[2:4]
-        outputs["recon"] = self.tokenizer.decode(mle_indices, (H, W))
-        outputs["lam_indices"] = lam_outputs["indices"]
+        outputs["recon"] = self.tokenizer.decode(mle_indices_BTN, (H, W))
+        outputs["lam_indices"] = action_indices_E
         return outputs
 
     def sample(
@@ -169,82 +173,89 @@ class Genie(nnx.Module):
         Dimension keys:
             B: batch size
             T: number of input (conditioning) frames
-            N: patches per frame
+            N: number of patches per frame
+            M: model dimension
             S: sequence length
-            A: action space
-            D: model latent dimension
+            H: height
+            W: width
+            D: B * T * N
+            E: B * (T - 1)
         """
         # --- Encode videos and actions ---
-        tokenizer_out = self.tokenizer.vq_encode(batch["videos"], training=False)
-        token_idxs = tokenizer_out["indices"]  # (B, T, N)
-        B, T, N = token_idxs.shape
+        videos_BTHWC = batch["videos"]
+        latent_actions_E = batch["latent_actions"]
+        tokenizer_out = self.tokenizer.vq_encode(videos_BTHWC, training=False)
+        token_idxs_BTN = tokenizer_out["indices"]
+        B, T, N = token_idxs_BTN.shape
         pad_shape = (B, seq_len - T, N)
-        pad = jnp.zeros(pad_shape, dtype=token_idxs.dtype)
-        token_idxs = jnp.concatenate([token_idxs, pad], axis=1)  # (B, S, N)
-        action_tokens = self.lam.vq.get_codes(batch["latent_actions"])
+        pad = jnp.zeros(pad_shape, dtype=token_idxs_BTN.dtype)
+        token_idxs_BSN = jnp.concatenate([token_idxs_BTN, pad], axis=1)
+        action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
 
         def maskgit_step_fn(
             carry: tuple[jax.Array, jax.Array, jax.Array, jax.Array], step: jax.Array
         ) -> tuple[tuple[jax.Array, jax.Array, jax.Array, jax.Array], None]:
-            rng, token_idxs, mask, action_tokens = carry
-            N = token_idxs.shape[2]
+            rng, token_idxs_BSN, mask_BSN, action_tokens_EL = carry
+            S, N = token_idxs_BSN.shape[1:]
 
             # --- Construct + encode video ---
-            vid_embed = self.dynamics.patch_embed(token_idxs)  # (B, S, N, D)
-            mask_token = self.dynamics.mask_token.value  # (1, 1, 1, D,)
-            mask_expanded = mask[..., None]  # (B, S, N, 1)
-            vid_embed = jnp.where(mask_expanded, mask_token, vid_embed)
+            vid_embed_BSNM = self.dynamics.patch_embed(token_idxs_BSN)
+            mask_token_111M = self.dynamics.mask_token.value
+            mask_expanded_BSN1 = mask_BSN[..., None]
+            vid_embed_BSNM = jnp.where(mask_expanded_BSN1, mask_token_111M, vid_embed_BSNM)
 
             # --- Predict transition ---
-            act_embed = self.dynamics.action_up(action_tokens)
-            vid_embed += jnp.pad(act_embed, ((0, 0), (1, 0), (0, 0), (0, 0)))
+            action_tokens_BSm1L = jnp.reshape(action_tokens_EL, (B, S - 1, 1))
+            act_embed_BSm1M = self.dynamics.action_up(action_tokens_BSm1L)
+            # FIXME (f.srambical): here, again, we shouldn't pad, but instead omit the last frame
+            vid_embed_BSNM += jnp.pad(act_embed_BSm1M, ((0, 0), (1, 0), (0, 0), (0, 0)))
             unmasked_ratio = jnp.cos(jnp.pi * (step + 1) / (steps * 2))
             step_temp = temperature * (1.0 - unmasked_ratio)
-            final_logits = self.dynamics.dynamics(vid_embed) / step_temp
+            final_logits_BSNV = self.dynamics.transformer(vid_embed_BSNM) / step_temp
 
             # --- Sample new tokens for final frame ---
             if sample_argmax:
-                sampled_token_idxs = jnp.argmax(final_logits, axis=-1)
+                sampled_token_idxs_BSN = jnp.argmax(final_logits_BSNV, axis=-1)
             else:
                 rng, _rng = jax.random.split(rng)
-                sampled_token_idxs = jax.random.categorical(_rng, final_logits)
+                sampled_token_idxs_BSN = jax.random.categorical(_rng, final_logits_BSNV)
             gather_fn = jax.vmap(jax.vmap(jax.vmap(lambda x, y: x[y])))
-            final_token_probs = gather_fn(
-                jax.nn.softmax(final_logits), sampled_token_idxs
+            final_token_probs_BSN = gather_fn(
+                jax.nn.softmax(final_logits_BSNV), sampled_token_idxs_BSN
             )
-            final_token_probs += ~mask
+            final_token_probs_BSN += ~mask_BSN
             # Update masked tokens only
-            token_idxs = jnp.where(mask, sampled_token_idxs, token_idxs)
+            token_idxs_BSN = jnp.where(mask_BSN, sampled_token_idxs_BSN, token_idxs_BSN)
 
             # --- Update mask ---
             num_unmasked_tokens = jnp.round(N * (1.0 - unmasked_ratio)).astype(int)
-            idx_mask = jnp.arange(final_token_probs.shape[-1]) > num_unmasked_tokens
-            sorted_idxs = jnp.argsort(final_token_probs, axis=-1, descending=True)
-            mask_update_fn = jax.vmap(lambda msk, ids: msk.at[ids].set(idx_mask))
-            new_mask = mask_update_fn(mask, sorted_idxs)
+            idx_mask_N = jnp.arange(final_token_probs_BSN.shape[-1]) > num_unmasked_tokens
+            sorted_idxs_BSN = jnp.argsort(final_token_probs_BSN, axis=-1, descending=True)
+            mask_update_fn = jax.vmap(lambda msk, ids: msk.at[ids].set(idx_mask_N))
+            new_mask_BSN = mask_update_fn(mask_BSN, sorted_idxs_BSN)
 
-            new_carry = (rng, token_idxs, new_mask, action_tokens)
+            new_carry = (rng, token_idxs_BSN, new_mask_BSN, action_tokens_EL)
             return new_carry, None
 
         def generation_step_fn(
             carry: tuple[jax.Array, jax.Array], step_t: jax.Array
         ) -> tuple[tuple[jax.Array, jax.Array], None]:
-            rng, current_token_idxs = carry
+            rng, current_token_idxs_BSN = carry
             rng, step_rng = jax.random.split(rng)
 
             # Mask current and future frames (i.e., t >= step_t)
-            mask = jnp.arange(seq_len) >= step_t  # (S,)
-            mask = jnp.broadcast_to(mask[None, :, None], (B, seq_len, N)).astype(
+            mask_S = jnp.arange(seq_len) >= step_t
+            mask_BSN = jnp.broadcast_to(mask_S[None, :, None], (B, seq_len, N)).astype(
                 bool
-            )  # (B, S, N)
-            masked_token_idxs = current_token_idxs * ~mask
+            )
+            masked_token_idxs_BSN = current_token_idxs_BSN * ~mask_BSN
 
             # --- Initialize and run MaskGIT loop ---
             init_carry_maskgit = (
                 step_rng,
-                masked_token_idxs,
-                mask,
-                action_tokens,
+                masked_token_idxs_BSN,
+                mask_BSN,
+                action_tokens_EL,
             )
             final_carry_maskgit, _ = jax.lax.scan(
                 maskgit_step_fn, init_carry_maskgit, jnp.arange(steps)
@@ -254,7 +265,7 @@ class Genie(nnx.Module):
             return new_carry, None
 
         # --- Run the autoregressive generation using jax.lax.scan ---
-        initial_carry = (batch["rng"], token_idxs)
+        initial_carry = (batch["rng"], token_idxs_BSN)
         timesteps_to_scan = jnp.arange(T, seq_len)
         final_carry, _ = jax.lax.scan(
             generation_step_fn, initial_carry, timesteps_to_scan
@@ -271,8 +282,10 @@ class Genie(nnx.Module):
 
     def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
         # --- Preprocess videos ---
-        lam_output = self.lam.vq_encode(batch["videos"], training=training)
-        return lam_output["indices"]
+        video_BTHWC = batch["videos"]
+        lam_output = self.lam.vq_encode(video_BTHWC, training=training)
+        lam_indices_E = lam_output["indices"]
+        return lam_indices_E
 
 
 # FIXME (f.srambical): add conversion script for old checkpoints
