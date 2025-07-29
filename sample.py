@@ -175,7 +175,7 @@ if __name__ == "__main__":
     )
     dataloader = iter(dataloader)
     video_batch = next(dataloader)
-    video_batch = video_batch.astype(args.dtype) / 255.0
+    video_batch = jnp.asarray(video_batch).astype(args.dtype) / 255.0
     # Get latent actions for all videos in the batch
     batch = dict(videos=video_batch)
     action_batch = genie.vq_encode(batch, training=False)
