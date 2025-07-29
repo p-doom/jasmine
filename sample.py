@@ -179,9 +179,6 @@ if __name__ == "__main__":
     # Get latent actions for all videos in the batch
     batch = dict(videos=video_batch)
     action_batch = genie.vq_encode(batch, training=False)
-    action_batch = jnp.asarray(action_batch).reshape(
-        video_batch.shape[0], args.seq_len - 1, 1
-    )
 
     # --- Sample + evaluate video ---
     vid = _autoreg_sample(rng, video_batch, action_batch)
