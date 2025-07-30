@@ -80,11 +80,12 @@ def lam_loss_fn(
     model: LatentActionModel, inputs: dict
 ) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict]]:
     # --- Compute loss ---
-    inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
+    gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
+    inputs["videos"] = gt.astype(args.dtype)
     model.train()
     outputs = model(inputs, training=True)
     outputs["recon"] = outputs["recon"].astype(jnp.float32)
-    gt_future_frames = inputs["videos"][:, 1:]
+    gt_future_frames = gt[:, 1:]
     mse = jnp.square(gt_future_frames - outputs["recon"]).mean()
     q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()
     commitment_loss = jnp.square(

@@ -94,11 +94,13 @@ def dynamics_loss_fn(
     model: Genie, inputs: dict
 ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
     """Compute masked dynamics loss"""
-    inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
+    gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
+    inputs["videos"] = gt.astype(args.dtype)
     model.train()
     outputs = model(inputs, training=True)
     mask = outputs["mask"]
     outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
+    outputs["video_tokens"] = outputs["video_tokens"].astype(jnp.int32)
     ce_loss = optax.softmax_cross_entropy_with_integer_labels(
         outputs["token_logits"], outputs["video_tokens"]
     )
@@ -106,7 +108,7 @@ def dynamics_loss_fn(
     acc = outputs["token_logits"].argmax(-1) == outputs["video_tokens"]
     acc = (mask * acc).sum() / mask.sum()
     select_probs = jax.nn.softmax(outputs["token_logits"])
-    gt = inputs["videos"].clip(0, 1).reshape(-1, *inputs["videos"].shape[2:])
+    gt = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
     recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
     psnr = jnp.asarray(pix.psnr(gt, recon)).mean()
     ssim = jnp.asarray(pix.ssim(gt, recon)).mean()

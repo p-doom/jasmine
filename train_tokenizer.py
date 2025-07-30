@@ -83,11 +83,12 @@ def tokenizer_loss_fn(
     # FIXME (f.srambical): Can we even do native int8 training without casting the video at all?
     # FIXME (f.srambical): If the tokenizer is the reason for the dynamics model being memory-bound,
     # should we at least train the tokenizer natively in int8?
-    inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
+    gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
+    inputs["videos"] = gt.astype(args.dtype)
     model.train()
     outputs = model(inputs, training=True)
     outputs["recon"] = outputs["recon"].astype(jnp.float32)
-    mse = jnp.square(inputs["videos"] - outputs["recon"]).mean()
+    mse = jnp.square(gt - outputs["recon"]).mean()
     q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()
     commitment_loss = jnp.square(
         outputs["emb"] - jax.lax.stop_gradient(outputs["z"])
@@ -95,7 +96,7 @@ def tokenizer_loss_fn(
     loss = mse + q_loss + args.vq_beta * commitment_loss
 
     # --- Compute validation metrics ---
-    gt = inputs["videos"].clip(0, 1).reshape(-1, *inputs["videos"].shape[2:])
+    gt = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
     recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
     psnr = jnp.asarray(pix.psnr(gt, recon)).mean()
     ssim = jnp.asarray(pix.ssim(gt, recon)).mean()
