@@ -100,7 +100,6 @@ def dynamics_loss_fn(
     outputs = model(inputs, training=True)
     mask = outputs["mask"]
     outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
-    outputs["video_tokens"] = outputs["video_tokens"].astype(jnp.int32)
     ce_loss = optax.softmax_cross_entropy_with_integer_labels(
         outputs["token_logits"], outputs["video_tokens"]
     )
