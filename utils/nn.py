@@ -215,8 +215,8 @@ class STTransformer(nnx.Module):
             rngs=rngs,
         )
 
-    def __call__(self, x: jax.Array) -> jax.Array:
-        x_BTNI = self.input_norm1(x)
+    def __call__(self, x_BTNI: jax.Array) -> jax.Array:
+        x_BTNI = self.input_norm1(x_BTNI)
         x_BTNM = self.input_dense(x_BTNI)
         x_BTNM = self.input_norm2(x_BTNM)
 
