@@ -186,24 +186,26 @@ if __name__ == "__main__":
     )
     dataloader = iter(dataloader)
     video_batch_BSHWC = next(dataloader)
-    video_batch_BSHWC = jnp.asarray(video_batch_BSHWC, dtype=args.dtype) / 255.0
+    gt_video = jnp.asarray(video_batch_BSHWC, dtype=jnp.float32) / 255.0
+    video_batch_BSHWC = gt_video.astype(args.dtype)
     # Get latent actions for all videos in the batch
     batch = dict(videos=video_batch_BSHWC)
     action_batch_E = genie.vq_encode(batch, training=False)
 
     # --- Sample + evaluate video ---
-    vid = _autoreg_sample(rng, video_batch_BSHWC, action_batch_E)
-    gt = video_batch_BSHWC[:, : vid.shape[1]].clip(0, 1).reshape(-1, *video_batch_BSHWC.shape[2:])
-    recon = vid.clip(0, 1).reshape(-1, *vid.shape[2:])
+    recon_video = _autoreg_sample(rng, video_batch_BSHWC, action_batch_E)
+    recon_video = recon_video.astype(jnp.float32)
+    gt = gt_video[:, : recon_video.shape[1]].clip(0, 1).reshape(-1, *gt_video.shape[2:])
+    recon = recon_video.clip(0, 1).reshape(-1, *recon_video.shape[2:])
     ssim = jnp.asarray(
         pix.ssim(gt[:, args.start_frame + 1 :], recon[:, args.start_frame + 1 :])
     ).mean()
     print(f"SSIM: {ssim}")
 
     # --- Construct video ---
-    true_videos = (video_batch_BSHWC * 255).astype(np.uint8)
-    pred_videos = (vid * 255).astype(np.uint8)
-    video_comparison = np.zeros((2, *vid.shape), dtype=np.uint8)
+    true_videos = (gt_video * 255).astype(np.uint8)
+    pred_videos = (recon_video * 255).astype(np.uint8)
+    video_comparison = np.zeros((2, *recon_video.shape), dtype=np.uint8)
     video_comparison[0] = true_videos[:, : args.seq_len]
     video_comparison[1] = pred_videos
     frames = einops.rearrange(video_comparison, "n b t h w c -> t (b h) (n w) c")
