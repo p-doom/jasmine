@@ -129,9 +129,9 @@ class STBlock(nnx.Module):
 
         # --- Feedforward ---
         z_BTNM = self.ffn_norm(x_BTNM)
-        z_BTNM = self.ffn_dense1(z_BTNM)
-        z_BTNM = jax.nn.gelu(z_BTNM)
-        z_BTNM = self.ffn_dense2(z_BTNM)
+        z_BTNF = self.ffn_dense1(z_BTNM)
+        z_BTNF = jax.nn.gelu(z_BTNF)
+        z_BTNM = self.ffn_dense2(z_BTNF)
         x_BTNM = x_BTNM + z_BTNM
 
         return x_BTNM
@@ -145,6 +145,7 @@ class STTransformer(nnx.Module):
         N: number of patches per frame
         I: number of input features
         M: model dimension
+        F: FFN dimension
         O: number of output features
     """
     def __init__(
