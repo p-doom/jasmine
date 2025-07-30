@@ -223,6 +223,12 @@ def normalize(x: jax.Array) -> jax.Array:
 
 
 class VectorQuantizer(nnx.Module):
+    """
+    Dimension keys:
+        D: B * T * N
+        K: number of latents
+        L: latent dimension
+    """
     def __init__(
         self, latent_dim: int, num_latents: int, dropout: float, rngs: nnx.Rngs
     ):
@@ -240,25 +246,25 @@ class VectorQuantizer(nnx.Module):
         self.drop = nnx.Dropout(self.dropout, rngs=rngs)
 
     def __call__(
-        self, x: jax.Array, training: bool
+        self, x_DL: jax.Array, training: bool
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         # --- Compute distances ---
-        x = normalize(x)
-        normalized_codebook = normalize(self.codebook.value)
-        distance = -jnp.matmul(x, normalized_codebook.T)
+        x_DL = normalize(x_DL)
+        normalized_codebook_KL = normalize(self.codebook.value)
+        distance_DK = -jnp.matmul(x_DL, normalized_codebook_KL.T)
         if training:
-            distance = self.drop(distance)
+            distance_DK = self.drop(distance_DK)
 
         # --- Get indices and embeddings ---
-        indices = jnp.argmin(distance, axis=-1)
-        z = self.codebook[indices]
+        indices_D = jnp.argmin(distance_DK, axis=-1)
+        z_DL = self.codebook[indices_D]
 
         # --- Straight through estimator ---
-        z_q = x + jax.lax.stop_gradient(z - x)
-        return z_q, z, x, indices
+        z_q_DL = x_DL + jax.lax.stop_gradient(z_DL - x_DL)
+        return z_q_DL, z_DL, x_DL, indices_D
 
-    def get_codes(self, indices: jax.Array) -> jax.Array:
-        return self.codebook[indices]
+    def get_codes(self, indices_E: jax.Array) -> jax.Array:
+        return self.codebook[indices_E]
 
 
 def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool) -> Callable:

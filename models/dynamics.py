@@ -8,7 +8,16 @@ from utils.nn import STTransformer
 
 
 class DynamicsMaskGIT(nnx.Module):
-    """MaskGIT dynamics model"""
+    """
+    MaskGIT dynamics model
+    
+    Dimension keys:
+        B: batch size
+        T: sequence length
+        N: number of patches per frame
+        L: latent dimension
+        V: vocabulary size
+    """
 
     def __init__(
         self,
@@ -37,7 +46,7 @@ class DynamicsMaskGIT(nnx.Module):
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
 
-        self.dynamics = STTransformer(
+        self.transformer = STTransformer(
             self.model_dim,
             self.model_dim,
             self.ffn_dim,
@@ -66,27 +75,32 @@ class DynamicsMaskGIT(nnx.Module):
         self, batch: Dict[str, jax.Array], training: bool = True
     ) -> tuple[jax.Array, jax.Array | None]:
         # --- Mask videos ---
-        vid_embed = self.patch_embed(batch["video_tokens"])
+        video_tokens_BTN = batch["video_tokens"]
+        latent_actions_BTm11L = batch["latent_actions"]
+        vid_embed_BTNM = self.patch_embed(video_tokens_BTN)
         if training:
-            batch_size = vid_embed.shape[0]
+            batch_size = vid_embed_BTNM.shape[0]
             _rng_prob, *_rngs_mask = jax.random.split(batch["mask_rng"], batch_size + 1)
             mask_prob = jax.random.uniform(
                 _rng_prob, shape=(batch_size,), minval=self.mask_limit
             )
-            per_sample_shape = vid_embed.shape[1:-1]
+            per_sample_shape = vid_embed_BTNM.shape[1:-1]
             mask = jax.vmap(
                 lambda rng, prob: jax.random.bernoulli(rng, prob, per_sample_shape),
                 in_axes=(0, 0),
             )(jnp.asarray(_rngs_mask), mask_prob)
             mask = mask.at[:, 0].set(False)
-            vid_embed = jnp.where(
-                jnp.expand_dims(mask, -1), self.mask_token.value, vid_embed
+            vid_embed_BTNM = jnp.where(
+                jnp.expand_dims(mask, -1), self.mask_token.value, vid_embed_BTNM
             )
         else:
             mask = None
 
         # --- Predict transition ---
-        act_embed = self.action_up(batch["latent_actions"])
-        vid_embed += jnp.pad(act_embed, ((0, 0), (1, 0), (0, 0), (0, 0)))
-        logits = self.dynamics(vid_embed)
-        return logits, mask
+        act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
+        # FIXME (f.srambical): We must not pad the actions, but remove the last frame (https://github.com/p-doom/jasmine/issues/122)
+        padded_act_embed_BT1M = jnp.pad(act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0)))
+        padded_act_embed_BTNM = jnp.broadcast_to(padded_act_embed_BT1M, vid_embed_BTNM.shape)
+        vid_embed_BTNM += padded_act_embed_BTNM
+        logits_BTNV = self.transformer(vid_embed_BTNM)
+        return logits_BTNV, mask

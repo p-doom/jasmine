@@ -63,6 +63,17 @@ class Args:
 args = tyro.cli(Args)
 
 if __name__ == "__main__":
+    """
+    Dimension keys:
+        B: batch size
+        T: number of input (conditioning) frames
+        N: number of patches per frame
+        S: sequence length
+        H: height
+        W: width
+        D: B * T * N
+        E: B * (T - 1)
+    """
     jax.distributed.initialize()
 
     rng = jax.random.key(args.seed)
@@ -148,10 +159,10 @@ if __name__ == "__main__":
 
     # --- Define autoregressive sampling loop ---
     @nnx.jit
-    def _autoreg_sample(rng, video_batch, action_batch):
-        vid = video_batch[:, : args.start_frame + 1]
+    def _autoreg_sample(rng, video_batch_BSHWC, action_batch_E):
+        input_video_BTHWC = video_batch_BSHWC[:, : args.start_frame + 1]
         rng, _rng = jax.random.split(rng)
-        batch = dict(videos=vid, latent_actions=action_batch, rng=_rng)
+        batch = dict(videos=input_video_BTHWC, latent_actions=action_batch_E, rng=_rng)
         generated_vid = _sampling_fn(genie, batch)
         return generated_vid
 
@@ -174,18 +185,15 @@ if __name__ == "__main__":
         seed=args.seed,
     )
     dataloader = iter(dataloader)
-    video_batch = next(dataloader)
-    video_batch = jnp.asarray(video_batch).astype(args.dtype) / 255.0
+    video_batch_BSHWC = next(dataloader)
+    video_batch_BSHWC = jnp.asarray(video_batch_BSHWC, dtype=args.dtype) / 255.0
     # Get latent actions for all videos in the batch
-    batch = dict(videos=video_batch)
-    action_batch = genie.vq_encode(batch, training=False)
-    action_batch = jnp.asarray(action_batch).reshape(
-        video_batch.shape[0], args.seq_len - 1, 1
-    )
+    batch = dict(videos=video_batch_BSHWC)
+    action_batch_E = genie.vq_encode(batch, training=False)
 
     # --- Sample + evaluate video ---
-    vid = _autoreg_sample(rng, video_batch, action_batch)
-    gt = video_batch[:, : vid.shape[1]].clip(0, 1).reshape(-1, *video_batch.shape[2:])
+    vid = _autoreg_sample(rng, video_batch_BSHWC, action_batch_E)
+    gt = video_batch_BSHWC[:, : vid.shape[1]].clip(0, 1).reshape(-1, *video_batch_BSHWC.shape[2:])
     recon = vid.clip(0, 1).reshape(-1, *vid.shape[2:])
     ssim = jnp.asarray(
         pix.ssim(gt[:, args.start_frame + 1 :], recon[:, args.start_frame + 1 :])
@@ -193,7 +201,7 @@ if __name__ == "__main__":
     print(f"SSIM: {ssim}")
 
     # --- Construct video ---
-    true_videos = (video_batch * 255).astype(np.uint8)
+    true_videos = (video_batch_BSHWC * 255).astype(np.uint8)
     pred_videos = (vid * 255).astype(np.uint8)
     video_comparison = np.zeros((2, *vid.shape), dtype=np.uint8)
     video_comparison[0] = true_videos[:, : args.seq_len]
@@ -205,9 +213,9 @@ if __name__ == "__main__":
     # Write actions on each frame, on each row (i.e., for each video in the batch, on the GT row)
     for t, img in enumerate(imgs[1:]):
         d = ImageDraw.Draw(img)
-        for row in range(action_batch.shape[0]):
-            action = action_batch[row, t, 0]
-            y_offset = row * video_batch.shape[2] + 2
+        for row in range(action_batch_E.shape[0]):
+            action = action_batch_E[row, t, 0]
+            y_offset = row * video_batch_BSHWC.shape[2] + 2
             d.text((2, y_offset), f"{action}", fill=255)
     imgs[0].save(
         f"generation_{time.time()}.gif",
