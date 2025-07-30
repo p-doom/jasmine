@@ -17,12 +17,11 @@ class LatentActionModel(nnx.Module):
         N: number of patches per frame
         M: model dimension
         L: latent dimension
-        D: B * T * N
+        E: B * (T - 1)
         H: height
         W: width
         C: number of channels (n_dim)
         P: patch token dimension (patch_size^2 * C)
-        E: B * (T - 1)
 
         Tm1: T - 1
         Np1: N + 1

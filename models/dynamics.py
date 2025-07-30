@@ -16,11 +16,6 @@ class DynamicsMaskGIT(nnx.Module):
         T: sequence length
         N: number of patches per frame
         L: latent dimension
-        D: B*T*N
-        H: height
-        W: width
-        C: number of channels
-        P: patch token dimension (patch_size^2 * C)
         V: vocabulary size
     """
 
