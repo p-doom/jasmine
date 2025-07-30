@@ -109,10 +109,15 @@ class DynamicsAutoregressive(nn.Module):
     def __call__(self, batch: Dict[str, Any], training: bool = True) -> Dict[str, Any]:
         vid_embed = self.patch_embed(batch["video_tokens"])
         act_embed = self.action_up(batch["latent_actions"])
-        vid_embed += jnp.pad(act_embed, ((0, 0), (1, 0), (0, 0), (0, 0)))
+        act_embed = jnp.pad(act_embed, ((0, 0), (1, 0), (0, 0), (0, 0)))
+
+        # Concatenate act_embed and vid_embed along the N dimension (axis=2), with act_embed first
+        vid_embed_padded = jnp.concatenate([act_embed, vid_embed], axis=2)
+
+        # vid_embed += jnp.pad(act_embed, ((0, 0), (1, 0), (0, 0), (0, 0)))
         # vid_embed_padded = jnp.pad(vid_embed, ((0, 0), (1, 0), (1, 0), (0, 0)))
         # logits = self.dynamics(vid_embed_padded)[:, :-1, :-1]
-        vid_embed_padded = jnp.pad(vid_embed, ((0, 0), (0, 0), (1, 0), (0, 0)))
+        # vid_embed_padded = jnp.pad(vid_embed, ((0, 0), (0, 0), (1, 0), (0, 0)))
 
         # FIXME mihir: HACK
         # rng1, _rng = jax.random.split(batch["mask_rng"])
