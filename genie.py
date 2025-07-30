@@ -207,7 +207,7 @@ class Genie(nnx.Module):
             # --- Predict transition ---
             action_tokens_BSm1L = jnp.reshape(action_tokens_EL, (B, S - 1, 1))
             act_embed_BSm1M = self.dynamics.action_up(action_tokens_BSm1L)
-            # FIXME (f.srambical): here, again, we shouldn't pad, but instead omit the last frame
+            # FIXME (f.srambical): We must not pad the actions, but remove the last frame (https://github.com/p-doom/jasmine/issues/122)
             vid_embed_BSNM += jnp.pad(act_embed_BSm1M, ((0, 0), (1, 0), (0, 0), (0, 0)))
             unmasked_ratio = jnp.cos(jnp.pi * (step + 1) / (steps * 2))
             step_temp = temperature * (1.0 - unmasked_ratio)
