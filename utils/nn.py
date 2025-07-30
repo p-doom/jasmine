@@ -7,9 +7,10 @@ import jax.numpy as jnp
 import einops
 
 
-class PositionalEncoding(nnx.Module):
-    """https://uvadlc-notebooks.readthedocs.io/en/latest/tutorial_notebooks/JAX/tutorial6/Transformers_and_MHAttention.html"""
-
+class SpatioTemporalPositionalEncoding(nnx.Module):
+    """
+    Applies separate sinusoidal positional encodings to the temporal and spatial dimensions.
+    """
     def __init__(self, d_model: int, max_len: int = 5000):
         self.d_model = d_model
         self.max_len = max_len
@@ -24,7 +25,26 @@ class PositionalEncoding(nnx.Module):
         self.pe = nnx.Variable(pe)
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        x = x + self.pe[: x.shape[2]]
+        """
+        Args:
+            x: The input tensor of shape (Batch, Time, Space, Dimension).
+
+        Returns:
+            The input tensor with positional encodings added.
+        """
+        assert x.ndim == 4, f"Input must be 4-dimensional, but got shape {x.shape}"
+
+        num_timesteps = x.shape[1]
+        num_spatial_patches = x.shape[2]
+
+        # Temporal positional encoding: (1, T, 1, D)
+        temporal_pe = self.pe.value[None, :num_timesteps, None, :]
+        x = x + temporal_pe
+
+        # Spatial positional encoding: (1, 1, S, D)
+        spatial_pe = self.pe.value[None, None, :num_spatial_patches, :]
+        x = x + spatial_pe
+
         return x
 
 
@@ -48,7 +68,6 @@ class STBlock(nnx.Module):
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
 
-        self.spatial_pos_enc = PositionalEncoding(self.dim)
         self.spatial_norm = nnx.LayerNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
@@ -69,7 +88,6 @@ class STBlock(nnx.Module):
             decode=False,
         )
 
-        self.temporal_pos_enc = PositionalEncoding(self.dim)
         self.temporal_norm = nnx.LayerNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
@@ -114,15 +132,13 @@ class STBlock(nnx.Module):
     @nnx.remat
     def __call__(self, x: jax.Array) -> jax.Array:
         # --- Spatial attention ---
-        z = self.spatial_pos_enc(x)
-        z = self.spatial_norm(z)
+        z = self.spatial_norm(x)
         z = self.spatial_attention(z)
         x = x + z
 
         # --- Temporal attention ---
         x = x.swapaxes(1, 2)
-        z = self.temporal_pos_enc(x)
-        z = self.temporal_norm(z)
+        z = self.temporal_norm(x)
         z = self.temporal_attention(z)
         x = x + z
         x = x.swapaxes(1, 2)
@@ -151,6 +167,7 @@ class STTransformer(nnx.Module):
         dtype: jnp.dtype,
         use_flash_attention: bool,
         rngs: nnx.Rngs,
+        max_len: int = 5000,
     ):
         self.input_dim = input_dim
         self.model_dim = model_dim
@@ -183,6 +200,8 @@ class STTransformer(nnx.Module):
             rngs=rngs,
         )
 
+        self.pos_enc = SpatioTemporalPositionalEncoding(self.model_dim, max_len=max_len)
+
         self.blocks = []
         for _ in range(self.num_blocks):
             self.blocks.append(
@@ -210,6 +229,7 @@ class STTransformer(nnx.Module):
         x = self.input_norm1(x)
         x = self.input_dense(x)
         x = self.input_norm2(x)
+        x = self.pos_enc(x)
 
         for block in self.blocks:
             x = block(x)
