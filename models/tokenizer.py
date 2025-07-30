@@ -9,7 +9,20 @@ from utils.nn import STTransformer, VectorQuantizer
 
 
 class TokenizerVQVAE(nnx.Module):
-    """ST-ViVit VQ-VAE"""
+    """
+    ST-ViVit VQ-VAE
+
+    Dimension keys:
+        B: batch size
+        T: sequence length
+        N: number of patches per frame
+        L: latent dimension
+        D: B * T * N
+        H: height
+        W: width
+        C: number of channels
+        P: patch token dimension (patch_size^2 * C)
+    """
 
     def __init__(
         self,
@@ -80,12 +93,15 @@ class TokenizerVQVAE(nnx.Module):
         self, batch: Dict[str, jax.Array], training: bool = True
     ) -> Dict[str, jax.Array]:
         H, W = batch["videos"].shape[2:4]
-        outputs = self.vq_encode(batch["videos"], training)
-        recon = self.decoder(outputs["z_q"])  # (B, T, H_down * W_down, C)
-        recon = recon.astype(jnp.float32)
-        recon = nnx.sigmoid(recon)
-        recon = recon.astype(self.dtype)
-        outputs["recon"] = unpatchify(recon, self.patch_size, H, W)
+        videos_BTHWC = batch["videos"]
+        outputs = self.vq_encode(videos_BTHWC, training)
+        z_q_BTNL = outputs["z_q"]
+        recon_BTHWC = self.decoder(z_q_BTNL)
+        recon_BTHWC = recon_BTHWC.astype(jnp.float32)
+        recon_BTHWC = nnx.sigmoid(recon_BTHWC)
+        recon_BTHWC = recon_BTHWC.astype(self.dtype)
+        recon_BTHWC = unpatchify(recon_BTHWC, self.patch_size, H, W)
+        outputs["recon"] = recon_BTHWC
         return outputs
 
     def vq_encode(
@@ -93,21 +109,21 @@ class TokenizerVQVAE(nnx.Module):
     ) -> Dict[str, jax.Array]:
         # --- Preprocess + encode ---
         B, T = videos.shape[:2]
-        x = patchify(videos, self.patch_size)
-        N = x.shape[2]
-        x = self.encoder(x)  # (B, T, N, E)
+        patch_BTNP = patchify(videos, self.patch_size)
+        N = patch_BTNP.shape[2]
+        x_BTNL = self.encoder(patch_BTNP)
 
         # --- Vector quantize ---
-        x = x.reshape(B * T * N, self.latent_dim)
-        z_q, z, emb, indices = self.vq(x, training)
-        z_q = z_q.reshape(B, T, N, self.latent_dim)
-        indices = indices.reshape(B, T, N)
-        return dict(z_q=z_q, z=z, emb=emb, indices=indices)
+        x_DL = x_BTNL.reshape(B * T * N, self.latent_dim)
+        z_q_DL, z_DL, emb_DL, indices_D = self.vq(x_DL, training)
+        z_q_BTNL = z_q_DL.reshape(B, T, N, self.latent_dim)
+        indices_BTN = indices_D.reshape(B, T, N)
+        return dict(z_q=z_q_BTNL, z=z_DL, emb=emb_DL, indices=indices_BTN)
 
-    def decode(self, indices: jax.Array, video_hw: Tuple[int, int]) -> jax.Array:
-        z = self.vq.codebook[indices]
-        recon = self.decoder(z)
-        recon = recon.astype(jnp.float32)
-        recon = nnx.sigmoid(recon)
-        recon = recon.astype(self.dtype)
-        return unpatchify(recon, self.patch_size, *video_hw)
+    def decode(self, indices_BTN: jax.Array, video_hw: Tuple[int, int]) -> jax.Array:
+        z_BTNL = self.vq.codebook[indices_BTN]
+        recon_BTNP = self.decoder(z_BTNL)
+        recon_BTNP = recon_BTNP.astype(jnp.float32)
+        recon_BTNP = nnx.sigmoid(recon_BTNP)
+        recon_BTNP = recon_BTNP.astype(self.dtype)
+        return unpatchify(recon_BTNP, self.patch_size, *video_hw)
