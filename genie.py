@@ -1,6 +1,6 @@
 from typing import Dict
 
-import optax
+import einops
 import jax
 import jax.numpy as jnp
 import flax.nnx as nnx
@@ -179,6 +179,7 @@ class Genie(nnx.Module):
             H: height
             W: width
             E: B * (S - 1)
+            F: S * N
         """
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
@@ -230,10 +231,13 @@ class Genie(nnx.Module):
 
             # --- Update mask ---
             num_unmasked_tokens = jnp.round(N * (1.0 - unmasked_ratio)).astype(int)
-            idx_mask_N = jnp.arange(final_token_probs_BSN.shape[-1]) > num_unmasked_tokens
-            sorted_idxs_BSN = jnp.argsort(final_token_probs_BSN, axis=-1, descending=True)
+            idx_mask_N = jnp.arange(final_token_probs_BSN.shape[-1]) <= N - num_unmasked_tokens
+            final_token_probs_flat_BF = einops.rearrange(final_token_probs_BSN, "b s n -> b (s n)")
+            sorted_idxs_BF = jnp.argsort(final_token_probs_flat_BF, axis=-1)
             mask_update_fn = jax.vmap(lambda msk, ids: msk.at[ids].set(idx_mask_N))
-            new_mask_BSN = mask_update_fn(mask_BSN, sorted_idxs_BSN)
+            mask_flat_BF = einops.rearrange(mask_BSN, "b s n -> b (s n)")
+            new_mask_flat_BF = mask_update_fn(mask_flat_BF, sorted_idxs_BF)
+            new_mask_BSN = einops.rearrange(new_mask_flat_BF, "b (s n) -> b s n", n=N)
 
             new_carry = (rng, token_idxs_BSN, new_mask_BSN, action_tokens_EL)
             return new_carry, None
@@ -244,8 +248,8 @@ class Genie(nnx.Module):
             rng, current_token_idxs_BSN = carry
             rng, step_rng = jax.random.split(rng)
 
-            # Mask current and future frames (i.e., t >= step_t)
-            mask_S = jnp.arange(seq_len) >= step_t
+            # Mask current frame (i.e., t == step_t)
+            mask_S = jnp.arange(seq_len) == step_t
             mask_BSN = jnp.broadcast_to(mask_S[None, :, None], (B, seq_len, N)).astype(
                 bool
             )
