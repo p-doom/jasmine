@@ -297,13 +297,8 @@ def restore_genie_components(
     """Restore pre-trained Genie components"""
     rngs = nnx.Rngs(rng)
 
-    # dummy values since we only use tx to initialize the dummy train states
-    dummy_tx = optax.adamw(
-        learning_rate=optax.constant_schedule(args.max_lr),
-        b1=0.9,
-        b2=0.9,
-        weight_decay=1e-4,
-    )
+    tx = optimizer.tx
+    model = optimizer.model
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add(
         "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
@@ -333,7 +328,7 @@ def restore_genie_components(
         use_flash_attention=args.use_flash_attention,
         rngs=rngs,
     )
-    dummy_tokenizer_optimizer = nnx.Optimizer(dummy_tokenizer, dummy_tx)
+    dummy_tokenizer_optimizer = nnx.Optimizer(dummy_tokenizer, tx)
     dummy_tokenizer_optimizer_state = nnx.state(dummy_tokenizer_optimizer)
     abstract_sharded_tokenizer_optimizer_state = _create_abstract_sharded_pytree(
         dummy_tokenizer_optimizer_state, sharding
@@ -347,7 +342,7 @@ def restore_genie_components(
         ),
     )["model_state"]
     nnx.update(dummy_tokenizer_optimizer.model, restored_tokenizer.model)
-    optimizer.model.tokenizer = dummy_tokenizer_optimizer.model
+    model.tokenizer = dummy_tokenizer_optimizer.model
     tokenizer_checkpoint_manager.close()
 
     if args.lam_checkpoint:
@@ -372,7 +367,7 @@ def restore_genie_components(
             use_flash_attention=args.use_flash_attention,
             rngs=rngs,
         )
-        dummy_lam_optimizer = nnx.Optimizer(dummy_lam, dummy_tx)
+        dummy_lam_optimizer = nnx.Optimizer(dummy_lam, tx)
         dummy_lam_optimizer_state = nnx.state(dummy_lam_optimizer)
         abstract_sharded_lam_optimizer_state = _create_abstract_sharded_pytree(
             dummy_lam_optimizer_state, sharding
@@ -386,11 +381,13 @@ def restore_genie_components(
             ),
         )["model_state"]
         nnx.update(dummy_lam_optimizer.model, restored_lam_optimizer.model)
-        optimizer.model.lam = dummy_lam_optimizer.model
+        model.lam = dummy_lam_optimizer.model
         # Remove the LAM decoder to save memory and avoid unnecessary computation.
-        del optimizer.model.lam.decoder
+        del model.lam.decoder
         lam_checkpoint_manager.close()
-
+    
+    # Reinitialize the optimizer states
+    optimizer = nnx.Optimizer(model, tx)
     return optimizer
 
 
