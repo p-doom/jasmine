@@ -51,6 +51,7 @@ class Args:
     lam_num_blocks: int = 4
     lam_num_heads: int = 8
     # Dynamics checkpoint
+    dyna_type: str = "maskgit"
     dyna_dim: int = 512
     dyna_ffn_dim: int = 2048
     dyna_num_blocks: int = 6
@@ -99,6 +100,7 @@ if __name__ == "__main__":
         lam_num_heads=args.lam_num_heads,
         lam_co_train=False,
         # Dynamics
+        dyna_type=args.dyna_type,
         dyna_dim=args.dyna_dim,
         dyna_ffn_dim=args.dyna_ffn_dim,
         dyna_num_blocks=args.dyna_num_blocks,
@@ -148,13 +150,23 @@ if __name__ == "__main__":
     # --- Define sampling function ---
     def _sampling_fn(model: Genie, batch: dict) -> jax.Array:
         """Runs Genie.sample with pre-defined generation hyper-parameters."""
-        return model.sample(
-            batch,
-            args.seq_len,
-            args.maskgit_steps,
-            args.temperature,
-            args.sample_argmax,
-        )
+        if args.dyna_type == "maskgit":
+            return model.sample(
+                batch,
+                args.seq_len,
+                args.maskgit_steps,
+                args.temperature,
+                args.sample_argmax,
+            )
+        elif args.dyna_type == "causal":
+            return model.sample_causal(
+                batch,
+                args.seq_len,
+                args.temperature,
+                args.sample_argmax,
+            )
+        else:
+            raise ValueError(f"Invalid dynamics type: {args.dyna_type}")
 
     # --- Define autoregressive sampling loop ---
     @nnx.jit

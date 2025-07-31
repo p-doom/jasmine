@@ -129,9 +129,9 @@ class STBlock(nnx.Module):
 
         # --- Feedforward ---
         z_BTNM = self.ffn_norm(x_BTNM)
-        z_BTNF = self.ffn_dense1(z_BTNM)
-        z_BTNF = jax.nn.gelu(z_BTNF)
-        z_BTNM = self.ffn_dense2(z_BTNF)
+        z_BTND = self.ffn_dense1(z_BTNM)
+        z_BTND = jax.nn.gelu(z_BTND)
+        z_BTNM = self.ffn_dense2(z_BTND)
         x_BTNM = x_BTNM + z_BTNM
 
         return x_BTNM
@@ -145,7 +145,7 @@ class STTransformer(nnx.Module):
         N: number of patches per frame
         I: number of input features
         M: model dimension
-        F: FFN dimension
+        D: FFN dimension
         O: number of output features
     """
     def __init__(
@@ -226,6 +226,210 @@ class STTransformer(nnx.Module):
 
         x_BTNO = self.output_dense(x_BTNM)
         return x_BTNO
+
+class TransformerBlock(nnx.Module):
+    def __init__(
+        self,
+        model_dim: int,
+        ffn_dim: int,
+        num_heads: int,
+        dropout: float,
+        param_dtype: jnp.dtype,
+        dtype: jnp.dtype,
+        use_flash_attention: bool,
+        decode: bool,
+        rngs: nnx.Rngs,
+    ):
+        self.model_dim = model_dim
+        self.ffn_dim = ffn_dim
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.param_dtype = param_dtype
+        self.dtype = dtype
+        self.use_flash_attention = use_flash_attention
+
+        self.temporal_pos_enc = PositionalEncoding(self.model_dim)
+        self.spatial_pos_enc = PositionalEncoding(self.model_dim)
+        self.temporal_norm = nnx.LayerNorm(
+            num_features=self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+        self.spatial_norm = nnx.LayerNorm(
+            num_features=self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+        self.ffn_norm = nnx.LayerNorm(
+            num_features=self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+        self.temporal_attention = nnx.MultiHeadAttention(
+            num_heads=self.num_heads,
+            in_features=self.model_dim,
+            qkv_features=self.model_dim,
+            dropout_rate=self.dropout,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            attention_fn=_create_flash_attention_fn(
+                self.use_flash_attention, is_causal=True
+            ),
+            rngs=rngs,
+            decode=decode,
+        )
+        self.spatial_attention = nnx.MultiHeadAttention(
+            num_heads=self.num_heads,
+            in_features=self.model_dim,
+            qkv_features=self.model_dim,
+            dropout_rate=self.dropout,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            attention_fn=_create_flash_attention_fn(
+                self.use_flash_attention, is_causal=True
+            ),
+            rngs=rngs,
+            decode=decode,
+        )
+        self.ffn_dense1 = nnx.Linear(
+            in_features=self.model_dim,
+            out_features=self.ffn_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+        self.ffn_dense2 = nnx.Linear(
+            in_features=self.ffn_dim,
+            out_features=self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+
+    @nnx.remat
+    def __call__(self, x_BTNM: jax.Array) -> jax.Array:
+        # FIXME (f.srambical): this is exactly the same as STBlock (except for the positional encoding)
+        # --- Spatial attention ---
+        _, T, N, _ = x_BTNM.shape
+        z_FNM = einops.rearrange(x_BTNM, "b t n m -> (b t) n m")
+        z_FNM = self.spatial_norm(z_FNM)
+        # FIXME (f.srambical): only input last token
+        z_FNM = self.spatial_attention(z_FNM)
+        z_BTNM = einops.rearrange(z_FNM, "(b t) n m -> b t n m", t=T)
+        x_BTNM = x_BTNM + z_BTNM
+        # --- Temporal attention ---
+        z_PTM = einops.rearrange(x_BTNM, "b t n m -> (b n) t m")
+        z_PTM = self.temporal_norm(z_PTM)
+        # FIXME (f.srambical): only input last token
+        z_PTM = self.temporal_attention(z_PTM)
+        z_BTNM = einops.rearrange(z_PTM, "(b n) t m -> b t n m", n=N)
+        x_BTNM = x_BTNM + z_BTNM
+        # --- Feedforward ---
+        z_BTNM = self.ffn_norm(x_BTNM)
+        z_BTND = self.ffn_dense1(z_BTNM)
+        z_BTND = jax.nn.gelu(z_BTND)
+        z_BTNM = self.ffn_dense2(z_BTND)
+        x_BTNM = x_BTNM + z_BTNM
+
+        return x_BTNM
+
+class Transformer(nnx.Module):
+    """
+    Dimension keys:
+        B: batch size
+        T: number of frames
+        N: number of patches per frame
+        I: number of input features
+        M: model dimension
+        D: FFN dimension
+        O: number of output features
+        F: number of frames in batch
+        P: number of patch positions in batch
+    """
+    def __init__(
+        self,
+        input_dim: int,
+        model_dim: int,
+        ffn_dim: int,
+        out_dim: int,
+        num_blocks: int,
+        num_heads: int,
+        dropout: float,
+        param_dtype: jnp.dtype,
+        dtype: jnp.dtype,
+        use_flash_attention: bool,
+        decode: bool,
+        rngs: nnx.Rngs,
+    ):
+        self.input_dim = input_dim
+        self.model_dim = model_dim
+        self.ffn_dim = ffn_dim
+        self.out_dim = out_dim
+        self.num_blocks = num_blocks
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.param_dtype = param_dtype
+        self.dtype = dtype
+        self.use_flash_attention = use_flash_attention
+
+        self.pos_enc = PositionalEncoding(self.model_dim)
+        self.input_norm1 = nnx.LayerNorm(
+            num_features=self.input_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+        self.input_dense = nnx.Linear(
+            in_features=self.input_dim,
+            out_features=self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+        self.input_norm2 = nnx.LayerNorm(
+            num_features=self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+
+        self.blocks = []
+        for _ in range(self.num_blocks):
+            self.blocks.append(
+                TransformerBlock(
+                    model_dim=self.model_dim,
+                    ffn_dim=self.ffn_dim,
+                    num_heads=self.num_heads,
+                    dropout=self.dropout,
+                    param_dtype=self.param_dtype,
+                    dtype=self.dtype,
+                    use_flash_attention=self.use_flash_attention,
+                    decode=decode,
+                    rngs=rngs,
+                )
+            )
+        self.output_dense = nnx.Linear(
+            in_features=self.model_dim,
+            out_features=self.out_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+
+    def __call__(self, x_BTNI: jax.Array) -> jax.Array:
+        x_BTNI = self.input_norm1(x_BTNI)
+        x_BTNM = self.input_dense(x_BTNI)
+        x_BTNM = self.input_norm2(x_BTNM)
+        x_BTNM = self.pos_enc(x_BTNM)
+
+        for block in self.blocks:
+            x_BTNM = block(x_BTNM)
+
+        x_BTNV = self.output_dense(x_BTNM)
+        return x_BTNV
 
 def normalize(x: jax.Array) -> jax.Array:
     return x / (jnp.linalg.norm(x, ord=2, axis=-1, keepdims=True) + 1e-8)
