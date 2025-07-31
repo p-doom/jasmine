@@ -178,8 +178,7 @@ class Genie(nnx.Module):
             S: sequence length
             H: height
             W: width
-            D: B * T * N
-            E: B * (T - 1)
+            E: B * (S - 1)
         """
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
@@ -197,6 +196,7 @@ class Genie(nnx.Module):
         ) -> tuple[tuple[jax.Array, jax.Array, jax.Array, jax.Array], None]:
             rng, token_idxs_BSN, mask_BSN, action_tokens_EL = carry
             S, N = token_idxs_BSN.shape[1:]
+            L = action_tokens_EL.shape[-1]
 
             # --- Construct + encode video ---
             vid_embed_BSNM = self.dynamics.patch_embed(token_idxs_BSN)
@@ -205,9 +205,8 @@ class Genie(nnx.Module):
             vid_embed_BSNM = jnp.where(mask_expanded_BSN1, mask_token_111M, vid_embed_BSNM)
 
             # --- Predict transition ---
-            action_tokens_BSm1L = jnp.reshape(action_tokens_EL, (B, S - 1, 1))
+            action_tokens_BSm1L = jnp.reshape(action_tokens_EL, (B, S - 1, L))
             act_embed_BSm1M = self.dynamics.action_up(action_tokens_BSm1L)
-            # FIXME (f.srambical): We must not pad the actions, but remove the last frame (https://github.com/p-doom/jasmine/issues/122)
             vid_embed_BSNM += jnp.pad(act_embed_BSm1M, ((0, 0), (1, 0), (0, 0), (0, 0)))
             unmasked_ratio = jnp.cos(jnp.pi * (step + 1) / (steps * 2))
             step_temp = temperature * (1.0 - unmasked_ratio)
