@@ -207,7 +207,9 @@ class Genie(nnx.Module):
             # --- Predict transition ---
             action_tokens_BSm1L = jnp.reshape(action_tokens_EL, (B, S - 1, L))
             act_embed_BSm1M = self.dynamics.action_up(action_tokens_BSm1L)
-            vid_embed_BSNM += jnp.pad(act_embed_BSm1M, ((0, 0), (1, 0), (0, 0), (0, 0)))
+            act_embed_BSM = jnp.pad(act_embed_BSm1M, ((0, 0), (1, 0), (0, 0)))
+            act_embed_BS1M = jnp.reshape(act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1]))
+            vid_embed_BSNM += act_embed_BS1M
             unmasked_ratio = jnp.cos(jnp.pi * (step + 1) / (steps * 2))
             step_temp = temperature * (1.0 - unmasked_ratio)
             final_logits_BSNV = self.dynamics.transformer(vid_embed_BSNM) / step_temp
