@@ -178,8 +178,7 @@ class Genie(nnx.Module):
             S: sequence length
             H: height
             W: width
-            D: B * T * N
-            E: B * (T - 1)
+            E: B * (S - 1)
         """
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
