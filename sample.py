@@ -108,6 +108,7 @@ if __name__ == "__main__":
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
+        decode=True,
         rngs=rngs,
     )
 
@@ -170,7 +171,7 @@ if __name__ == "__main__":
 
     # --- Define autoregressive sampling loop ---
     @nnx.jit
-    def _autoreg_sample(rng, video_batch_BSHWC, action_batch_E):
+    def _autoreg_sample(genie, rng, video_batch_BSHWC, action_batch_E):
         input_video_BTHWC = video_batch_BSHWC[:, : args.start_frame + 1]
         rng, _rng = jax.random.split(rng)
         batch = dict(videos=input_video_BTHWC, latent_actions=action_batch_E, rng=_rng)
@@ -204,7 +205,7 @@ if __name__ == "__main__":
     action_batch_E = genie.vq_encode(batch, training=False)
 
     # --- Sample + evaluate video ---
-    recon_video_BSHWC = _autoreg_sample(rng, video_batch_BSHWC, action_batch_E)
+    recon_video_BSHWC = _autoreg_sample(genie, rng, video_batch_BSHWC, action_batch_E)
     recon_video_BSHWC = recon_video_BSHWC.astype(jnp.float32)
     gt = gt_video[:, : recon_video_BSHWC.shape[1]].clip(0, 1).reshape(-1, *gt_video.shape[2:])
     recon = recon_video_BSHWC.clip(0, 1).reshape(-1, *recon_video_BSHWC.shape[2:])

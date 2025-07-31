@@ -40,6 +40,7 @@ class Genie(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
+        decode: bool,
         rngs: nnx.Rngs,
         dropout: float = 0.0,
         mask_limit: float = 0.0,
@@ -133,7 +134,7 @@ class Genie(nnx.Module):
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
                 use_flash_attention=self.use_flash_attention,
-                decode=False,
+                decode=decode,
                 rngs=rngs,
             )
         else:
@@ -333,6 +334,8 @@ class Genie(nnx.Module):
             W: width
             E: B * (S - 1)
         """
+        # FIXME (f.srambical): reset spatial kv cache after each frame
+        assert isinstance(self.dynamics, DynamicsCausal)
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
         latent_actions_E = batch["latent_actions"]
@@ -343,6 +346,10 @@ class Genie(nnx.Module):
         pad = jnp.zeros(pad_shape, dtype=token_idxs_BTN.dtype)
         token_idxs_BSN = jnp.concatenate([token_idxs_BTN, pad], axis=1)
         action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
+        dynamics_causal: DynamicsCausal = self.dynamics
+        for block in dynamics_causal.transformer.blocks:
+            block.spatial_attention.init_cache((B * T, 1, self.dyna_dim), dtype=self.dtype)
+            block.temporal_attention.init_cache((B * N, 1, self.dyna_dim), dtype=self.dtype)
 
         def causal_step_fn(
             carry: tuple[jax.Array, jax.Array, jax.Array, jax.Array], step_n: jax.Array
@@ -352,15 +359,15 @@ class Genie(nnx.Module):
             L = action_tokens_EL.shape[-1]
 
             # --- Construct + encode video ---
-            vid_embed_BSNM = self.dynamics.patch_embed(token_idxs_BSN)
+            vid_embed_BSNM = dynamics_causal.patch_embed(token_idxs_BSN)
 
             # --- Predict transition ---
             action_tokens_BSm1L = jnp.reshape(action_tokens_EL, (B, S - 1, L))
-            act_embed_BSm1M = self.dynamics.action_up(action_tokens_BSm1L)
+            act_embed_BSm1M = dynamics_causal.action_up(action_tokens_BSm1L)
             act_embed_BSM = jnp.pad(act_embed_BSm1M, ((0, 0), (1, 0), (0, 0)))
             act_embed_BS1M = jnp.reshape(act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1]))
             vid_embed_BSNp1M = jnp.concatenate([act_embed_BS1M, vid_embed_BSNM], axis=2)
-            final_logits_BTNp1V = self.dynamics.transformer(vid_embed_BSNp1M) / temperature
+            final_logits_BTNp1V = dynamics_causal.transformer(vid_embed_BSNp1M, (step_t, step_n)) / temperature
             final_logits_BV = final_logits_BTNp1V[:, step_t, step_n, :]
 
             # --- Sample new tokens for final frame ---
