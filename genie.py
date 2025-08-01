@@ -347,9 +347,10 @@ class Genie(nnx.Module):
         token_idxs_BSN = jnp.concatenate([token_idxs_BTN, pad], axis=1)
         action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
         dynamics_causal: DynamicsCausal = self.dynamics
+
         for block in dynamics_causal.transformer.blocks:
-            block.spatial_attention.init_cache((B * T, 1, self.dyna_dim), dtype=self.dtype)
-            block.temporal_attention.init_cache((B * N, 1, self.dyna_dim), dtype=self.dtype)
+            block.spatial_attention.init_cache((B * seq_len, 1, self.dyna_dim), dtype=self.dtype)
+            block.temporal_attention.init_cache((B * (N + 1), 1, self.dyna_dim), dtype=self.dtype)
 
         def causal_step_fn(
             carry: tuple[jax.Array, jax.Array, jax.Array, jax.Array], step_n: jax.Array
@@ -383,33 +384,30 @@ class Genie(nnx.Module):
             new_carry = (rng, token_idxs_BSN, action_tokens_EL, step_t)
             return new_carry, None
 
-        def generation_step_fn(
-            carry: tuple[jax.Array, jax.Array], step_t: jax.Array
-        ) -> tuple[tuple[jax.Array, jax.Array], None]:
-            rng, current_token_idxs_BSN = carry
+        # --- Run the autoregressive generation using a for loop ---
+        rng = batch["rng"]
+        current_token_idxs_BSN = token_idxs_BSN
+        
+        for step_t in range(T, seq_len):
             rng, step_rng = jax.random.split(rng)
+
+            # --- Reset spatial KV caches before each frame ---
+            for block in dynamics_causal.transformer.blocks:
+                block.spatial_attention.init_cache((B * seq_len, 1, self.dyna_dim), dtype=self.dtype)
 
             # --- Initialize and run causal loop ---
             init_carry_causal = (
                 step_rng,
                 current_token_idxs_BSN,
                 action_tokens_EL,
-                step_t,
+                jnp.array(step_t, dtype=jnp.int32),
             )
             final_carry_causal, _ = jax.lax.scan(
                 causal_step_fn, init_carry_causal, jnp.arange(N)
             )
-            updated_token_idxs_BSN = final_carry_causal[1]
-            new_carry = (rng, updated_token_idxs_BSN)
-            return new_carry, None
-
-        # --- Run the autoregressive generation using jax.lax.scan ---
-        initial_carry = (batch["rng"], token_idxs_BSN)
-        timesteps_to_scan = jnp.arange(T, seq_len)
-        final_carry, _ = jax.lax.scan(
-            generation_step_fn, initial_carry, timesteps_to_scan
-        )
-        final_token_idxs_BSN = final_carry[1]
+            current_token_idxs_BSN = final_carry_causal[1]
+        
+        final_token_idxs_BSN = current_token_idxs_BSN
 
         # --- Decode all tokens at once at the end ---
         H, W = batch["videos"].shape[2:4]

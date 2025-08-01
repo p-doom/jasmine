@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import time
 import os
 import optax
+import math
 
 import dm_pix as pix
 import einops
@@ -170,7 +171,8 @@ if __name__ == "__main__":
             raise ValueError(f"Invalid dynamics type: {args.dyna_type}")
 
     # --- Define autoregressive sampling loop ---
-    @nnx.jit
+    # FIXME (f.srambical): why is kv caching not working with nnx.jit?
+    #@nnx.jit
     def _autoreg_sample(genie, rng, video_batch_BSHWC, action_batch_E):
         input_video_BTHWC = video_batch_BSHWC[:, : args.start_frame + 1]
         rng, _rng = jax.random.split(rng)
