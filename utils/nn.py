@@ -512,18 +512,27 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool) -> Ca
         def _merge_batch_dims(x):
             return einops.rearrange(x, "... l h k -> (...) l h k")
 
+        def _pad(x, pad_size):
+            return jnp.pad(x, ((0, 0), (0, pad_size), (0, 0), (0, 0)))
+
         original_shape = query_BTHD.shape
         T = query_BTHD.shape[-3]
         S = key_BSHD.shape[-3]
 
-        query_BTHD = _merge_batch_dims(query_BTHD)
-        key_BSHD = _merge_batch_dims(key_BSHD)
-        value_BSHD = _merge_batch_dims(value_BSHD)
-        B = query_BTHD.shape[0]
+        # Pad to nearest multiple of 4
+        Q = ((T + 3) // 4) * 4
+        pad_size_Q = Q - T
+        K = ((S + 3) // 4) * 4
+        pad_size_K = K - S
 
-        attention_mask = jnp.ones((T, T), dtype=jnp.bool_)
-        attention_mask = attention_mask.at[T:, :].set(False)
-        attention_mask = attention_mask.at[:, T:].set(False)
+        query_BQHD = _pad(_merge_batch_dims(query_BTHD), pad_size_Q)
+        key_BKHD = _pad(_merge_batch_dims(key_BSHD), pad_size_K)
+        value_BKHD = _pad(_merge_batch_dims(value_BSHD), pad_size_K)
+        B = query_BQHD.shape[0]
+
+        attention_mask = jnp.ones((Q, K), dtype=jnp.bool_)
+        attention_mask = attention_mask.at[Q:, :].set(False)
+        attention_mask = attention_mask.at[:, K:].set(False)
 
         # Handle causal mask for cached decoder self-attention (from nnx.MultiHeadAttention)
         if mask_B111 is not None:
@@ -533,19 +542,19 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool) -> Ca
             # https://github.com/jax-ml/jax/issues/28974
             # https://github.com/jax-ml/jax/blob/08c7677393672ccb85c10f1ed0bd506905c3c994/jax/_src/cudnn/fused_attention_stablehlo.py#L1830
             # https://github.com/jax-ml/jax/blob/08c7677393672ccb85c10f1ed0bd506905c3c994/jax/_src/cudnn/fused_attention_stablehlo.py#L337
-            mask_B1TS = einops.repeat(mask_B111, "... 1 1 -> ... t s", t=T, s=S)
+            mask_B1TS = einops.repeat(mask_B111, "... 1 1 -> ... t s", t=Q, s=K)
             mask_B1TS = mask_B111.astype(jnp.bool)
         else:
             mask_11TS = attention_mask[jnp.newaxis, jnp.newaxis, :, :]
-            mask_B1TS = jnp.broadcast_to(mask_11TS, (B, 1, T, S))
+            mask_B1TS = jnp.broadcast_to(mask_11TS, (B, 1, Q, K))
 
         bias_4d = _merge_batch_dims(bias) if bias is not None else None
 
         # NOTE: jax.nn.dot_product_attention does not support dropout
         output_4d = jax.nn.dot_product_attention(
-            query=query_BTHD,
-            key=key_BSHD,
-            value=value_BSHD,
+            query=query_BQHD,
+            key=key_BKHD,
+            value=value_BKHD,
             bias=bias_4d,
             mask=mask_B1TS,
             implementation=implementation,
