@@ -1,6 +1,5 @@
 from typing import Dict
 
-import optax
 import jax
 import jax.numpy as jnp
 import flax.nnx as nnx
@@ -334,7 +333,6 @@ class Genie(nnx.Module):
             W: width
             E: B * (S - 1)
         """
-        # FIXME (f.srambical): reset spatial kv cache after each frame
         assert isinstance(self.dynamics, DynamicsCausal)
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
@@ -349,8 +347,8 @@ class Genie(nnx.Module):
         dynamics_causal: DynamicsCausal = self.dynamics
 
         for block in dynamics_causal.transformer.blocks:
-            block.spatial_attention.init_cache((B * seq_len, 1, self.dyna_dim), dtype=self.dtype)
-            block.temporal_attention.init_cache((B * (N + 1), 1, self.dyna_dim), dtype=self.dtype)
+            block.spatial_attention.init_cache((B * seq_len, (N + 1), self.dyna_dim), dtype=self.dtype)
+            block.temporal_attention.init_cache((B * (N + 1), seq_len, self.dyna_dim), dtype=self.dtype)
 
         def causal_step_fn(
             carry: tuple[jax.Array, jax.Array, jax.Array, jax.Array], step_n: jax.Array
@@ -393,7 +391,7 @@ class Genie(nnx.Module):
 
             # --- Reset spatial KV caches before each frame ---
             for block in dynamics_causal.transformer.blocks:
-                block.spatial_attention.init_cache((B * seq_len, 1, self.dyna_dim), dtype=self.dtype)
+                block.spatial_attention.init_cache((B * seq_len, (N + 1), self.dyna_dim), dtype=self.dtype)
 
             # --- Initialize and run causal loop ---
             init_carry_causal = (
@@ -402,9 +400,13 @@ class Genie(nnx.Module):
                 action_tokens_EL,
                 jnp.array(step_t, dtype=jnp.int32),
             )
-            final_carry_causal, _ = jax.lax.scan(
-                causal_step_fn, init_carry_causal, jnp.arange(N)
-            )
+
+            carry_causal = init_carry_causal
+            for step_n in range(N):
+                carry_causal, _ = causal_step_fn(
+                    carry_causal, jnp.array(step_n, dtype=jnp.int32)
+                )
+            final_carry_causal = carry_causal
             current_token_idxs_BSN = final_carry_causal[1]
         
         final_token_idxs_BSN = current_token_idxs_BSN

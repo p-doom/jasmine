@@ -506,57 +506,51 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool) -> Ca
     function due to strict shape checking.
     """
 
-    # FIXME (f.srambical): keys and values could have different dimensionalities
-    def attention_fn(query_BSHD, key_BSHD, value_BSHD, bias=None, mask_B111=None, **kwargs):
+    def attention_fn(query_BTHD, key_BSHD, value_BSHD, bias=None, mask_B111=None, **kwargs):
         implementation = "cudnn" if use_flash_attention else None
 
         def _merge_batch_dims(x):
             return einops.rearrange(x, "... l h k -> (...) l h k")
 
-        def _pad(x):
-            return jnp.pad(x, ((0, 0), (0, pad_size), (0, 0), (0, 0)))
+        original_shape = query_BTHD.shape
+        T = query_BTHD.shape[-3]
+        S = key_BSHD.shape[-3]
 
-        original_shape = query_BSHD.shape
-        original_seq_len = query_BSHD.shape[-3]
-
-        # Pad to nearest multiple of 4
-        T = ((original_seq_len + 3) // 4) * 4
-        pad_size = T - original_seq_len
-
-        query_BTHD = _pad(_merge_batch_dims(query_BSHD))
-        key_BTHD = _pad(_merge_batch_dims(key_BSHD))
-        value_BTHD = _pad(_merge_batch_dims(value_BSHD))
+        query_BTHD = _merge_batch_dims(query_BTHD)
+        key_BSHD = _merge_batch_dims(key_BSHD)
+        value_BSHD = _merge_batch_dims(value_BSHD)
         B = query_BTHD.shape[0]
 
         attention_mask = jnp.ones((T, T), dtype=jnp.bool_)
-        attention_mask = attention_mask.at[original_seq_len:, :].set(False)
-        attention_mask = attention_mask.at[:, original_seq_len:].set(False)
+        attention_mask = attention_mask.at[T:, :].set(False)
+        attention_mask = attention_mask.at[:, T:].set(False)
 
         # Handle causal mask for cached decoder self-attention (from nnx.MultiHeadAttention)
         if mask_B111 is not None:
+            # FIXME (f.srambical): Why do we need this?
             mask_B111 = _merge_batch_dims(mask_B111)
             # We need to broadcast T and S dimensions to target_seq_len since cudnn attention strictly checks the mask shape
             # https://github.com/jax-ml/jax/issues/28974
             # https://github.com/jax-ml/jax/blob/08c7677393672ccb85c10f1ed0bd506905c3c994/jax/_src/cudnn/fused_attention_stablehlo.py#L1830
             # https://github.com/jax-ml/jax/blob/08c7677393672ccb85c10f1ed0bd506905c3c994/jax/_src/cudnn/fused_attention_stablehlo.py#L337
-            mask_B1QK = einops.repeat(mask_B111, "... 1 1 -> ... t s", t=T, s=T)
-            mask_B1QK = mask_B111.astype(jnp.bool)
+            mask_B1TS = einops.repeat(mask_B111, "... 1 1 -> ... t s", t=T, s=S)
+            mask_B1TS = mask_B111.astype(jnp.bool)
         else:
-            mask_11QK = attention_mask[jnp.newaxis, jnp.newaxis, :, :]
-            mask_B1QK = jnp.broadcast_to(mask_11QK, (B, 1, T, T))
+            mask_11TS = attention_mask[jnp.newaxis, jnp.newaxis, :, :]
+            mask_B1TS = jnp.broadcast_to(mask_11TS, (B, 1, T, S))
 
-        bias_4d = _pad(_merge_batch_dims(bias)) if bias is not None else None
+        bias_4d = _merge_batch_dims(bias) if bias is not None else None
 
         # NOTE: jax.nn.dot_product_attention does not support dropout
         output_4d = jax.nn.dot_product_attention(
             query=query_BTHD,
-            key=key_BTHD,
-            value=value_BTHD,
+            key=key_BSHD,
+            value=value_BSHD,
             bias=bias_4d,
-            mask=mask_B1QK,
+            mask=mask_B1TS,
             implementation=implementation,
             is_causal=is_causal,
         )
-        return output_4d[..., :original_seq_len, :, :].reshape(original_shape)
+        return output_4d[..., :T, :, :].reshape(original_shape)
 
     return attention_fn

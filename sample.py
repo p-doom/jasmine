@@ -174,7 +174,7 @@ if __name__ == "__main__":
     # FIXME (f.srambical): why is kv caching not working with nnx.jit?
     #@nnx.jit
     def _autoreg_sample(genie, rng, video_batch_BSHWC, action_batch_E):
-        input_video_BTHWC = video_batch_BSHWC[:, : args.start_frame + 1]
+        input_video_BTHWC = video_batch_BSHWC[:, : args.start_frame]
         rng, _rng = jax.random.split(rng)
         batch = dict(videos=input_video_BTHWC, latent_actions=action_batch_E, rng=_rng)
         generated_vid_BSHWC = _sampling_fn(genie, batch)
