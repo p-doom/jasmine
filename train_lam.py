@@ -331,7 +331,6 @@ if __name__ == "__main__":
         for (vid, act) in grain_iterator
     )
 
-
     print(f"Starting training from step {step}...")
     action_last_active = jnp.zeros(args.num_latents, dtype=jnp.int32)
     while step < args.num_steps:

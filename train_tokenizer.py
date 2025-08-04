@@ -328,7 +328,6 @@ if __name__ == "__main__":
         for (vid, act) in grain_iterator
     )
 
-
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
 

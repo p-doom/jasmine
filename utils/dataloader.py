@@ -66,7 +66,7 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
         Returns:
             A processed video sequence as a NumPy array with shape
             (seq_len, height, width, channels) and dtype float32.
-        
+
         Dimension keys:
             E: episode length
             H: height
