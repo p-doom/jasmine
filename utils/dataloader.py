@@ -66,6 +66,14 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
         Returns:
             A processed video sequence as a NumPy array with shape
             (seq_len, height, width, channels) and dtype float32.
+        
+        Dimension keys:
+            E: episode length
+            H: height
+            W: width
+            C: channels
+            A: action vector dimension
+            S: sequence length
         """
         assert isinstance(element, bytes)
         element = pickle.loads(element)
@@ -77,9 +85,10 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
             self.image_c,
         )
         episode_tensor = np.frombuffer(element["raw_video"], dtype=np.uint8)
-        episode_tensor = episode_tensor.reshape(video_shape)
+        episode_tensor_EHWC = episode_tensor.reshape(video_shape)
+        action_tensor_EA = element["actions"].astype(np.uint8)
 
-        current_episode_len = episode_tensor.shape[0]
+        current_episode_len = episode_tensor_EHWC.shape[0]
         if current_episode_len < self.seq_len:
             raise ValueError(
                 f"Episode length {current_episode_len} is shorter than "
@@ -91,9 +100,10 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
 
         start_idx = rng.integers(0, max_start_idx + 1)
 
-        seq = episode_tensor[start_idx : start_idx + self.seq_len]
+        seq_SHWC = episode_tensor_EHWC[start_idx : start_idx + self.seq_len]
+        actions_SA = action_tensor_EA[start_idx : start_idx + self.seq_len]
 
-        return seq
+        return seq_SHWC, actions_SA
 
 
 def get_dataloader(
