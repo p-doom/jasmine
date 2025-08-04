@@ -63,6 +63,7 @@ class Args:
     lam_num_heads: int = 8
     lam_checkpoint: str = ""
     # Dynamics
+    dyna_type: str = "maskgit"  # supported options: maskgit, causal
     dyna_dim: int = 512
     dyna_ffn_dim: int = 2048
     dyna_num_blocks: int = 6
@@ -191,6 +192,7 @@ if __name__ == "__main__":
         lam_num_heads=args.lam_num_heads,
         lam_co_train=not args.lam_checkpoint,
         # Dynamics
+        dyna_type=args.dyna_type,
         dyna_dim=args.dyna_dim,
         dyna_ffn_dim=args.dyna_ffn_dim,
         dyna_num_blocks=args.dyna_num_blocks,
@@ -200,6 +202,7 @@ if __name__ == "__main__":
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
+        decode=False,
         rngs=rngs,
     )
 
@@ -256,7 +259,7 @@ if __name__ == "__main__":
 
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
     videos_sharding = NamedSharding(mesh, PartitionSpec("data", None, None, None, None))
-
+    actions_sharding = NamedSharding(mesh, PartitionSpec("data", None, None))
     model_state = nnx.state(optimizer.model)
     model_sharded_state = jax.lax.with_sharding_constraint(
         model_state, replicated_sharding
@@ -350,15 +353,19 @@ if __name__ == "__main__":
 
     # --- TRAIN LOOP ---
     dataloader = (
-        jax.make_array_from_process_local_data(videos_sharding, elem)
-        for elem in grain_iterator
+        (
+            jax.make_array_from_process_local_data(videos_sharding, vid),
+            (jax.make_array_from_process_local_data(actions_sharding, act)),
+        )
+        for (vid, act) in grain_iterator
     )
+
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
-        for videos in dataloader:
+        for videos_BSHWC, actions_BSA in dataloader:
             # --- Train step ---
             rng, _rng_mask = jax.random.split(rng, 2)
-            inputs = dict(videos=videos, mask_rng=_rng_mask)
+            inputs = dict(videos=videos_BSHWC, actions=actions_BSA, mask_rng=_rng_mask)
             loss, recon, metrics = train_step(optimizer.model, optimizer, inputs)
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
