@@ -159,7 +159,7 @@ if __name__ == "__main__":
     # --- Define autoregressive sampling loop ---
     @nnx.jit
     def _autoreg_sample(rng, video_batch_BSHWC, action_batch_E):
-        input_video_BTHWC = video_batch_BSHWC[:, : args.start_frame + 1]
+        input_video_BTHWC = video_batch_BSHWC[:, :args.start_frame]
         rng, _rng = jax.random.split(rng)
         batch = dict(videos=input_video_BTHWC, latent_actions=action_batch_E, rng=_rng)
         generated_vid_BSHWC = _sampling_fn(genie, batch)
@@ -197,7 +197,7 @@ if __name__ == "__main__":
     gt = gt_video[:, : recon_video_BSHWC.shape[1]].clip(0, 1).reshape(-1, *gt_video.shape[2:])
     recon = recon_video_BSHWC.clip(0, 1).reshape(-1, *recon_video_BSHWC.shape[2:])
     ssim = jnp.asarray(
-        pix.ssim(gt[:, args.start_frame + 1 :], recon[:, args.start_frame + 1 :])
+        pix.ssim(gt[:, args.start_frame:], recon[:, args.start_frame:])
     ).mean()
     print(f"SSIM: {ssim}")
 
