@@ -25,6 +25,7 @@ class DynamicsMaskGIT(nnx.Module):
         ffn_dim: int,
         num_latents: int,
         latent_action_dim: int,
+        num_actions: int,
         num_blocks: int,
         num_heads: int,
         dropout: float,
@@ -32,12 +33,14 @@ class DynamicsMaskGIT(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
+        use_gt_actions: bool,
         rngs: nnx.Rngs,
     ):
         self.model_dim = model_dim
         self.ffn_dim = ffn_dim
         self.num_latents = num_latents
         self.latent_action_dim = latent_action_dim
+        self.num_actions = num_actions
         self.num_blocks = num_blocks
         self.num_heads = num_heads
         self.dropout = dropout
@@ -45,6 +48,7 @@ class DynamicsMaskGIT(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
+        self.use_gt_actions = use_gt_actions
 
         self.transformer = STTransformer(
             self.model_dim,
@@ -60,15 +64,22 @@ class DynamicsMaskGIT(nnx.Module):
             rngs=rngs,
         )
         self.patch_embed = nnx.Embed(self.num_latents, self.model_dim, rngs=rngs)
+        if self.use_gt_actions:
+            self.action_embed = nnx.Embed(
+                self.num_actions,
+                self.model_dim,
+                rngs=rngs,
+            )
+        else:
+            self.action_up = nnx.Linear(
+                self.latent_action_dim,
+                self.model_dim,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+                rngs=rngs,
+            )
         self.mask_token = nnx.Param(
             nnx.initializers.lecun_uniform()(rngs.params(), (1, 1, 1, self.model_dim))
-        )
-        self.action_up = nnx.Linear(
-            self.latent_action_dim,
-            self.model_dim,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-            rngs=rngs,
         )
 
     def __call__(
@@ -76,7 +87,6 @@ class DynamicsMaskGIT(nnx.Module):
     ) -> tuple[jax.Array, jax.Array | None]:
         # --- Mask videos ---
         video_tokens_BTN = batch["video_tokens"]
-        latent_actions_BTm11L = batch["latent_actions"]
         vid_embed_BTNM = self.patch_embed(video_tokens_BTN)
         if training:
             batch_size = vid_embed_BTNM.shape[0]
@@ -97,9 +107,17 @@ class DynamicsMaskGIT(nnx.Module):
             mask = None
 
         # --- Predict transition ---
-        act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
-        padded_act_embed_BT1M = jnp.pad(act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0)))
-        padded_act_embed_BTNM = jnp.broadcast_to(padded_act_embed_BT1M, vid_embed_BTNM.shape)
-        vid_embed_BTNM += padded_act_embed_BTNM
-        logits_BTNV = self.transformer(vid_embed_BTNM)
+        if self.use_gt_actions:
+            act_embed_BTAM = self.action_embed(batch["actions"])
+            vid_embed_BTNM = jnp.concatenate((act_embed_BTAM, vid_embed_BTNM), axis=2)
+            logits_BTApNV = self.transformer(vid_embed_BTNM)
+            A = act_embed_BTAM.shape[2]
+            logits_BTNV = logits_BTApNV[:, A:, :]
+        else:
+            actions_BTm11L = batch["actions"]
+            act_embed_BTm11M = self.action_up(actions_BTm11L)
+            padded_act_embed_BT1M = jnp.pad(act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0)))
+            padded_act_embed_BTNM = jnp.broadcast_to(padded_act_embed_BT1M, vid_embed_BTNM.shape)
+            vid_embed_BTNM += padded_act_embed_BTNM
+            logits_BTNV = self.transformer(vid_embed_BTNM)
         return logits_BTNV, mask

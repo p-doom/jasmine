@@ -27,7 +27,7 @@ class Genie(nnx.Module):
         lam_dim: int,
         lam_ffn_dim: int,
         latent_action_dim: int,
-        num_latent_actions: int,
+        num_actions: int,
         lam_patch_size: int,
         lam_num_blocks: int,
         lam_num_heads: int,
@@ -39,6 +39,7 @@ class Genie(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
+        use_gt_actions: bool,
         rngs: nnx.Rngs,
         dropout: float = 0.0,
         mask_limit: float = 0.0,
@@ -56,7 +57,7 @@ class Genie(nnx.Module):
         self.lam_dim = lam_dim
         self.lam_ffn_dim = lam_ffn_dim
         self.latent_action_dim = latent_action_dim
-        self.num_latent_actions = num_latent_actions
+        self.num_actions = num_actions
         self.lam_patch_size = lam_patch_size
         self.lam_num_blocks = lam_num_blocks
         self.lam_num_heads = lam_num_heads
@@ -69,6 +70,7 @@ class Genie(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
+        self.use_gt_actions = use_gt_actions
         self.dropout = dropout
         self.mask_limit = mask_limit
 
@@ -88,27 +90,29 @@ class Genie(nnx.Module):
             use_flash_attention=self.use_flash_attention,
             rngs=rngs,
         )
-        self.lam = LatentActionModel(
-            in_dim=self.in_dim,
-            model_dim=self.lam_dim,
-            ffn_dim=self.lam_ffn_dim,
-            latent_dim=self.latent_patch_dim,
-            num_latents=self.num_latent_actions,
-            patch_size=self.lam_patch_size,
-            num_blocks=self.lam_num_blocks,
-            num_heads=self.lam_num_heads,
-            dropout=0.0,
-            codebook_dropout=0.0,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-            use_flash_attention=self.use_flash_attention,
-            rngs=rngs,
-        )
+        if not self.use_gt_actions:
+            self.lam = LatentActionModel(
+                in_dim=self.in_dim,
+                model_dim=self.lam_dim,
+                ffn_dim=self.lam_ffn_dim,
+                latent_dim=self.latent_patch_dim,
+                num_latents=self.num_actions,
+                patch_size=self.lam_patch_size,
+                num_blocks=self.lam_num_blocks,
+                num_heads=self.lam_num_heads,
+                dropout=0.0,
+                codebook_dropout=0.0,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+                use_flash_attention=self.use_flash_attention,
+                rngs=rngs,
+            )
         self.dynamics = DynamicsMaskGIT(
             model_dim=self.dyna_dim,
             ffn_dim=self.dyna_ffn_dim,
             num_latents=self.num_patch_latents,
             latent_action_dim=self.latent_action_dim,
+            num_actions=self.num_actions,
             num_blocks=self.dyna_num_blocks,
             num_heads=self.dyna_num_heads,
             dropout=self.dropout,
@@ -116,6 +120,7 @@ class Genie(nnx.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             use_flash_attention=self.use_flash_attention,
+            use_gt_actions=self.use_gt_actions,
             rngs=rngs,
         )
 
@@ -125,18 +130,26 @@ class Genie(nnx.Module):
         videos_BTHWC = batch["videos"]
         tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
         token_indices_BTN = tokenizer_outputs["indices"]
-        lam_outputs = self.lam.vq_encode(videos_BTHWC, training=False)
-        z_q_BTm11L = lam_outputs["z_q"]
-        action_indices_E = lam_outputs["indices"]
-        latent_actions_BTm11L = jax.lax.cond(
-            self.lam_co_train,
-            lambda: z_q_BTm11L,
-            lambda: jax.lax.stop_gradient(z_q_BTm11L),
-        )
-        outputs = dict(
-            video_tokens=jax.lax.stop_gradient(token_indices_BTN),
-            latent_actions=latent_actions_BTm11L,
-        )
+        if self.use_gt_actions:
+            action_indices_BTA = batch["actions"]
+            outputs = dict(
+                video_tokens=jax.lax.stop_gradient(token_indices_BTN),
+                actions=action_indices_BTA,
+            )
+        else:
+            lam_outputs = self.lam.vq_encode(videos_BTHWC, training=False)
+            z_q_BTm11L = lam_outputs["z_q"]
+            action_indices_E = lam_outputs["indices"]
+            latent_actions_BTm11L = jax.lax.cond(
+                self.lam_co_train,
+                lambda: z_q_BTm11L,
+                lambda: jax.lax.stop_gradient(z_q_BTm11L),
+            )
+            outputs = dict(
+                video_tokens=jax.lax.stop_gradient(token_indices_BTN),
+                actions=latent_actions_BTm11L,
+            )
+            outputs["lam_indices"] = action_indices_E
         outputs["mask_rng"] = batch["mask_rng"]
         dyna_logits_BTNV, dyna_mask = self.dynamics(outputs, training)
         outputs["token_logits"] = dyna_logits_BTNV
@@ -145,7 +158,6 @@ class Genie(nnx.Module):
         mle_indices_BTN = jnp.argmax(outputs["token_logits"], axis=-1)
         H, W = batch["videos"].shape[2:4]
         outputs["recon"] = self.tokenizer.decode(mle_indices_BTN, (H, W))
-        outputs["lam_indices"] = action_indices_E
         return outputs
 
     def sample(
@@ -171,6 +183,7 @@ class Genie(nnx.Module):
             b) a temporal causal mask is applied within each ST-transformer block.
 
         Dimension keys:
+            A: number of (ground truth) action tokens per frame
             B: batch size
             T: number of input (conditioning) frames
             N: number of patches per frame
@@ -180,6 +193,8 @@ class Genie(nnx.Module):
             W: width
             E: B * (S - 1)
         """
+        # FIXME (f.srambical): add support for ground-truth actions during sampling
+        assert not self.use_gt_actions, "Ground-truth actions are currently not supported during sampling"
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
         latent_actions_E = batch["latent_actions"]
@@ -358,7 +373,7 @@ def restore_genie_components(
             model_dim=args.lam_dim,
             ffn_dim=args.lam_ffn_dim,
             latent_dim=args.latent_patch_dim,
-            num_latents=args.num_latent_actions,
+            num_latents=args.num_actions,
             patch_size=args.lam_patch_size,
             num_blocks=args.lam_num_blocks,
             num_heads=args.lam_num_heads,
