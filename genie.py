@@ -178,8 +178,7 @@ class Genie(nnx.Module):
             S: sequence length
             H: height
             W: width
-            D: B * T * N
-            E: B * (T - 1)
+            E: B * (S - 1)
         """
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
@@ -197,6 +196,7 @@ class Genie(nnx.Module):
         ) -> tuple[tuple[jax.Array, jax.Array, jax.Array, jax.Array], None]:
             rng, token_idxs_BSN, mask_BSN, action_tokens_EL = carry
             S, N = token_idxs_BSN.shape[1:]
+            L = action_tokens_EL.shape[-1]
 
             # --- Construct + encode video ---
             vid_embed_BSNM = self.dynamics.patch_embed(token_idxs_BSN)
@@ -205,10 +205,11 @@ class Genie(nnx.Module):
             vid_embed_BSNM = jnp.where(mask_expanded_BSN1, mask_token_111M, vid_embed_BSNM)
 
             # --- Predict transition ---
-            action_tokens_BSm1L = jnp.reshape(action_tokens_EL, (B, S - 1, 1))
+            action_tokens_BSm1L = jnp.reshape(action_tokens_EL, (B, S - 1, L))
             act_embed_BSm1M = self.dynamics.action_up(action_tokens_BSm1L)
-            # FIXME (f.srambical): We must not pad the actions, but remove the last frame (https://github.com/p-doom/jasmine/issues/122)
-            vid_embed_BSNM += jnp.pad(act_embed_BSm1M, ((0, 0), (1, 0), (0, 0), (0, 0)))
+            act_embed_BSM = jnp.pad(act_embed_BSm1M, ((0, 0), (1, 0), (0, 0)))
+            act_embed_BS1M = jnp.reshape(act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1]))
+            vid_embed_BSNM += act_embed_BS1M
             unmasked_ratio = jnp.cos(jnp.pi * (step + 1) / (steps * 2))
             step_temp = temperature * (1.0 - unmasked_ratio)
             final_logits_BSNV = self.dynamics.transformer(vid_embed_BSNM) / step_temp
@@ -298,13 +299,8 @@ def restore_genie_components(
     """Restore pre-trained Genie components"""
     rngs = nnx.Rngs(rng)
 
-    # dummy values since we only use tx to initialize the dummy train states
-    dummy_tx = optax.adamw(
-        learning_rate=optax.constant_schedule(args.max_lr),
-        b1=0.9,
-        b2=0.9,
-        weight_decay=1e-4,
-    )
+    tx = optimizer.tx
+    model = optimizer.model
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add(
         "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
@@ -334,7 +330,7 @@ def restore_genie_components(
         use_flash_attention=args.use_flash_attention,
         rngs=rngs,
     )
-    dummy_tokenizer_optimizer = nnx.Optimizer(dummy_tokenizer, dummy_tx)
+    dummy_tokenizer_optimizer = nnx.Optimizer(dummy_tokenizer, tx)
     dummy_tokenizer_optimizer_state = nnx.state(dummy_tokenizer_optimizer)
     abstract_sharded_tokenizer_optimizer_state = _create_abstract_sharded_pytree(
         dummy_tokenizer_optimizer_state, sharding
@@ -348,7 +344,7 @@ def restore_genie_components(
         ),
     )["model_state"]
     nnx.update(dummy_tokenizer_optimizer.model, restored_tokenizer.model)
-    optimizer.model.tokenizer = dummy_tokenizer_optimizer.model
+    model.tokenizer = dummy_tokenizer_optimizer.model
     tokenizer_checkpoint_manager.close()
 
     if args.lam_checkpoint:
@@ -373,7 +369,7 @@ def restore_genie_components(
             use_flash_attention=args.use_flash_attention,
             rngs=rngs,
         )
-        dummy_lam_optimizer = nnx.Optimizer(dummy_lam, dummy_tx)
+        dummy_lam_optimizer = nnx.Optimizer(dummy_lam, tx)
         dummy_lam_optimizer_state = nnx.state(dummy_lam_optimizer)
         abstract_sharded_lam_optimizer_state = _create_abstract_sharded_pytree(
             dummy_lam_optimizer_state, sharding
@@ -387,11 +383,13 @@ def restore_genie_components(
             ),
         )["model_state"]
         nnx.update(dummy_lam_optimizer.model, restored_lam_optimizer.model)
-        optimizer.model.lam = dummy_lam_optimizer.model
+        model.lam = dummy_lam_optimizer.model
         # Remove the LAM decoder to save memory and avoid unnecessary computation.
-        del optimizer.model.lam.decoder
+        del model.lam.decoder
         lam_checkpoint_manager.close()
-
+    
+    # Reinitialize the optimizer states
+    optimizer = nnx.Optimizer(model, tx)
     return optimizer
 
 

@@ -98,7 +98,6 @@ class DynamicsMaskGIT(nnx.Module):
 
         # --- Predict transition ---
         act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
-        # FIXME (f.srambical): We must not pad the actions, but remove the last frame (https://github.com/p-doom/jasmine/issues/122)
         padded_act_embed_BT1M = jnp.pad(act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0)))
         padded_act_embed_BTNM = jnp.broadcast_to(padded_act_embed_BT1M, vid_embed_BTNM.shape)
         vid_embed_BTNM += padded_act_embed_BTNM

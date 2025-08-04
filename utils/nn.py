@@ -130,30 +130,40 @@ class STBlock(nnx.Module):
         )
 
     @nnx.remat
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def __call__(self, x_BTNM: jax.Array) -> jax.Array:
         # --- Spatial attention ---
-        z = self.spatial_norm(x)
-        z = self.spatial_attention(z)
-        x = x + z
+        z_BTNM = self.spatial_norm(x_BTNM)
+        z_BTNM = self.spatial_attention(z_BTNM)
+        x_BTNM = x_BTNM + z_BTNM
 
         # --- Temporal attention ---
-        x = x.swapaxes(1, 2)
-        z = self.temporal_norm(x)
-        z = self.temporal_attention(z)
-        x = x + z
-        x = x.swapaxes(1, 2)
+        x_BNTM = x_BTNM.swapaxes(1, 2)
+        z_BNTM = self.temporal_norm(x_BNTM)
+        z_BNTM = self.temporal_attention(z_BNTM)
+        x_BNTM = x_BNTM + z_BNTM
+        x_BTNM = x_BNTM.swapaxes(1, 2)
 
         # --- Feedforward ---
-        z = self.ffn_norm(x)
-        z = self.ffn_dense1(z)
-        z = jax.nn.gelu(z)
-        z = self.ffn_dense2(z)
-        x = x + z
+        z_BTNM = self.ffn_norm(x_BTNM)
+        z_BTNF = self.ffn_dense1(z_BTNM)
+        z_BTNF = jax.nn.gelu(z_BTNF)
+        z_BTNM = self.ffn_dense2(z_BTNF)
+        x_BTNM = x_BTNM + z_BTNM
 
-        return x
+        return x_BTNM
 
 
 class STTransformer(nnx.Module):
+    """
+    Dimension keys:
+        B: batch size
+        T: number of frames
+        N: number of patches per frame
+        I: number of input features
+        M: model dimension
+        F: FFN dimension
+        O: number of output features
+    """
     def __init__(
         self,
         input_dim: int,
@@ -225,18 +235,16 @@ class STTransformer(nnx.Module):
             rngs=rngs,
         )
 
-    def __call__(self, x: jax.Array) -> jax.Array:
-        x = self.input_norm1(x)
-        x = self.input_dense(x)
-        x = self.input_norm2(x)
-        x = self.pos_enc(x)
-
+    def __call__(self, x_BTNI: jax.Array) -> jax.Array:
+        x_BTNI = self.input_norm1(x_BTNI)
+        x_BTNM = self.input_dense(x_BTNI)
+        x_BTNM = self.input_norm2(x_BTNM)
+        x_BTNM = self.pos_enc(x_BTNM)
         for block in self.blocks:
-            x = block(x)
+            x_BTNM = block(x_BTNM)
 
-        x = self.output_dense(x)
-        return x  # (B, T, E)
-
+        x_BTNO = self.output_dense(x_BTNM)
+        return x_BTNO
 
 def normalize(x: jax.Array) -> jax.Array:
     return x / (jnp.linalg.norm(x, ord=2, axis=-1, keepdims=True) + 1e-8)

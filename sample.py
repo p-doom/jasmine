@@ -71,8 +71,7 @@ if __name__ == "__main__":
         S: sequence length
         H: height
         W: width
-        D: B * T * N
-        E: B * (T - 1)
+        E: B * (S - 1)
     """
     jax.distributed.initialize()
 
@@ -163,8 +162,8 @@ if __name__ == "__main__":
         input_video_BTHWC = video_batch_BSHWC[:, : args.start_frame + 1]
         rng, _rng = jax.random.split(rng)
         batch = dict(videos=input_video_BTHWC, latent_actions=action_batch_E, rng=_rng)
-        generated_vid = _sampling_fn(genie, batch)
-        return generated_vid
+        generated_vid_BSHWC = _sampling_fn(genie, batch)
+        return generated_vid_BSHWC
 
     # --- Get video + latent actions ---
     array_record_files = [
@@ -186,24 +185,26 @@ if __name__ == "__main__":
     )
     dataloader = iter(dataloader)
     video_batch_BSHWC = next(dataloader)
-    video_batch_BSHWC = video_batch_BSHWC.astype(args.dtype) / 255.0
+    gt_video = jnp.asarray(video_batch_BSHWC, dtype=jnp.float32) / 255.0
+    video_batch_BSHWC = gt_video.astype(args.dtype)
     # Get latent actions for all videos in the batch
     batch = dict(videos=video_batch_BSHWC)
     action_batch_E = genie.vq_encode(batch, training=False)
 
     # --- Sample + evaluate video ---
-    vid = _autoreg_sample(rng, video_batch_BSHWC, action_batch_E)
-    gt = video_batch_BSHWC[:, : vid.shape[1]].clip(0, 1).reshape(-1, *video_batch_BSHWC.shape[2:])
-    recon = vid.clip(0, 1).reshape(-1, *vid.shape[2:])
+    recon_video_BSHWC = _autoreg_sample(rng, video_batch_BSHWC, action_batch_E)
+    recon_video_BSHWC = recon_video_BSHWC.astype(jnp.float32)
+    gt = gt_video[:, : recon_video_BSHWC.shape[1]].clip(0, 1).reshape(-1, *gt_video.shape[2:])
+    recon = recon_video_BSHWC.clip(0, 1).reshape(-1, *recon_video_BSHWC.shape[2:])
     ssim = jnp.asarray(
         pix.ssim(gt[:, args.start_frame + 1 :], recon[:, args.start_frame + 1 :])
     ).mean()
     print(f"SSIM: {ssim}")
 
     # --- Construct video ---
-    true_videos = (video_batch_BSHWC * 255).astype(np.uint8)
-    pred_videos = (vid * 255).astype(np.uint8)
-    video_comparison = np.zeros((2, *vid.shape), dtype=np.uint8)
+    true_videos = (gt_video * 255).astype(np.uint8)
+    pred_videos = (recon_video_BSHWC * 255).astype(np.uint8)
+    video_comparison = np.zeros((2, *recon_video_BSHWC.shape), dtype=np.uint8)
     video_comparison[0] = true_videos[:, : args.seq_len]
     video_comparison[1] = pred_videos
     frames = einops.rearrange(video_comparison, "n b t h w c -> t (b h) (n w) c")
@@ -211,10 +212,12 @@ if __name__ == "__main__":
     # --- Save video ---
     imgs = [Image.fromarray(img) for img in frames]
     # Write actions on each frame, on each row (i.e., for each video in the batch, on the GT row)
+    B, S, _, _, _ = video_batch_BSHWC.shape
+    action_batch_BSm11 = jnp.reshape(action_batch_E, (B, S-1, 1))
     for t, img in enumerate(imgs[1:]):
         d = ImageDraw.Draw(img)
-        for row in range(action_batch_E.shape[0]):
-            action = action_batch_E[row, t, 0]
+        for row in range(action_batch_BSm11.shape[0]):
+            action = action_batch_BSm11[row, t, 0]
             y_offset = row * video_batch_BSHWC.shape[2] + 2
             d.text((2, y_offset), f"{action}", fill=255)
     imgs[0].save(
