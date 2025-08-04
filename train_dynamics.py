@@ -261,7 +261,7 @@ if __name__ == "__main__":
 
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
     videos_sharding = NamedSharding(mesh, PartitionSpec("data", None, None, None, None))
-
+    actions_sharding = NamedSharding(mesh, PartitionSpec("data", None, None))
     model_state = nnx.state(optimizer.model)
     model_sharded_state = jax.lax.with_sharding_constraint(
         model_state, replicated_sharding
@@ -356,9 +356,13 @@ if __name__ == "__main__":
 
     # --- TRAIN LOOP ---
     dataloader = (
-        jax.make_array_from_process_local_data(videos_sharding, elem)
-        for elem in grain_iterator
+        (
+            jax.make_array_from_process_local_data(videos_sharding, vid),
+            (jax.make_array_from_process_local_data(actions_sharding, act)),
+        )
+        for (vid, act) in grain_iterator
     )
+
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos, actions in dataloader:
