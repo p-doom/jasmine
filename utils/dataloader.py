@@ -47,12 +47,13 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
     A Grain Transformation that combines parsing, slicing, and normalizing.
     """
 
-    def __init__(self, seq_len: int, image_h: int, image_w: int, image_c: int):
+    def __init__(self, seq_len: int, image_h: int, image_w: int, image_c: int, use_gt_actions: bool):
         """Initializes the transformation with processing parameters."""
         self.seq_len = seq_len
         self.image_h = image_h
         self.image_w = image_w
         self.image_c = image_c
+        self.use_gt_actions = use_gt_actions
 
     def random_map(self, element: dict, rng: np.random.Generator) -> Any:
         """
@@ -92,8 +93,12 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
         start_idx = rng.integers(0, max_start_idx + 1)
 
         seq = episode_tensor[start_idx : start_idx + self.seq_len]
-
-        return seq
+        if self.use_gt_actions:
+            action_tensor = element["actions"]
+            actions = action_tensor[start_idx : start_idx + self.seq_len]
+            return seq, actions
+        else:
+            return seq
 
 
 def get_dataloader(
@@ -103,6 +108,7 @@ def get_dataloader(
     image_h: int,
     image_w: int,
     image_c: int,
+    use_gt_actions: bool = False,
     num_workers: int = 1,
     prefetch_buffer_size: int = 1,
     seed: int = 42,
@@ -137,7 +143,11 @@ def get_dataloader(
             seq_len=seq_len, image_h=image_h, image_w=image_w, image_c=image_c
         ),
         ProcessEpisodeAndSlice(
-            seq_len=seq_len, image_h=image_h, image_w=image_w, image_c=image_c
+            seq_len=seq_len,
+            image_h=image_h,
+            image_w=image_w,
+            image_c=image_c,
+            use_gt_actions=use_gt_actions,
         ),
         grain.transforms.Batch(batch_size=per_process_batch_size, drop_remainder=True),
     ]
