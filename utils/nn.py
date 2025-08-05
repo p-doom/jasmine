@@ -1,5 +1,5 @@
 import math
-from typing import Tuple, Callable
+from typing import Tuple, Callable, List
 
 from flax import nnx
 import jax
@@ -145,9 +145,9 @@ class STBlock(nnx.Module):
 
         # --- Feedforward ---
         z_BTNM = self.ffn_norm(x_BTNM)
-        z_BTNF = self.ffn_dense1(z_BTNM)
-        z_BTNF = jax.nn.gelu(z_BTNF)
-        z_BTNM = self.ffn_dense2(z_BTNF)
+        z_BTND = self.ffn_dense1(z_BTNM)
+        z_BTND = jax.nn.gelu(z_BTND)
+        z_BTNM = self.ffn_dense2(z_BTND)
         x_BTNM = x_BTNM + z_BTNM
 
         return x_BTNM
@@ -161,7 +161,7 @@ class STTransformer(nnx.Module):
         N: number of patches per frame
         I: number of input features
         M: model dimension
-        F: FFN dimension
+        D: FFN dimension
         O: number of output features
     """
     def __init__(
@@ -246,6 +246,208 @@ class STTransformer(nnx.Module):
         x_BTNO = self.output_dense(x_BTNM)
         return x_BTNO
 
+class TransformerBlock(nnx.Module):
+    def __init__(
+        self,
+        model_dim: int,
+        ffn_dim: int,
+        num_heads: int,
+        dropout: float,
+        param_dtype: jnp.dtype,
+        dtype: jnp.dtype,
+        use_flash_attention: bool,
+        decode: bool,
+        rngs: nnx.Rngs,
+    ):
+        self.model_dim = model_dim
+        self.ffn_dim = ffn_dim
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.param_dtype = param_dtype
+        self.dtype = dtype
+        self.use_flash_attention = use_flash_attention
+        self.decode = decode
+
+        self.temporal_pos_enc = PositionalEncoding(self.model_dim)
+        self.spatial_pos_enc = PositionalEncoding(self.model_dim)
+        self.temporal_norm = nnx.LayerNorm(
+            num_features=self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+        self.spatial_norm = nnx.LayerNorm(
+            num_features=self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+        self.ffn_norm = nnx.LayerNorm(
+            num_features=self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+        self.temporal_attention = nnx.MultiHeadAttention(
+            num_heads=self.num_heads,
+            in_features=self.model_dim,
+            qkv_features=self.model_dim,
+            dropout_rate=self.dropout,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            attention_fn=_create_flash_attention_fn(
+                self.use_flash_attention, is_causal=True
+            ),
+            rngs=rngs,
+            decode=self.decode,
+        )
+        self.spatial_attention = nnx.MultiHeadAttention(
+            num_heads=self.num_heads,
+            in_features=self.model_dim,
+            qkv_features=self.model_dim,
+            dropout_rate=self.dropout,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            attention_fn=_create_flash_attention_fn(
+                self.use_flash_attention, is_causal=True
+            ),
+            rngs=rngs,
+            decode=self.decode,
+        )
+        self.ffn_dense1 = nnx.Linear(
+            in_features=self.model_dim,
+            out_features=self.ffn_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+        self.ffn_dense2 = nnx.Linear(
+            in_features=self.ffn_dim,
+            out_features=self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+
+    @nnx.remat
+    def __call__(self, x_BTNM: jax.Array, pos_index: Tuple[jax.Array, jax.Array] | None = None) -> jax.Array:
+        # --- Spatial attention ---
+        B, T, N, M = x_BTNM.shape
+        x_BTNM = self.spatial_pos_enc(x_BTNM)
+        z_FNM = einops.rearrange(x_BTNM, "b t n m -> (b t) n m")
+        z_FNM = self.spatial_norm(z_FNM)
+        z_FNM = self.spatial_attention(z_FNM)
+        z_BTNM = einops.rearrange(z_FNM, "(b t) n m -> b t n m", t=T)
+        x_BTNM = x_BTNM + z_BTNM
+        # --- Temporal attention ---
+        x_BTNM = self.temporal_pos_enc(x_BTNM)
+        z_PTM = einops.rearrange(x_BTNM, "b t n m -> (b n) t m")
+        z_PTM = self.temporal_norm(z_PTM)
+        z_PTM = self.temporal_attention(z_PTM)
+        z_BTNM = einops.rearrange(z_PTM, "(b n) t m -> b t n m", n=N)
+        x_BTNM = x_BTNM + z_BTNM
+        # --- Feedforward ---
+        z_BTNM = self.ffn_norm(x_BTNM)
+        z_BTND = self.ffn_dense1(z_BTNM)
+        z_BTND = jax.nn.gelu(z_BTND)
+        z_BTNM = self.ffn_dense2(z_BTND)
+        x_BTNM = x_BTNM + z_BTNM
+
+        return x_BTNM
+
+class Transformer(nnx.Module):
+    """
+    Dimension keys:
+        B: batch size
+        T: number of frames
+        N: number of patches per frame
+        I: number of input features
+        M: model dimension
+        D: FFN dimension
+        O: number of output features
+        F: number of frames in batch
+        P: number of patch positions in batch
+    """
+    def __init__(
+        self,
+        input_dim: int,
+        model_dim: int,
+        ffn_dim: int,
+        out_dim: int,
+        num_blocks: int,
+        num_heads: int,
+        dropout: float,
+        param_dtype: jnp.dtype,
+        dtype: jnp.dtype,
+        use_flash_attention: bool,
+        decode: bool,
+        rngs: nnx.Rngs,
+    ):
+        self.input_dim = input_dim
+        self.model_dim = model_dim
+        self.ffn_dim = ffn_dim
+        self.out_dim = out_dim
+        self.num_blocks = num_blocks
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.param_dtype = param_dtype
+        self.dtype = dtype
+        self.use_flash_attention = use_flash_attention
+
+        self.input_norm1 = nnx.LayerNorm(
+            num_features=self.input_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+        self.input_dense = nnx.Linear(
+            in_features=self.input_dim,
+            out_features=self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+        self.input_norm2 = nnx.LayerNorm(
+            num_features=self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+
+        self.blocks: List[TransformerBlock] = []
+        for _ in range(self.num_blocks):
+            self.blocks.append(
+                TransformerBlock(
+                    model_dim=self.model_dim,
+                    ffn_dim=self.ffn_dim,
+                    num_heads=self.num_heads,
+                    dropout=self.dropout,
+                    param_dtype=self.param_dtype,
+                    dtype=self.dtype,
+                    use_flash_attention=self.use_flash_attention,
+                    decode=decode,
+                    rngs=rngs,
+                )
+            )
+        self.output_dense = nnx.Linear(
+            in_features=self.model_dim,
+            out_features=self.out_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+
+    def __call__(self, x_BTNI: jax.Array, pos_index: Tuple[jax.Array, jax.Array] | None = None) -> jax.Array:
+        x_BTNI = self.input_norm1(x_BTNI)
+        x_BTNM = self.input_dense(x_BTNI)
+        x_BTNM = self.input_norm2(x_BTNM)
+
+        for block in self.blocks:
+            x_BTNM = block(x_BTNM, pos_index)
+
+        x_BTNV = self.output_dense(x_BTNM)
+        return x_BTNV
+
 def normalize(x: jax.Array) -> jax.Array:
     return x / (jnp.linalg.norm(x, ord=2, axis=-1, keepdims=True) + 1e-8)
 
@@ -299,62 +501,55 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool) -> Ca
     """
     Create an attention function that uses flash attention if enabled.
 
-    Flax MultiHeadAttention provides tensors with shape (batch..., length, num_heads, head_dim)
-    jax.nn.dot_product_attention expects (batch, length, num_heads, head_dim).
-
-    We need to reshape to ensure compatibility. cuDNN's flash attention additionally
-    requires a sequence length that is a multiple of 4. We pad the sequence length to the nearest
-    multiple of 4 and mask accordingly.
+    flax.nnx.MultiHeadAttention provides tensors with shape (batch..., length, num_heads, head_dim),
+    but jax.nn.dot_product_attention expects (batch, length, num_heads, head_dim). We reshape to
+    ensure compatibility. cuDNN's flash attention additionally requires a sequence length that
+    is a multiple of 4. We pad the sequence length to the nearest multiple of 4 and mask
+    accordingly. Note that cuDNN requires the mask to be broadcast before calling the attention
+    function due to strict shape checking.
     """
 
-    def attention_fn(query, key, value, bias=None, mask=None, **kwargs):
+    def attention_fn(query_BTHD, key_BSHD, value_BSHD, bias=None, mask_B111=None, **kwargs):
         implementation = "cudnn" if use_flash_attention else None
 
-        def _rearrange(x):
-            return einops.rearrange(x, "... l h d -> (...) l h d")
+        def _merge_batch_dims(x):
+            return einops.rearrange(x, "... l h k -> (...) l h k")
 
-        def _pad(x):
+        def _pad(x, pad_size):
             return jnp.pad(x, ((0, 0), (0, pad_size), (0, 0), (0, 0)))
 
-        def _fuse_masks(mask: jax.Array, attention_mask: jax.Array) -> jax.Array:
-            mask_bool = mask.astype(jnp.bool_)
-            expanded_mask = jnp.pad(
-                mask_bool, ((0, pad_size), (0, pad_size)), constant_values=False
-            )
-            return jnp.logical_and(attention_mask, expanded_mask)
-
-        original_shape = query.shape
-        original_seq_len = query.shape[-3]
+        original_shape = query_BTHD.shape
+        T = query_BTHD.shape[-3]
+        S = key_BSHD.shape[-3]
 
         # Pad to nearest multiple of 4
-        target_seq_len = ((original_seq_len + 3) // 4) * 4
-        pad_size = target_seq_len - original_seq_len
+        Q = ((T + 3) // 4) * 4
+        pad_size_Q = Q - T
+        K = ((S + 3) // 4) * 4
+        pad_size_K = K - S
 
-        query_4d = _pad(_rearrange(query))
-        key_4d = _pad(_rearrange(key))
-        value_4d = _pad(_rearrange(value))
+        query_BQHD = _pad(_merge_batch_dims(query_BTHD), pad_size_Q)
+        key_BKHD = _pad(_merge_batch_dims(key_BSHD), pad_size_K)
+        value_BKHD = _pad(_merge_batch_dims(value_BSHD), pad_size_K)
 
-        attention_mask = jnp.ones((target_seq_len, target_seq_len), dtype=jnp.bool_)
-        attention_mask = attention_mask.at[original_seq_len:, :].set(False)
-        attention_mask = attention_mask.at[:, original_seq_len:].set(False)
+        attention_mask = jnp.ones((Q, K), dtype=jnp.bool_)
+        attention_mask = attention_mask.at[T:, :].set(False)
+        attention_mask = attention_mask.at[:, S:].set(False)
 
-        mask_4d = (
-            _fuse_masks(mask, attention_mask) if mask is not None else attention_mask
-        )
-        mask_4d = mask_4d[jnp.newaxis, jnp.newaxis, :, :]  # (1, 1, seq_len, seq_len)
+        mask_11TS = attention_mask[jnp.newaxis, jnp.newaxis, :, :]
 
-        bias_4d = _pad(_rearrange(bias)) if bias is not None else None
+        bias_4d = jnp.pad(_merge_batch_dims(bias), ((0, 0), (0, 0), (0, pad_size_Q), (0, pad_size_K))) if bias is not None else None
 
         # NOTE: jax.nn.dot_product_attention does not support dropout
         output_4d = jax.nn.dot_product_attention(
-            query=query_4d,
-            key=key_4d,
-            value=value_4d,
+            query=query_BQHD,
+            key=key_BKHD,
+            value=value_BKHD,
             bias=bias_4d,
-            mask=mask_4d,
+            mask=mask_11TS,
             implementation=implementation,
             is_causal=is_causal,
         )
-        return output_4d[..., :original_seq_len, :, :].reshape(original_shape)
+        return output_4d[..., :T, :, :].reshape(original_shape)
 
     return attention_fn

@@ -51,6 +51,7 @@ class Args:
     lam_num_blocks: int = 4
     lam_num_heads: int = 8
     # Dynamics checkpoint
+    dyna_type: str = "maskgit"
     dyna_dim: int = 512
     dyna_ffn_dim: int = 2048
     dyna_num_blocks: int = 6
@@ -99,6 +100,7 @@ if __name__ == "__main__":
         lam_num_heads=args.lam_num_heads,
         lam_co_train=False,
         # Dynamics
+        dyna_type=args.dyna_type,
         dyna_dim=args.dyna_dim,
         dyna_ffn_dim=args.dyna_ffn_dim,
         dyna_num_blocks=args.dyna_num_blocks,
@@ -106,6 +108,8 @@ if __name__ == "__main__":
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
+        # FIXME (f.srambical): implement spatiotemporal KV caching and set decode=True
+        decode=False,
         rngs=rngs,
     )
 
@@ -148,18 +152,27 @@ if __name__ == "__main__":
     # --- Define sampling function ---
     def _sampling_fn(model: Genie, batch: dict) -> jax.Array:
         """Runs Genie.sample with pre-defined generation hyper-parameters."""
-        return model.sample(
-            batch,
-            args.seq_len,
-            args.maskgit_steps,
-            args.temperature,
-            args.sample_argmax,
-        )
+        if args.dyna_type == "maskgit":
+            return model.sample(
+                batch,
+                args.seq_len,
+                args.maskgit_steps,
+                args.temperature,
+                args.sample_argmax,
+            )
+        elif args.dyna_type == "causal":
+            return model.sample_causal(
+                batch,
+                args.seq_len,
+                args.temperature,
+                args.sample_argmax,
+            )
+        else:
+            raise ValueError(f"Invalid dynamics type: {args.dyna_type}")
 
     # --- Define autoregressive sampling loop ---
-    @nnx.jit
-    def _autoreg_sample(rng, video_batch_BSHWC, action_batch_E):
-        input_video_BTHWC = video_batch_BSHWC[:, :args.start_frame]
+    def _autoreg_sample(genie, rng, video_batch_BSHWC, action_batch_E):
+        input_video_BTHWC = video_batch_BSHWC[:, : args.start_frame]
         rng, _rng = jax.random.split(rng)
         batch = dict(videos=input_video_BTHWC, latent_actions=action_batch_E, rng=_rng)
         generated_vid_BSHWC = _sampling_fn(genie, batch)
@@ -192,7 +205,7 @@ if __name__ == "__main__":
     action_batch_E = genie.vq_encode(batch, training=False)
 
     # --- Sample + evaluate video ---
-    recon_video_BSHWC = _autoreg_sample(rng, video_batch_BSHWC, action_batch_E)
+    recon_video_BSHWC = _autoreg_sample(genie, rng, video_batch_BSHWC, action_batch_E)
     recon_video_BSHWC = recon_video_BSHWC.astype(jnp.float32)
     gt = gt_video[:, : recon_video_BSHWC.shape[1]].clip(0, 1).reshape(-1, *gt_video.shape[2:])
     recon = recon_video_BSHWC.clip(0, 1).reshape(-1, *recon_video_BSHWC.shape[2:])
