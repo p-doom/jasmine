@@ -35,7 +35,7 @@ Jasmine scales from single hosts to hundreds of xPUs thanks to XLA and strives t
     - https://github.com/google-deepmind/dm_pix for image manipulation
     - https://github.com/google/array_record as the data format
 - Easy model inspection thanks to [treescope](https://github.com/google-deepmind/treescope)
-- Easy model surgery thanks to the new [flax.nnx](https://flax.readthedocs.io/en/latest/guides/linen_to_nnx.html) API
+- Easy model surgery thanks to the new [flax.nnx](https://flax.readthedocs.io/en/latest/migrating/linen_to_nnx.html) API
 - [Shape suffixes](https://medium.com/@NoamShazeer/shape-suffixes-good-coding-style-f836e72e24fd) throughout the repository
 
 <h2 name="start" id="start">Setup 🧗 </h2>
