@@ -1,15 +1,18 @@
+# core requirements
 dm_pix>=0.4.3
 einops>=0.8.0
 flax>=0.10.7
 jax[cuda12]>=0.6.2
 optax>=0.2.3
-procgen>=0.10.7
 tyro>=0.8.5
 wandb>=0.17.4
 grain>=0.2.10
-pre-commit>=4.2.0
 array-record>=0.7.2
-tqdm>=4.67.1
-huggingface-hub[cli]>=0.34.3
-hf-transfer==0.1.9
+
+# input pipeline
 ffmpeg-python==0.2.0
+hf-transfer==0.1.9
+huggingface-hub[cli]>=0.34.3
+pre-commit>=4.2.0
+procgen>=0.10.7
+tqdm>=4.67.1
