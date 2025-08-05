@@ -8,8 +8,8 @@ def generate_dummy_arrayrecord(
     output_path: Path,
     num_videos: int = 5,
     episode_length: int = 16,
-    height: int = 64,
-    width: int = 64,
+    height: int = 90,
+    width: int = 160,
     channels: int = 3,
     num_action_tokens: int = 11,
     vocab_size: int = 68,  # default vocab size from minerl
@@ -53,7 +53,6 @@ if __name__ == "__main__":
     test_dir.mkdir(parents=True, exist_ok=True)
     dummy_file = test_dir / "dummy_test_shard.array_record"
 
-    generate_dummy_arrayrecord(
-        dummy_file, num_videos=5, episode_length=16, height=64, width=64, channels=3
-    )
+    generate_dummy_arrayrecord(dummy_file, episode_length=1000)
+
     print(f"Generated dummy file: {dummy_file}")
