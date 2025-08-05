@@ -172,9 +172,8 @@ if __name__ == "__main__":
             raise ValueError(f"Invalid dynamics type: {args.dyna_type}")
 
     # --- Define autoregressive sampling loop ---
-    @nnx.jit
     def _autoreg_sample(genie, rng, video_batch_BSHWC, action_batch_E):
-        input_video_BTHWC = video_batch_BSHWC[:, : args.start_frame]
+        input_video_BTHWC = video_batch_BSHWC[:, : args.start_frame + 1]
         rng, _rng = jax.random.split(rng)
         batch = dict(videos=input_video_BTHWC, latent_actions=action_batch_E, rng=_rng)
         generated_vid_BSHWC = _sampling_fn(genie, batch)

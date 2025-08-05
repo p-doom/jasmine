@@ -372,7 +372,6 @@ class Genie(nnx.Module):
                 sampled_token_idxs_B = jax.random.categorical(_rng, final_logits_BV)
             # Update next tokens only
             token_idxs_BSN = token_idxs_BSN.at[:, step_t, step_n].set(sampled_token_idxs_B)
-            step_t += 1
 
             new_carry = (rng, token_idxs_BSN, action_tokens_EL, step_t)
             return new_carry, None
