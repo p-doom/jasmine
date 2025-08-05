@@ -122,7 +122,6 @@ class LatentActionModel(nnx.Module):
         z_q_BTm11L = outputs["z_q"]
         action_BTm11M = self.action_up(z_q_BTm11L)
         patch_BTm1NM = self.patch_up(patch_BTNP[:, :-1])
-        # FIXME (f.srambical): should we prepend the action to the patch instead?
         action_BTm1NM = jnp.broadcast_to(action_BTm11M, patch_BTm1NM.shape)
         video_action_patches_BTm1NM = action_BTm1NM + patch_BTm1NM
         del outputs["patches"], patch_BTNP, patch_BTm1NM

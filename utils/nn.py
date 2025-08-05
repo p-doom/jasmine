@@ -518,7 +518,7 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool) -> Ca
 
         # Handle causal mask for cached decoder self-attention (from nnx.MultiHeadAttention)
         if mask_B111 is not None:
-            # FIXME (f.srambical): Why do we need this?
+            # FIXME (f.srambical): Do we need this?
             mask_B111 = _merge_batch_dims(mask_B111)
             # We need to broadcast T and S dimensions to target_seq_len since cudnn attention strictly checks the mask shape
             # https://github.com/jax-ml/jax/issues/28974

@@ -172,8 +172,7 @@ if __name__ == "__main__":
             raise ValueError(f"Invalid dynamics type: {args.dyna_type}")
 
     # --- Define autoregressive sampling loop ---
-    # FIXME (f.srambical): why is kv caching not working with nnx.jit?
-    #@nnx.jit
+    @nnx.jit
     def _autoreg_sample(genie, rng, video_batch_BSHWC, action_batch_E):
         input_video_BTHWC = video_batch_BSHWC[:, : args.start_frame]
         rng, _rng = jax.random.split(rng)
