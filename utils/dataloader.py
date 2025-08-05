@@ -47,7 +47,14 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
     A Grain Transformation that combines parsing, slicing, and normalizing.
     """
 
-    def __init__(self, seq_len: int, image_h: int, image_w: int, image_c: int, use_gt_actions: bool):
+    def __init__(
+        self,
+        seq_len: int,
+        image_h: int,
+        image_w: int,
+        image_c: int,
+        use_gt_actions: bool,
+    ):
         """Initializes the transformation with processing parameters."""
         self.seq_len = seq_len
         self.image_h = image_h
@@ -94,7 +101,7 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
 
         seq = episode_tensor[start_idx : start_idx + self.seq_len]
         if self.use_gt_actions:
-            action_tensor = element["actions"]
+            action_tensor = element["actions"].astype(np.uint8)
             actions = action_tensor[start_idx : start_idx + self.seq_len]
             return seq, actions
         else:

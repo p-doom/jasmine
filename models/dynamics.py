@@ -10,7 +10,7 @@ from utils.nn import STTransformer
 class DynamicsMaskGIT(nnx.Module):
     """
     MaskGIT dynamics model
-    
+
     Dimension keys:
         B: batch size
         T: sequence length
@@ -109,15 +109,19 @@ class DynamicsMaskGIT(nnx.Module):
         # --- Predict transition ---
         if self.use_gt_actions:
             act_embed_BTAM = self.action_embed(batch["actions"])
-            vid_embed_BTNM = jnp.concatenate((act_embed_BTAM, vid_embed_BTNM), axis=2)
-            logits_BTApNV = self.transformer(vid_embed_BTNM)
+            vid_embed_BTApNM = jnp.concatenate((act_embed_BTAM, vid_embed_BTNM), axis=2)
+            logits_BTApNV = self.transformer(vid_embed_BTApNM)
             A = act_embed_BTAM.shape[2]
-            logits_BTNV = logits_BTApNV[:, A:, :]
+            logits_BTNV = logits_BTApNV[:, :, A:]
         else:
             actions_BTm11L = batch["actions"]
             act_embed_BTm11M = self.action_up(actions_BTm11L)
-            padded_act_embed_BT1M = jnp.pad(act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0)))
-            padded_act_embed_BTNM = jnp.broadcast_to(padded_act_embed_BT1M, vid_embed_BTNM.shape)
+            padded_act_embed_BT1M = jnp.pad(
+                act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0))
+            )
+            padded_act_embed_BTNM = jnp.broadcast_to(
+                padded_act_embed_BT1M, vid_embed_BTNM.shape
+            )
             vid_embed_BTNM += padded_act_embed_BTNM
             logits_BTNV = self.transformer(vid_embed_BTNM)
         return logits_BTNV, mask

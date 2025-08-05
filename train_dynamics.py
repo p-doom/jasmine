@@ -116,12 +116,13 @@ def dynamics_loss_fn(
         jnp.ravel(outputs["video_tokens"]), size=args.num_patch_latents, fill_value=0
     )
     if args.use_gt_actions:
+        codebook_usage_lam = None
+    else:
         _, index_counts_lam = jnp.unique_counts(
             jnp.ravel(outputs["lam_indices"]), size=args.num_actions, fill_value=0
         )
         codebook_usage_lam = (index_counts_lam != 0).mean()
-    else:
-        codebook_usage_lam = None
+
     codebook_usage_tokenizer = (index_counts_tokenizer != 0).mean()
     metrics = dict(
         cross_entropy_loss=ce_loss,
@@ -355,17 +356,30 @@ if __name__ == "__main__":
         del optimizer.model.tokenizer.vq.drop
 
     # --- TRAIN LOOP ---
-    dataloader = (
-        (
-            jax.make_array_from_process_local_data(videos_sharding, vid),
-            (jax.make_array_from_process_local_data(actions_sharding, act)),
+    if args.use_gt_actions:
+        dataloader = (
+            (
+                jax.make_array_from_process_local_data(videos_sharding, vid),
+                (jax.make_array_from_process_local_data(actions_sharding, act)),
+            )
+            for (vid, act) in grain_iterator
         )
-        for (vid, act) in grain_iterator
-    )
+    else:
+        dataloader = (
+            (jax.make_array_from_process_local_data(videos_sharding, vid))
+            for (vid) in grain_iterator
+        )
 
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
-        for videos, actions in dataloader:
+
+        for element in dataloader:
+            if args.use_gt_actions:
+                videos, actions = element
+            else:
+                videos = element
+                actions = None
+
             # --- Train step ---
             rng, _rng_mask = jax.random.split(rng, 2)
             inputs = dict(videos=videos, actions=actions, mask_rng=_rng_mask)
