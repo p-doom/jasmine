@@ -40,7 +40,7 @@ Jasmine scales from single hosts to hundreds of xPUs thanks to XLA and strives t
 
 <h2 name="start" id="start">Setup 🧗</h2>
 
-Jasmine requires `python 3.10`, `jax 0.6.2`, and `flax 0.10.7`. To install the dependencies, run:
+Jasmine requires `python 3.10`, `jax 0.6.2`, and `flax 0.10.7`. To install the requirements, run:
 
 ```bash
 pip install -r requirements.txt
