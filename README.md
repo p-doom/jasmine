@@ -18,7 +18,7 @@ Jasmine scales from single hosts to hundreds of xPUs thanks to XLA and strives t
 - Optimized dataloading thanks to [Grain](https://github.com/google/grain)
     - Dataloading scales with the number of processes (i.e. nodes/xPUs)
 - Checkpointing of model weights, optimizer and dataloader states
-- Full reproducibility with **exact** training curves (thanks to seeded dataloading and training, and [JAX' approach to pseudo random numbers](https://docs.jax.dev/en/latest/random-numbers.html))
+- Full reproducibility with **identical** training curves (thanks to seeded dataloading and training, and [JAX' approach to pseudo random numbers](https://docs.jax.dev/en/latest/random-numbers.html))
 - Automatic checkpoint deletion/retention according to specified retention policy thanks to `orbax.checkpoint.CheckpointManager`
 - Mixed precision training using `bfloat16`
     - `int8` training is on the roadmap via [aqt](https://github.com/google/aqt)
@@ -35,7 +35,7 @@ Jasmine scales from single hosts to hundreds of xPUs thanks to XLA and strives t
     - https://github.com/google-deepmind/dm_pix for image manipulation
     - https://github.com/google/array_record as the data format
 - Easy model inspection thanks to [treescope](https://github.com/google-deepmind/treescope)
-- Easy model surgery thanks to the new [flax.nnx](https://flax.readthedocs.io/en/latest/guides/linen_to_nnx.html) API
+- Easy model surgery thanks to the new [flax.nnx](https://flax.readthedocs.io/en/latest/migrating/linen_to_nnx.html) API
 - [Shape suffixes](https://medium.com/@NoamShazeer/shape-suffixes-good-coding-style-f836e72e24fd) throughout the repository
 
 <h2 name="start" id="start">Setup 🧗 </h2>
