@@ -38,8 +38,6 @@ Jasmine scales from single hosts to hundreds of xPUs thanks to XLA and strives t
 - Easy model surgery thanks to the new [flax.nnx](https://flax.readthedocs.io/en/latest/guides/linen_to_nnx.html) API
 - [Shape suffixes](https://medium.com/@NoamShazeer/shape-suffixes-good-coding-style-f836e72e24fd) throughout the repository
 
-
-
 <h2 name="start" id="start">Setup 🧗</h2>
 
 Jasmine requires `python 3.10`, `jax 0.6.2`, and `flax 0.10.7`. To install the dependencies, run:
@@ -47,7 +45,7 @@ Jasmine requires `python 3.10`, `jax 0.6.2`, and `flax 0.10.7`. To install the d
 ```bash
 pip install -r requirements.txt
 pre-commit install
-````
+```
 
 ---
 
@@ -100,10 +98,16 @@ If you prefer to use the raw VPT dataset from OpenAI and preprocess it yourself,
 
 Genie has three components: a [video tokenizer](models/tokenizer.py), a [latent action model](models/lam.py), and a [dynamics model](models/dynamics.py). Each of these components are trained separately, however, the dynamics model requires a pre-trained video tokenizer (and latent action model).
 
-To train the video tokenizer (similar for the LAM), run:
+To train the video tokenizer, run:
 
 ```bash
 python train_tokenizer.py --ckpt_dir <path>
+```
+
+To train the latent action model, run:
+
+```bash
+python train_lam.py --ckpt_dir <path>
 ```
 
 Once the tokenizer and LAM are trained, the dynamics model can be trained with:
