@@ -316,29 +316,13 @@ class TransformerBlock(nnx.Module):
         B, T, N, M = x_BTNM.shape
         z_FNM = einops.rearrange(x_BTNM, "b t n m -> (b t) n m")
         z_FNM = self.spatial_norm(z_FNM)
-        if self.decode:
-            assert pos_index is not None
-            z_FM = z_FNM[:, pos_index[1]]
-            z_F1M = jnp.reshape(z_FM, (B * T, 1, M))
-            z_F1M = self.spatial_attention(z_F1M)
-            z_FM = jnp.reshape(z_F1M, (B * T, M))
-            z_FNM = z_FNM.at[:, pos_index[1], :].set(z_FM)
-        else:
-            z_FNM = self.spatial_attention(z_FNM)
+        z_FNM = self.spatial_attention(z_FNM)
         z_BTNM = einops.rearrange(z_FNM, "(b t) n m -> b t n m", t=T)
         x_BTNM = x_BTNM + z_BTNM
         # --- Temporal attention ---
         z_PTM = einops.rearrange(x_BTNM, "b t n m -> (b n) t m")
         z_PTM = self.temporal_norm(z_PTM)
-        if self.decode:
-            assert pos_index is not None
-            z_PM = z_PTM[:, pos_index[0]]
-            z_P1M = jnp.reshape(z_PM, (B * N, 1, M))
-            z_P1M = self.temporal_attention(z_P1M)
-            z_PM = jnp.reshape(z_P1M, (B * N, M))
-            z_PTM = z_PTM.at[:, pos_index[0], :].set(z_PM)
-        else:
-            z_PTM = self.temporal_attention(z_PTM)
+        z_PTM = self.temporal_attention(z_PTM)
         z_BTNM = einops.rearrange(z_PTM, "(b n) t m -> b t n m", n=N)
         x_BTNM = x_BTNM + z_BTNM
         # --- Feedforward ---

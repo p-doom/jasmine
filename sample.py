@@ -109,7 +109,8 @@ if __name__ == "__main__":
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
-        decode=True,
+        # FIXME (f.srambical): implement spatiotemporal KV caching and set decode=True
+        decode=False,
         rngs=rngs,
     )
 
