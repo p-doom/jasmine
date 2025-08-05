@@ -389,7 +389,6 @@ class Transformer(nnx.Module):
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
 
-        self.pos_enc = PositionalEncoding(self.model_dim)
         self.input_norm1 = nnx.LayerNorm(
             num_features=self.input_dim,
             param_dtype=self.param_dtype,
@@ -437,7 +436,6 @@ class Transformer(nnx.Module):
         x_BTNI = self.input_norm1(x_BTNI)
         x_BTNM = self.input_dense(x_BTNI)
         x_BTNM = self.input_norm2(x_BTNM)
-        x_BTNM = self.pos_enc(x_BTNM)
 
         for block in self.blocks:
             x_BTNM = block(x_BTNM, pos_index)
