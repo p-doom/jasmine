@@ -160,13 +160,11 @@ class DynamicsCausal(nnx.Module):
     def __call__(
         self, batch: Dict[str, jax.Array], training: bool = True
     ) -> tuple[jax.Array, jax.Array | None]:
-        # FIXME (f.srambical): this is exactly the same as STTransformer, just without the masking
         video_tokens_BTN = batch["video_tokens"]
         latent_actions_BTm11L = batch["latent_actions"]
 
         vid_embed_BTNM = self.patch_embed(video_tokens_BTN)
         act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
-        # FIXME (f.srambical): do we need to embed the action padding?
         padded_act_embed_BT1M = jnp.pad(act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0)))
         vid_embed_BTNp1M = jnp.concatenate([padded_act_embed_BT1M, vid_embed_BTNM], axis=2)
 
