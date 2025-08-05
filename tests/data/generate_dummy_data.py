@@ -53,6 +53,6 @@ if __name__ == "__main__":
     test_dir.mkdir(parents=True, exist_ok=True)
     dummy_file = test_dir / "dummy_test_shard.array_record"
 
-    generate_dummy_arrayrecord(dummy_file, episode_length=1000)
+    generate_dummy_arrayrecord(dummy_file)
 
     print(f"Generated dummy file: {dummy_file}")
