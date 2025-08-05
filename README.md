@@ -51,7 +51,7 @@ pre-commit install
 
 <h2 name="dataset" id="dataset">Dataset 📂</h2>
 
-You can either download our preprocessed dataset from [Hugging Face](https://huggingface.co/datasets/avocadoali/open_ai_minecraft_arrayrecords_chunked) or preprocess OpenAI's VPT dataset manually.
+You can either download our preprocessed dataset from [Hugging Face](https://huggingface.co/datasets/avocadoali/open_ai_minecraft_arrayrecords_chunked) or preprocess [OpenAI's VPT dataset](https://github.com/openai/Video-Pre-Training) manually.
 
 ### Option 1: Use Preprocessed Dataset (Recommended)
 
