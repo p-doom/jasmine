@@ -63,6 +63,7 @@ class Args:
     lam_num_heads: int = 8
     lam_checkpoint: str = ""
     # Dynamics
+    dyna_type: str = "maskgit"  # supported options: maskgit, causal
     dyna_dim: int = 512
     dyna_ffn_dim: int = 2048
     dyna_num_blocks: int = 6
@@ -191,6 +192,7 @@ if __name__ == "__main__":
         lam_num_heads=args.lam_num_heads,
         lam_co_train=not args.lam_checkpoint,
         # Dynamics
+        dyna_type=args.dyna_type,
         dyna_dim=args.dyna_dim,
         dyna_ffn_dim=args.dyna_ffn_dim,
         dyna_num_blocks=args.dyna_num_blocks,
@@ -200,6 +202,7 @@ if __name__ == "__main__":
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
+        decode=False,
         rngs=rngs,
     )
 
