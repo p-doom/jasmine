@@ -314,12 +314,14 @@ class TransformerBlock(nnx.Module):
     def __call__(self, x_BTNM: jax.Array, pos_index: Tuple[jax.Array, jax.Array] | None = None) -> jax.Array:
         # --- Spatial attention ---
         B, T, N, M = x_BTNM.shape
+        x_BTNM = self.spatial_pos_enc(x_BTNM)
         z_FNM = einops.rearrange(x_BTNM, "b t n m -> (b t) n m")
         z_FNM = self.spatial_norm(z_FNM)
         z_FNM = self.spatial_attention(z_FNM)
         z_BTNM = einops.rearrange(z_FNM, "(b t) n m -> b t n m", t=T)
         x_BTNM = x_BTNM + z_BTNM
         # --- Temporal attention ---
+        x_BTNM = self.temporal_pos_enc(x_BTNM)
         z_PTM = einops.rearrange(x_BTNM, "b t n m -> (b n) t m")
         z_PTM = self.temporal_norm(z_PTM)
         z_PTM = self.temporal_attention(z_PTM)
@@ -510,27 +512,14 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool) -> Ca
         query_BQHD = _pad(_merge_batch_dims(query_BTHD), pad_size_Q)
         key_BKHD = _pad(_merge_batch_dims(key_BSHD), pad_size_K)
         value_BKHD = _pad(_merge_batch_dims(value_BSHD), pad_size_K)
-        B = query_BQHD.shape[0]
 
         attention_mask = jnp.ones((Q, K), dtype=jnp.bool_)
-        attention_mask = attention_mask.at[Q:, :].set(False)
-        attention_mask = attention_mask.at[:, K:].set(False)
+        attention_mask = attention_mask.at[T:, :].set(False)
+        attention_mask = attention_mask.at[:, S:].set(False)
 
-        # Handle causal mask for cached decoder self-attention (from nnx.MultiHeadAttention)
-        if mask_B111 is not None:
-            # FIXME (f.srambical): Do we need this?
-            mask_B111 = _merge_batch_dims(mask_B111)
-            # We need to broadcast T and S dimensions to target_seq_len since cudnn attention strictly checks the mask shape
-            # https://github.com/jax-ml/jax/issues/28974
-            # https://github.com/jax-ml/jax/blob/08c7677393672ccb85c10f1ed0bd506905c3c994/jax/_src/cudnn/fused_attention_stablehlo.py#L1830
-            # https://github.com/jax-ml/jax/blob/08c7677393672ccb85c10f1ed0bd506905c3c994/jax/_src/cudnn/fused_attention_stablehlo.py#L337
-            mask_B1TS = einops.repeat(mask_B111, "... 1 1 -> ... t s", t=Q, s=K)
-            mask_B1TS = mask_B111.astype(jnp.bool)
-        else:
-            mask_11TS = attention_mask[jnp.newaxis, jnp.newaxis, :, :]
-            mask_B1TS = jnp.broadcast_to(mask_11TS, (B, 1, Q, K))
+        mask_11TS = attention_mask[jnp.newaxis, jnp.newaxis, :, :]
 
-        bias_4d = _merge_batch_dims(bias) if bias is not None else None
+        bias_4d = jnp.pad(_merge_batch_dims(bias), ((0, 0), (0, 0), (0, pad_size_Q), (0, pad_size_K))) if bias is not None else None
 
         # NOTE: jax.nn.dot_product_attention does not support dropout
         output_4d = jax.nn.dot_product_attention(
@@ -538,7 +527,7 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool) -> Ca
             key=key_BKHD,
             value=value_BKHD,
             bias=bias_4d,
-            mask=mask_B1TS,
+            mask=mask_11TS,
             implementation=implementation,
             is_causal=is_causal,
         )
