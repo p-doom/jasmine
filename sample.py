@@ -46,7 +46,7 @@ class Args:
     lam_dim: int = 512
     lam_ffn_dim: int = 2048
     latent_action_dim: int = 32
-    num_latent_actions: int = 6
+    num_actions: int = 6
     lam_patch_size: int = 16
     lam_num_blocks: int = 4
     lam_num_heads: int = 8
@@ -58,6 +58,7 @@ class Args:
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
     use_flash_attention: bool = True
+    use_gt_actions: bool = False
 
 
 args = tyro.cli(Args)
@@ -73,6 +74,8 @@ if __name__ == "__main__":
         W: width
         E: B * (S - 1)
     """
+    # FIXME (f.srambical): add support for ground-truth actions during sampling
+    assert not args.use_gt_actions, "Ground-truth actions are currently not supported during sampling"
     jax.distributed.initialize()
 
     rng = jax.random.key(args.seed)
@@ -93,7 +96,7 @@ if __name__ == "__main__":
         lam_dim=args.lam_dim,
         lam_ffn_dim=args.lam_ffn_dim,
         latent_action_dim=args.latent_action_dim,
-        num_latent_actions=args.num_latent_actions,
+        num_actions=args.num_actions,
         lam_patch_size=args.lam_patch_size,
         lam_num_blocks=args.lam_num_blocks,
         lam_num_heads=args.lam_num_heads,
@@ -106,6 +109,7 @@ if __name__ == "__main__":
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
+        use_gt_actions=args.use_gt_actions,
         rngs=rngs,
     )
 
