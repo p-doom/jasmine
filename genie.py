@@ -200,7 +200,7 @@ class Genie(nnx.Module):
             H: height
             W: width
             E: B * (S - 1)
-            F: S * N
+            P: S * N
         """
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
@@ -252,13 +252,13 @@ class Genie(nnx.Module):
 
             # --- Update mask ---
             num_unmasked_tokens = jnp.round(N * (1.0 - unmasked_ratio)).astype(int)
-            final_token_probs_flat_BF = einops.rearrange(final_token_probs_BSN, "b s n -> b (s n)")
-            idx_mask_F = jnp.arange(final_token_probs_flat_BF.shape[-1]) <= N - num_unmasked_tokens
-            sorted_idxs_BF = jnp.argsort(final_token_probs_flat_BF, axis=-1)
-            mask_update_fn = jax.vmap(lambda msk, ids: msk.at[ids].set(idx_mask_F))
-            mask_flat_BF = einops.rearrange(mask_BSN, "b s n -> b (s n)")
-            new_mask_flat_BF = mask_update_fn(mask_flat_BF, sorted_idxs_BF)
-            new_mask_BSN = einops.rearrange(new_mask_flat_BF, "b (s n) -> b s n", n=N)
+            final_token_probs_flat_BP = einops.rearrange(final_token_probs_BSN, "b s n -> b (s n)")
+            idx_mask_P = jnp.arange(final_token_probs_flat_BP.shape[-1]) <= N - num_unmasked_tokens
+            sorted_idxs_BP = jnp.argsort(final_token_probs_flat_BP, axis=-1)
+            mask_update_fn = jax.vmap(lambda msk, ids: msk.at[ids].set(idx_mask_P))
+            mask_flat_BP = einops.rearrange(mask_BSN, "b s n -> b (s n)")
+            new_mask_flat_BP = mask_update_fn(mask_flat_BP, sorted_idxs_BP)
+            new_mask_BSN = einops.rearrange(new_mask_flat_BP, "b (s n) -> b s n", n=N)
 
             new_carry = (rng, token_idxs_BSN, new_mask_BSN, action_tokens_EL)
             return new_carry, None
