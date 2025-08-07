@@ -141,7 +141,7 @@ If you use Jasmine in your work, please cite us, Jafar, and the original Genie p
     author={Mihir Mahajan and Alfred Nguyen and Franz Srambical and Stefan Bauer},
     journal = {p(doom) blog},
     year={2025},
-    url={https://pdoom.org/jasmine.html}
+    url={https://pdoom.org/jasmine.html},
     note = {https://pdoom.org/blog.html}
 }
 ```
