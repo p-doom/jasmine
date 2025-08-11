@@ -1,4 +1,3 @@
-import ffmpeg
 import numpy as np
 import os
 import tyro
@@ -11,24 +10,16 @@ from array_record.python.array_record_module import ArrayRecordWriter
 
 @dataclass
 class Args:
-    target_width, target_height = 160, 90
-    target_fps = 10
-    input_path: str = "data/minecraft_videos"
+    input_path: str = "data/minecraft_npy"
     output_path: str = "data/minecraft_arrayrecords"
 
-
 def preprocess_video(
-    idx, in_filename, output_path, target_width, target_height, target_fps
+    idx, in_filename, output_path
 ):
     print(f"Processing video {idx}, Filename: {in_filename}")
     try:
-        out, _ = (
-            ffmpeg.input(in_filename)
-            .filter("fps", fps=target_fps, round="up")
-            .filter("scale", target_width, target_height)
-            .output("pipe:", format="rawvideo", pix_fmt="rgb24")
-            .run(capture_stdout=True, quiet=True)
-        )
+        frames = np.load(in_filename)
+        n_frames = frames.shape[0]
 
         output_path = os.path.join(
             output_path,
@@ -36,12 +27,6 @@ def preprocess_video(
         )
 
         writer = ArrayRecordWriter(str(output_path), "group_size:1")
-
-        frame_size = target_height * target_width * 3
-        n_frames = len(out) // frame_size
-        frames = np.frombuffer(out, np.uint8).reshape(
-            n_frames, target_height, target_width, 3
-        )
 
         print(f"Saving video {idx} to {output_path}")
         record = {"raw_video": frames.tobytes(), "sequence_length": n_frames}
@@ -63,18 +48,15 @@ def main():
     num_processes = mp.cpu_count()
     print(f"Number of processes: {num_processes}")
 
-    print("Converting npy to array_record files...")
+    print("Converting mp4 to array_record files...")
     pool_args = [
         (
             idx,
             os.path.join(args.input_path, in_filename),
             args.output_path,
-            args.target_width,
-            args.target_height,
-            args.target_fps,
         )
         for idx, in_filename in enumerate(os.listdir(args.input_path))
-        if in_filename.endswith(".mp4") or in_filename.endswith(".webm")
+        if in_filename.endswith(".npy")
     ]
 
     results = []
