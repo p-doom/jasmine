@@ -110,7 +110,12 @@ class DynamicsMaskGIT(nnx.Module):
         # --- Predict transition ---
         if self.use_gt_actions:
             act_embed_BTAM = self.action_embed(batch["actions"])
-            vid_embed_BTApNM = jnp.concatenate((act_embed_BTAM, vid_embed_BTNM), axis=2)
+            padded_act_embed_BTAM = jnp.pad(
+                act_embed_BTAM[:, :-1], ((0, 0), (1, 0), (0, 0), (0, 0))
+            )
+            vid_embed_BTApNM = jnp.concatenate(
+                (padded_act_embed_BTAM, vid_embed_BTNM), axis=2
+            )
             logits_BTApNV = self.transformer(vid_embed_BTApNM)
             A = act_embed_BTAM.shape[2]
             logits_BTNV = logits_BTApNV[:, :, A:]
