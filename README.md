@@ -18,7 +18,7 @@ Jasmine scales from single hosts to hundreds of xPUs thanks to XLA and strives t
 - Optimized dataloading thanks to [Grain](https://github.com/google/grain)
     - Dataloading scales with the number of processes (i.e. nodes/xPUs)
 - Checkpointing of model weights, optimizer and dataloader states
-- Full reproducibility with **exact** training curves (thanks to seeded dataloading and training, and [JAX' approach to pseudo random numbers](https://docs.jax.dev/en/latest/random-numbers.html))
+- Full reproducibility with **identical** training curves (thanks to seeded dataloading and training, and [JAX' approach to pseudo random numbers](https://docs.jax.dev/en/latest/random-numbers.html))
 - Automatic checkpoint deletion/retention according to specified retention policy thanks to `orbax.checkpoint.CheckpointManager`
 - Mixed precision training using `bfloat16`
     - `int8` training is on the roadmap via [aqt](https://github.com/google/aqt)
@@ -35,41 +35,79 @@ Jasmine scales from single hosts to hundreds of xPUs thanks to XLA and strives t
     - https://github.com/google-deepmind/dm_pix for image manipulation
     - https://github.com/google/array_record as the data format
 - Easy model inspection thanks to [treescope](https://github.com/google-deepmind/treescope)
-- Easy model surgery thanks to the new [flax.nnx](https://flax.readthedocs.io/en/latest/guides/linen_to_nnx.html) API
+- Easy model surgery thanks to the new [flax.nnx](https://flax.readthedocs.io/en/latest/migrating/linen_to_nnx.html) API
 - [Shape suffixes](https://medium.com/@NoamShazeer/shape-suffixes-good-coding-style-f836e72e24fd) throughout the repository
 
-<h2 name="start" id="start">Setup 🧗 </h2>
+<h2 name="start" id="start">Setup 🧗</h2>
 
-Jasmine requires `python 3.10`, `jax 0.6.2` and `flax 0.10.7`. To install the requirements, run:
+Jasmine requires `python 3.10`, `jax 0.6.2`, and `flax 0.10.7`. To install the requirements, run:
 
 ```bash
 pip install -r requirements.txt
 pre-commit install
 ```
 
-Download OpenAI's VPT dataset by running:
+---
+
+<h2 name="dataset" id="dataset">Dataset 📂</h2>
+
+You can either download our preprocessed dataset from [Hugging Face](https://huggingface.co/datasets/p-doom/open_ai_minecraft_arrayrecords_chunked) or preprocess [OpenAI's VPT dataset](https://github.com/openai/Video-Pre-Training) manually.
+
+### Option 1: Use Preprocessed Dataset (Recommended)
+
+The easiest way to get started is to download our preprocessed dataset from Hugging Face. This script will handle downloading and extracting it:
 
 ```bash
-bash input_pipeline/download/openai/download_index_files.sh
-python input_pipeline/download/openai/download_videos.py
+bash input_pipeline/download/download_array_records.sh
 ```
 
-Note: this is a large dataset and may take a while to download.
+---
 
-For performant distributed training, we additionally preprocess the dataset into `arrayrecords`:
+### Option 2: Manual Download & Preprocessing of OpenAI's VPT Dataset
 
-```bash
-python input_pipeline/preprocess/video_to_array_records.py
-```
+If you prefer to use the raw VPT dataset from OpenAI and preprocess it yourself, follow these steps:
+
+1. **Download index files:**
+   This will download the initial index file:
+
+   ```bash
+   bash input_pipeline/download/openai/download_index_files.sh
+   ```
+
+2. **Download from all index files:**
+   This may take a long time depending on your bandwidth:
+
+   ```bash
+   python input_pipeline/download/openai/download_videos.py --index_file_path data/open_ai_index_files/all_7xx_Apr_6.json
+   python input_pipeline/download/openai/download_videos.py --index_file_path data/open_ai_index_files/all_8xx_Jun_29.json
+   python input_pipeline/download/openai/download_videos.py --index_file_path data/open_ai_index_files/all_9xx_Jun_29.json
+   python input_pipeline/download/openai/download_videos.py --index_file_path data/open_ai_index_files/all_10xx_Jun_29.json
+   ```
+
+3. **Preprocess videos into ArrayRecords:**
+   For efficient distributed training, convert the raw videos into the arrayrecord format (make sure to have [ffmpeg](https://github.com/FFmpeg/FFmpeg) installed on your machine):
+
+   ```bash
+   python input_pipeline/preprocess/video_to_array_records.py
+   ```
+
+> **Note:** This is a large dataset and may take considerable time and storage to download and process.
+
 
 <h2 name="train" id="train">Quick Start 🚀 </h2>
 
 Genie has three components: a [video tokenizer](models/tokenizer.py), a [latent action model](models/lam.py), and a [dynamics model](models/dynamics.py). Each of these components are trained separately, however, the dynamics model requires a pre-trained video tokenizer (and latent action model).
 
-To train the video tokenizer (similar for the LAM), run:
+To train the video tokenizer, run:
 
 ```bash
 python train_tokenizer.py --ckpt_dir <path>
+```
+
+To train the latent action model, run:
+
+```bash
+python train_lam.py --ckpt_dir <path>
 ```
 
 Once the tokenizer and LAM are trained, the dynamics model can be trained with:
@@ -103,7 +141,7 @@ If you use Jasmine in your work, please cite us, Jafar, and the original Genie p
     author={Mihir Mahajan and Alfred Nguyen and Franz Srambical and Stefan Bauer},
     journal = {p(doom) blog},
     year={2025},
-    url={https://pdoom.org/jasmine.html}
+    url={https://pdoom.org/jasmine.html},
     note = {https://pdoom.org/blog.html}
 }
 ```

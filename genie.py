@@ -1,12 +1,12 @@
 from typing import Dict
 
-import optax
+import einops
 import jax
 import jax.numpy as jnp
 import flax.nnx as nnx
 import orbax.checkpoint as ocp
 
-from models.dynamics import DynamicsMaskGIT
+from models.dynamics import DynamicsMaskGIT, DynamicsCausal
 from models.lam import LatentActionModel
 from models.tokenizer import TokenizerVQVAE
 
@@ -32,6 +32,7 @@ class Genie(nnx.Module):
         lam_num_blocks: int,
         lam_num_heads: int,
         lam_co_train: bool,
+        dyna_type: str,
         dyna_dim: int,
         dyna_ffn_dim: int,
         dyna_num_blocks: int,
@@ -40,6 +41,7 @@ class Genie(nnx.Module):
         dtype: jnp.dtype,
         use_flash_attention: bool,
         use_gt_actions: bool,
+        decode: bool,
         rngs: nnx.Rngs,
         dropout: float = 0.0,
         mask_limit: float = 0.0,
@@ -63,6 +65,7 @@ class Genie(nnx.Module):
         self.lam_num_heads = lam_num_heads
         self.lam_co_train = lam_co_train
         # --- Dynamics ---
+        self.dyna_type = dyna_type
         self.dyna_dim = dyna_dim
         self.dyna_ffn_dim = dyna_ffn_dim
         self.dyna_num_blocks = dyna_num_blocks
@@ -107,22 +110,40 @@ class Genie(nnx.Module):
                 use_flash_attention=self.use_flash_attention,
                 rngs=rngs,
             )
-        self.dynamics = DynamicsMaskGIT(
-            model_dim=self.dyna_dim,
-            ffn_dim=self.dyna_ffn_dim,
-            num_latents=self.num_patch_latents,
-            latent_action_dim=self.latent_action_dim,
-            num_actions=self.num_actions,
-            num_blocks=self.dyna_num_blocks,
-            num_heads=self.dyna_num_heads,
-            dropout=self.dropout,
-            mask_limit=self.mask_limit,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-            use_flash_attention=self.use_flash_attention,
-            use_gt_actions=self.use_gt_actions,
-            rngs=rngs,
-        )
+        if self.dyna_type == "maskgit":
+            self.dynamics = DynamicsMaskGIT(
+                model_dim=self.dyna_dim,
+                ffn_dim=self.dyna_ffn_dim,
+                num_latents=self.num_patch_latents,
+                latent_action_dim=self.latent_action_dim,
+                num_actions=self.num_actions,
+                num_blocks=self.dyna_num_blocks,
+                num_heads=self.dyna_num_heads,
+                dropout=self.dropout,
+                mask_limit=self.mask_limit,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+                use_flash_attention=self.use_flash_attention,
+                use_gt_actions=self.use_gt_actions,
+                rngs=rngs,
+            )
+        elif self.dyna_type == "causal":
+            self.dynamics = DynamicsCausal(
+                model_dim=self.dyna_dim,
+                ffn_dim=self.dyna_ffn_dim,
+                num_latents=self.num_patch_latents,
+                latent_action_dim=self.latent_action_dim,
+                num_blocks=self.dyna_num_blocks,
+                num_heads=self.dyna_num_heads,
+                dropout=self.dropout,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+                use_flash_attention=self.use_flash_attention,
+                decode=decode,
+                rngs=rngs,
+            )
+        else:
+            raise ValueError(f"Invalid dynamics type: {self.dyna_type}")
 
     def __call__(
         self, batch: Dict[str, jax.Array], training: bool = True
@@ -192,9 +213,12 @@ class Genie(nnx.Module):
             H: height
             W: width
             E: B * (S - 1)
+            P: S * N
         """
         # FIXME (f.srambical): add support for ground-truth actions during sampling
-        assert not self.use_gt_actions, "Ground-truth actions are currently not supported during sampling"
+        assert (
+            not self.use_gt_actions
+        ), "Ground-truth actions are currently not supported during sampling"
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
         latent_actions_E = batch["latent_actions"]
@@ -217,13 +241,17 @@ class Genie(nnx.Module):
             vid_embed_BSNM = self.dynamics.patch_embed(token_idxs_BSN)
             mask_token_111M = self.dynamics.mask_token.value
             mask_expanded_BSN1 = mask_BSN[..., None]
-            vid_embed_BSNM = jnp.where(mask_expanded_BSN1, mask_token_111M, vid_embed_BSNM)
+            vid_embed_BSNM = jnp.where(
+                mask_expanded_BSN1, mask_token_111M, vid_embed_BSNM
+            )
 
             # --- Predict transition ---
             action_tokens_BSm1L = jnp.reshape(action_tokens_EL, (B, S - 1, L))
             act_embed_BSm1M = self.dynamics.action_up(action_tokens_BSm1L)
             act_embed_BSM = jnp.pad(act_embed_BSm1M, ((0, 0), (1, 0), (0, 0)))
-            act_embed_BS1M = jnp.reshape(act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1]))
+            act_embed_BS1M = jnp.reshape(
+                act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1])
+            )
             vid_embed_BSNM += act_embed_BS1M
             unmasked_ratio = jnp.cos(jnp.pi * (step + 1) / (steps * 2))
             step_temp = temperature * (1.0 - unmasked_ratio)
@@ -245,10 +273,18 @@ class Genie(nnx.Module):
 
             # --- Update mask ---
             num_unmasked_tokens = jnp.round(N * (1.0 - unmasked_ratio)).astype(int)
-            idx_mask_N = jnp.arange(final_token_probs_BSN.shape[-1]) > num_unmasked_tokens
-            sorted_idxs_BSN = jnp.argsort(final_token_probs_BSN, axis=-1, descending=True)
-            mask_update_fn = jax.vmap(lambda msk, ids: msk.at[ids].set(idx_mask_N))
-            new_mask_BSN = mask_update_fn(mask_BSN, sorted_idxs_BSN)
+            final_token_probs_flat_BP = einops.rearrange(
+                final_token_probs_BSN, "b s n -> b (s n)"
+            )
+            idx_mask_P = (
+                jnp.arange(final_token_probs_flat_BP.shape[-1])
+                <= N - num_unmasked_tokens
+            )
+            sorted_idxs_BP = jnp.argsort(final_token_probs_flat_BP, axis=-1)
+            mask_update_fn = jax.vmap(lambda msk, ids: msk.at[ids].set(idx_mask_P))
+            mask_flat_BP = einops.rearrange(mask_BSN, "b s n -> b (s n)")
+            new_mask_flat_BP = mask_update_fn(mask_flat_BP, sorted_idxs_BP)
+            new_mask_BSN = einops.rearrange(new_mask_flat_BP, "b (s n) -> b s n", n=N)
 
             new_carry = (rng, token_idxs_BSN, new_mask_BSN, action_tokens_EL)
             return new_carry, None
@@ -259,8 +295,8 @@ class Genie(nnx.Module):
             rng, current_token_idxs_BSN = carry
             rng, step_rng = jax.random.split(rng)
 
-            # Mask current and future frames (i.e., t >= step_t)
-            mask_S = jnp.arange(seq_len) >= step_t
+            # Mask current frame (i.e., t == step_t)
+            mask_S = jnp.arange(seq_len) == step_t
             mask_BSN = jnp.broadcast_to(mask_S[None, :, None], (B, seq_len, N)).astype(
                 bool
             )
@@ -276,8 +312,8 @@ class Genie(nnx.Module):
             final_carry_maskgit, _ = jax.lax.scan(
                 maskgit_step_fn, init_carry_maskgit, jnp.arange(steps)
             )
-            updated_token_idxs = final_carry_maskgit[1]
-            new_carry = (rng, updated_token_idxs)
+            updated_token_idxs_BSN = final_carry_maskgit[1]
+            new_carry = (rng, updated_token_idxs_BSN)
             return new_carry, None
 
         # --- Run the autoregressive generation using jax.lax.scan ---
@@ -286,15 +322,133 @@ class Genie(nnx.Module):
         final_carry, _ = jax.lax.scan(
             generation_step_fn, initial_carry, timesteps_to_scan
         )
-        final_token_idxs = final_carry[1]
+        final_token_idxs_BSN = final_carry[1]
 
         # --- Decode all tokens at once at the end ---
         H, W = batch["videos"].shape[2:4]
-        final_frames = self.tokenizer.decode(
-            final_token_idxs,
+        final_frames_BSHWC = self.tokenizer.decode(
+            final_token_idxs_BSN,
             video_hw=(H, W),
         )
-        return final_frames
+        return final_frames_BSHWC
+
+    def sample_causal(
+        self,
+        batch: Dict[str, jax.Array],
+        seq_len: int,
+        temperature: float = 1,
+        sample_argmax: bool = False,
+    ) -> jax.Array:
+        """
+        Autoregressively samples up to `seq_len` future frames, following Figure 8 of the paper.
+
+        - Input frames are tokenized once.
+        - Future frames are generated autoregressively in token space.
+        - All frames are detokenized in a single pass.
+
+        Note:
+        - For interactive or step-wise sampling, detokenization should occur after each action.
+        - To maintain consistent tensor shapes across timesteps, all current and future frames are decoded at every step.
+        - Temporal causal structure is preserved by
+            a) reapplying the mask before each decoding step.
+            b) a temporal causal mask is applied within each ST-transformer block.
+
+        Dimension keys:
+            B: batch size
+            T: number of input (conditioning) frames
+            N: number of patches per frame
+            M: model dimension
+            S: sequence length
+            H: height
+            W: width
+            E: B * (S - 1)
+        """
+        assert isinstance(self.dynamics, DynamicsCausal)
+        # --- Encode videos and actions ---
+        videos_BTHWC = batch["videos"]
+        latent_actions_E = batch["latent_actions"]
+        tokenizer_out = self.tokenizer.vq_encode(videos_BTHWC, training=False)
+        token_idxs_BTN = tokenizer_out["indices"]
+        B, T, N = token_idxs_BTN.shape
+        pad_shape = (B, seq_len - T, N)
+        pad = jnp.zeros(pad_shape, dtype=token_idxs_BTN.dtype)
+        token_idxs_BSN = jnp.concatenate([token_idxs_BTN, pad], axis=1)
+        action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
+        dynamics_causal: DynamicsCausal = self.dynamics
+
+        def causal_step_fn(
+            carry: tuple[jax.Array, jax.Array, jax.Array, jax.Array], step_n: jax.Array
+        ) -> tuple[tuple[jax.Array, jax.Array, jax.Array, jax.Array], None]:
+            rng, token_idxs_BSN, action_tokens_EL, step_t = carry
+            S, N = token_idxs_BSN.shape[1:]
+            L = action_tokens_EL.shape[-1]
+
+            # --- Construct + encode video ---
+            vid_embed_BSNM = dynamics_causal.patch_embed(token_idxs_BSN)
+
+            # --- Predict transition ---
+            action_tokens_BSm1L = jnp.reshape(action_tokens_EL, (B, S - 1, L))
+            act_embed_BSm1M = dynamics_causal.action_up(action_tokens_BSm1L)
+            act_embed_BSM = jnp.pad(act_embed_BSm1M, ((0, 0), (1, 0), (0, 0)))
+            act_embed_BS1M = jnp.reshape(
+                act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1])
+            )
+            vid_embed_BSNp1M = jnp.concatenate([act_embed_BS1M, vid_embed_BSNM], axis=2)
+            final_logits_BTNp1V = (
+                dynamics_causal.transformer(vid_embed_BSNp1M, (step_t, step_n))
+                / temperature
+            )
+            final_logits_BV = final_logits_BTNp1V[:, step_t, step_n, :]
+
+            # --- Sample new tokens for final frame ---
+            if sample_argmax:
+                sampled_token_idxs_B = jnp.argmax(final_logits_BV, axis=-1)
+            else:
+                rng, _rng = jax.random.split(rng)
+                sampled_token_idxs_B = jax.random.categorical(_rng, final_logits_BV)
+            # Update next tokens only
+            token_idxs_BSN = token_idxs_BSN.at[:, step_t, step_n].set(
+                sampled_token_idxs_B
+            )
+
+            new_carry = (rng, token_idxs_BSN, action_tokens_EL, step_t)
+            return new_carry, None
+
+        def generation_step_fn(
+            carry: tuple[jax.Array, jax.Array], step_t: jax.Array
+        ) -> tuple[tuple[jax.Array, jax.Array], None]:
+            rng, current_token_idxs_BSN = carry
+            rng, step_rng = jax.random.split(rng)
+
+            # --- Initialize and run causal loop ---
+            init_carry_causal = (
+                step_rng,
+                current_token_idxs_BSN,
+                action_tokens_EL,
+                step_t,
+            )
+            final_carry_causal, _ = jax.lax.scan(
+                causal_step_fn, init_carry_causal, jnp.arange(N)
+            )
+            updated_token_idxs_BSN = final_carry_causal[1]
+            new_carry = (rng, updated_token_idxs_BSN)
+            return new_carry, None
+
+        # --- Run the autoregressive generation using jax.lax.scan ---
+        initial_carry = (batch["rng"], token_idxs_BSN)
+        timesteps_to_scan = jnp.arange(T, seq_len)
+        final_carry, _ = jax.lax.scan(
+            generation_step_fn, initial_carry, timesteps_to_scan
+        )
+        final_token_idxs_BSN = final_carry[1]
+
+        # --- Decode all tokens at once at the end ---
+        H, W = batch["videos"].shape[2:4]
+        final_frames_BSHWC = self.tokenizer.decode(
+            final_token_idxs_BSN,
+            video_hw=(H, W),
+        )
+        return final_frames_BSHWC
 
     def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
         # --- Preprocess videos ---
@@ -402,7 +556,7 @@ def restore_genie_components(
         # Remove the LAM decoder to save memory and avoid unnecessary computation.
         del model.lam.decoder
         lam_checkpoint_manager.close()
-    
+
     # Reinitialize the optimizer states
     optimizer = nnx.Optimizer(model, tx)
     return optimizer

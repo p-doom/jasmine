@@ -22,7 +22,7 @@ mkdir -p $final_dataset_dir
 
 # Step 1: Download compressed dataset from Hugging Face
 echo "Starting download from Hugging Face..."
-repo_id=avocadoali/open_ai_minecraft_arrayrecords_chunked
+repo_id=p-doom/open_ai_minecraft_arrayrecords_chunked
 start_time_hf_download=$(date +%s)
 
 HF_HUB_ENABLE_HF_TRANSFER=1 HF_HUB_DISABLE_SYMLINKS=1 \
