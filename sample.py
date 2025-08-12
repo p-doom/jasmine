@@ -33,7 +33,7 @@ class Args:
     maskgit_steps: int = 25
     temperature: float = 1.0
     sample_argmax: bool = True
-    start_frame: int = 0
+    start_frame: int = 1
     # Tokenizer checkpoint
     tokenizer_dim: int = 512
     tokenizer_ffn_dim: int = 2048
