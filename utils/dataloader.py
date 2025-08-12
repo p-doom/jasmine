@@ -96,6 +96,38 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
         return seq
 
 
+class DarknessFilter(grain.transforms.Filter):
+    """
+    A Grain Filter that filters out sequences with images that are too dark.
+    """
+
+    def __init__(self, darkness_threshold: float):
+        """Initializes the filter with darkness threshold."""
+        self.darkness_threshold = darkness_threshold
+
+    def filter(self, element: Any) -> bool:
+        """
+        Filters sequences based on darkness.
+
+        Args:
+            element: A NumPy array representing a processed video sequence.
+
+        Returns:
+            True if the sequence is not too dark, False otherwise.
+        """
+        # Convert the RGB image to grayscale using numpy
+        element_greyscale = np.dot(element[...,:3], [0.2989, 0.5870, 0.1140])
+        average_brightness = np.mean(element_greyscale)
+        if average_brightness < self.darkness_threshold:
+            print(
+                f"Filtering out sequence with average brightness {average_brightness}, "
+                f"which is below the darkness threshold {self.darkness_threshold}."
+            )
+            return False
+
+        return True
+
+
 def get_dataloader(
     array_record_paths: list[str],
     seq_len: int,
@@ -103,6 +135,7 @@ def get_dataloader(
     image_h: int,
     image_w: int,
     image_c: int,
+    darkness_threshold: float = 0.,
     num_workers: int = 1,
     prefetch_buffer_size: int = 1,
     seed: int = 42,
@@ -138,6 +171,9 @@ def get_dataloader(
         ),
         ProcessEpisodeAndSlice(
             seq_len=seq_len, image_h=image_h, image_w=image_w, image_c=image_c
+        ),
+        DarknessFilter(
+            darkness_threshold=darkness_threshold
         ),
         grain.transforms.Batch(batch_size=per_process_batch_size, drop_remainder=True),
     ]
