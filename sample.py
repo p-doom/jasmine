@@ -59,6 +59,8 @@ class Args:
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
     use_flash_attention: bool = True
+    # Additional parameters
+    darkness_threshold: float = 0.0
 
 
 args = tyro.cli(Args)
@@ -195,6 +197,7 @@ if __name__ == "__main__":
         num_workers=0,
         prefetch_buffer_size=1,
         seed=args.seed,
+        darkness_threshold=args.darkness_threshold,
     )
     dataloader = iter(dataloader)
     video_batch_BSHWC = next(dataloader)
