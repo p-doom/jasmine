@@ -21,6 +21,7 @@ from utils.dataloader import get_dataloader
 from utils.lr_utils import get_lr_schedule
 from utils.parameter_utils import count_parameters_by_component
 
+jax.config.update("jax_debug_nans", True)
 
 @dataclass
 class Args:
