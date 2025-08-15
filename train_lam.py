@@ -227,7 +227,7 @@ if __name__ == "__main__":
         b1=0.9,
         b2=0.9,
         weight_decay=1e-4,
-        mu_dtype=args.dtype,
+        mu_dtype=args.param_dtype,
     )
     optimizer = nnx.Optimizer(lam, tx)
 
