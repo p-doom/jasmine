@@ -197,9 +197,9 @@ class STTransformer(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
+        self.sow_logits = sow_logits
         self.sow_weights = sow_weights
         self.sow_activations = sow_activations
-        self.sow_logits = sow_logits
 
         self.input_norm1 = nnx.LayerNorm(
             num_features=self.input_dim,
