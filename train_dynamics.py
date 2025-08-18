@@ -205,6 +205,7 @@ if __name__ == "__main__":
         decode=False,
         rngs=rngs,
     )
+    del genie.lam.decoder
 
     _, params, _ = nnx.split(genie, nnx.Param, ...)
     param_counts = count_parameters_by_component(params)
