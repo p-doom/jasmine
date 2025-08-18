@@ -48,7 +48,7 @@ def main():
     num_processes = mp.cpu_count()
     print(f"Number of processes: {num_processes}")
 
-    print("Converting mp4 to array_record files...")
+    print("Converting npy to array_record files...")
     pool_args = [
         (
             idx,
