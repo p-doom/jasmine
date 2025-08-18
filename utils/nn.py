@@ -346,7 +346,7 @@ class TransformerBlock(nnx.Module):
             rngs=rngs,
         )
 
-    # @nnx.remat
+    @nnx.remat
     def __call__(self, x_BTNM: jax.Array, pos_index: Tuple[jax.Array, jax.Array] | None = None) -> jax.Array:
         # --- Spatial attention ---
         B, T, N, M = x_BTNM.shape
