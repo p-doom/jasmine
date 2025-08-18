@@ -71,7 +71,7 @@ class STBlock(nnx.Module):
         self.spatial_norm = nnx.LayerNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
-            dtype=self.dtype,
+            dtype=self.param_dtype, # layer norm in full precision
             rngs=rngs,
         )
         self.spatial_attention = nnx.MultiHeadAttention(
@@ -91,7 +91,7 @@ class STBlock(nnx.Module):
         self.temporal_norm = nnx.LayerNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
-            dtype=self.dtype,
+            dtype=self.param_dtype, # layer norm in full precision
             rngs=rngs,
         )
         self.temporal_attention = nnx.MultiHeadAttention(
@@ -111,7 +111,7 @@ class STBlock(nnx.Module):
         self.ffn_norm = nnx.LayerNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
-            dtype=self.dtype,
+            dtype=self.param_dtype, # layer norm in full precision
             rngs=rngs,
         )
         self.ffn_dense1 = nnx.Linear(
@@ -193,7 +193,7 @@ class STTransformer(nnx.Module):
         self.input_norm1 = nnx.LayerNorm(
             num_features=self.input_dim,
             param_dtype=self.param_dtype,
-            dtype=self.dtype,
+            dtype=self.param_dtype, # layer norm in full precision
             rngs=rngs,
         )
         self.input_dense = nnx.Linear(
@@ -206,7 +206,7 @@ class STTransformer(nnx.Module):
         self.input_norm2 = nnx.LayerNorm(
             num_features=self.model_dim,
             param_dtype=self.param_dtype,
-            dtype=self.dtype,
+            dtype=self.param_dtype, # layer norm in full precision
             rngs=rngs,
         )
 
@@ -271,19 +271,19 @@ class TransformerBlock(nnx.Module):
         self.temporal_norm = nnx.LayerNorm(
             num_features=self.model_dim,
             param_dtype=self.param_dtype,
-            dtype=self.dtype,
+            dtype=self.param_dtype, # layer norm in full precision
             rngs=rngs,
         )
         self.spatial_norm = nnx.LayerNorm(
             num_features=self.model_dim,
             param_dtype=self.param_dtype,
-            dtype=self.dtype,
+            dtype=self.param_dtype, # layer norm in full precision
             rngs=rngs,
         )
         self.ffn_norm = nnx.LayerNorm(
             num_features=self.model_dim,
             param_dtype=self.param_dtype,
-            dtype=self.dtype,
+            dtype=self.param_dtype, # layer norm in full precision
             rngs=rngs,
         )
         self.temporal_attention = nnx.MultiHeadAttention(
@@ -394,7 +394,7 @@ class Transformer(nnx.Module):
         self.input_norm1 = nnx.LayerNorm(
             num_features=self.input_dim,
             param_dtype=self.param_dtype,
-            dtype=self.dtype,
+            dtype=self.param_dtype, # layer norm in full precision
             rngs=rngs,
         )
         self.input_dense = nnx.Linear(
@@ -407,7 +407,7 @@ class Transformer(nnx.Module):
         self.input_norm2 = nnx.LayerNorm(
             num_features=self.model_dim,
             param_dtype=self.param_dtype,
-            dtype=self.dtype,
+            dtype=self.param_dtype, # layer norm in full precision
             rngs=rngs,
         )
 
