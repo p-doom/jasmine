@@ -62,7 +62,7 @@ def preprocess_pngs(input_dir, output_path, original_fps, target_fps, target_wid
         )
         writer = ArrayRecordWriter(str(out_file), "group_size:1")
         record = {"raw_video": frames.tobytes(), 
-                  "environment": os.path.basename(os.path.dirname(input_dir)),
+                  "environment": environment,
                   "sequence_length": frames.shape[0]}
         writer.write(pickle.dumps(record))
         writer.close()
