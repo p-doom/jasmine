@@ -63,7 +63,7 @@ def main():
     num_processes = mp.cpu_count()
     print(f"Number of processes: {num_processes}")
 
-    print("Converting npy to array_record files...")
+    print("Converting video to array_record files...")
     pool_args = [
         (
             idx,
@@ -81,7 +81,7 @@ def main():
     with mp.Pool(processes=num_processes) as pool:
         for result in pool.starmap(preprocess_video, pool_args):
             results.append(result)
-    print("Done converting npy to array_record files")
+    print("Done converting video to array_record files")
 
     # count the number of failed videos
     failed_videos = [result for result in results if result[1] == 0]
