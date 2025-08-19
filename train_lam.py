@@ -145,24 +145,24 @@ def train_step(
     return loss, recon, action_last_active, metrics
 
 
-def build_model(a: Args, rng: jax.Array) -> tuple[LatentActionModel, jax.Array]:
+def build_model(args: Args, rng: jax.Array) -> tuple[LatentActionModel, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
     return (
         LatentActionModel(
-            in_dim=a.image_channels,
-            model_dim=a.model_dim,
-            ffn_dim=a.ffn_dim,
-            latent_dim=a.latent_dim,
-            num_latents=a.num_latents,
-            patch_size=a.patch_size,
-            num_blocks=a.num_blocks,
-            num_heads=a.num_heads,
-            dropout=a.dropout,
-            codebook_dropout=a.codebook_dropout,
-            param_dtype=a.param_dtype,
-            dtype=a.dtype,
-            use_flash_attention=a.use_flash_attention,
+            in_dim=args.image_channels,
+            model_dim=args.model_dim,
+            ffn_dim=args.ffn_dim,
+            latent_dim=args.latent_dim,
+            num_latents=args.num_latents,
+            patch_size=args.patch_size,
+            num_blocks=args.num_blocks,
+            num_heads=args.num_heads,
+            dropout=args.dropout,
+            codebook_dropout=args.codebook_dropout,
+            param_dtype=args.param_dtype,
+            dtype=args.dtype,
+            use_flash_attention=args.use_flash_attention,
             rngs=rngs,
         ),
         rng,
@@ -170,23 +170,23 @@ def build_model(a: Args, rng: jax.Array) -> tuple[LatentActionModel, jax.Array]:
 
 
 def build_optimizer(
-    model: LatentActionModel, a: Args
+    model: LatentActionModel, args: Args
 ) -> tuple[nnx.Optimizer, optax.Schedule]:
     lr_schedule = get_lr_schedule(
-        a.lr_schedule,
-        a.init_lr,
-        a.max_lr,
-        a.decay_end,
-        a.num_steps,
-        a.warmup_steps,
-        a.wsd_decay_steps,
+        args.lr_schedule,
+        args.init_lr,
+        args.max_lr,
+        args.decay_end,
+        args.num_steps,
+        args.warmup_steps,
+        args.wsd_decay_steps,
     )
     tx = optax.adamw(
         learning_rate=lr_schedule,
         b1=0.9,
         b2=0.9,
         weight_decay=1e-4,
-        mu_dtype=a.param_dtype,  # moments in full precision
+        mu_dtype=args.param_dtype,  # moments in full precision
     )
     optimizer = nnx.Optimizer(model, tx)
     return optimizer, lr_schedule
@@ -217,30 +217,30 @@ def shard_optimizer_states(
     nnx.update(optimizer, optimizer_sharded_state)
 
 
-def build_dataloader(a: Args) -> tuple[grain.DataLoader, grain.DataLoaderIterator]:
-    image_shape = (a.image_height, a.image_width, a.image_channels)
+def build_dataloader(args: Args) -> tuple[grain.DataLoader, grain.DataLoaderIterator]:
+    image_shape = (args.image_height, args.image_width, args.image_channels)
     array_record_files = [
-        os.path.join(a.data_dir, x)
-        for x in os.listdir(a.data_dir)
+        os.path.join(args.data_dir, x)
+        for x in os.listdir(args.data_dir)
         if x.endswith(".array_record")
     ]
     grain_dataloader = get_dataloader(
         array_record_files,
-        a.seq_len,
+        args.seq_len,
         # NOTE: We deliberately pass the global batch size
         # The dataloader shards the dataset across all processes
-        a.batch_size,
+        args.batch_size,
         *image_shape,
         num_workers=8,
         prefetch_buffer_size=1,
-        seed=a.seed,
+        seed=args.seed,
     )
     initial_state = grain_dataloader._create_initial_state()
     grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
     return grain_dataloader, grain_iterator
 
 
-def build_checkpoint_manager(a: Args) -> ocp.CheckpointManager:
+def build_checkpoint_manager(args: Args) -> ocp.CheckpointManager:
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add(
         "model_state", ocp.args.PyTreeSave, ocp.handlers.PyTreeCheckpointHandler
@@ -259,14 +259,14 @@ def build_checkpoint_manager(a: Args) -> ocp.CheckpointManager:
         cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
     )
     checkpoint_options = ocp.CheckpointManagerOptions(
-        save_interval_steps=a.log_checkpoint_interval,
+        save_interval_steps=args.log_checkpoint_interval,
         max_to_keep=3,
-        keep_period=a.log_checkpoint_keep_period,
+        keep_period=args.log_checkpoint_keep_period,
         step_format_fixed_length=6,
         cleanup_tmp_directories=True,
     )
     checkpoint_manager = ocp.CheckpointManager(
-        a.ckpt_dir,
+        args.ckpt_dir,
         options=checkpoint_options,
         handler_registry=handler_registry,
     )
@@ -274,7 +274,7 @@ def build_checkpoint_manager(a: Args) -> ocp.CheckpointManager:
 
 
 def restore_checkpoint_if_needed(
-    a: Args,
+    args: Args,
     checkpoint_manager: ocp.CheckpointManager,
     optimizer: nnx.Optimizer,
     grain_iterator: grain.DataLoaderIterator,
@@ -283,7 +283,7 @@ def restore_checkpoint_if_needed(
     step = 0
     if restore_step is None:
         restore_step = checkpoint_manager.latest_step()
-    if a.restore_ckpt:
+    if args.restore_ckpt:
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
         abstract_optimizer_state = nnx.state(abstract_optimizer)
         restored = checkpoint_manager.restore(

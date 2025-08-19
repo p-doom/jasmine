@@ -149,39 +149,39 @@ def train_step(
     return loss, recon, metrics
 
 
-def build_model(a: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
+def build_model(args: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
     genie = Genie(
         # Tokenizer
-        in_dim=a.image_channels,
-        tokenizer_dim=a.tokenizer_dim,
-        tokenizer_ffn_dim=a.tokenizer_ffn_dim,
-        latent_patch_dim=a.latent_patch_dim,
-        num_patch_latents=a.num_patch_latents,
-        patch_size=a.patch_size,
-        tokenizer_num_blocks=a.tokenizer_num_blocks,
-        tokenizer_num_heads=a.tokenizer_num_heads,
+        in_dim=args.image_channels,
+        tokenizer_dim=args.tokenizer_dim,
+        tokenizer_ffn_dim=args.tokenizer_ffn_dim,
+        latent_patch_dim=args.latent_patch_dim,
+        num_patch_latents=args.num_patch_latents,
+        patch_size=args.patch_size,
+        tokenizer_num_blocks=args.tokenizer_num_blocks,
+        tokenizer_num_heads=args.tokenizer_num_heads,
         # LAM
-        lam_dim=a.lam_dim,
-        lam_ffn_dim=a.lam_ffn_dim,
-        latent_action_dim=a.latent_action_dim,
-        num_latent_actions=a.num_latent_actions,
-        lam_patch_size=a.lam_patch_size,
-        lam_num_blocks=a.lam_num_blocks,
-        lam_num_heads=a.lam_num_heads,
-        lam_co_train=not a.lam_checkpoint,
+        lam_dim=args.lam_dim,
+        lam_ffn_dim=args.lam_ffn_dim,
+        latent_action_dim=args.latent_action_dim,
+        num_latent_actions=args.num_latent_actions,
+        lam_patch_size=args.lam_patch_size,
+        lam_num_blocks=args.lam_num_blocks,
+        lam_num_heads=args.lam_num_heads,
+        lam_co_train=not args.lam_checkpoint,
         # Dynamics
-        dyna_type=a.dyna_type,
-        dyna_dim=a.dyna_dim,
-        dyna_ffn_dim=a.dyna_ffn_dim,
-        dyna_num_blocks=a.dyna_num_blocks,
-        dyna_num_heads=a.dyna_num_heads,
-        dropout=a.dropout,
-        mask_limit=a.mask_limit,
-        param_dtype=a.param_dtype,
-        dtype=a.dtype,
-        use_flash_attention=a.use_flash_attention,
+        dyna_type=args.dyna_type,
+        dyna_dim=args.dyna_dim,
+        dyna_ffn_dim=args.dyna_ffn_dim,
+        dyna_num_blocks=args.dyna_num_blocks,
+        dyna_num_heads=args.dyna_num_heads,
+        dropout=args.dropout,
+        mask_limit=args.mask_limit,
+        param_dtype=args.param_dtype,
+        dtype=args.dtype,
+        use_flash_attention=args.use_flash_attention,
         decode=False,
         rngs=rngs,
     )
@@ -189,22 +189,22 @@ def build_model(a: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
     return genie, rng
 
 
-def build_optimizer(genie: Genie, a: Args) -> tuple[nnx.Optimizer, optax.Schedule]:
+def build_optimizer(genie: Genie, args: Args) -> tuple[nnx.Optimizer, optax.Schedule]:
     lr_schedule = get_lr_schedule(
-        a.lr_schedule,
-        a.init_lr,
-        a.max_lr,
-        a.decay_end,
-        a.num_steps,
-        a.warmup_steps,
-        a.wsd_decay_steps,
+        args.lr_schedule,
+        args.init_lr,
+        args.max_lr,
+        args.decay_end,
+        args.num_steps,
+        args.warmup_steps,
+        args.wsd_decay_steps,
     )
     tx = optax.adamw(
         learning_rate=lr_schedule,
         b1=0.9,
         b2=0.9,
         weight_decay=1e-4,
-        mu_dtype=a.param_dtype,  # moments in full precision
+        mu_dtype=args.param_dtype,  # moments in full precision
     )
     optimizer = nnx.Optimizer(genie, tx)
     return optimizer, lr_schedule
@@ -235,30 +235,30 @@ def shard_optimizer_states(
     nnx.update(optimizer, optimizer_sharded_state)
 
 
-def build_dataloader(a: Args) -> tuple[grain.DataLoader, grain.DataLoaderIterator]:
-    image_shape = (a.image_height, a.image_width, a.image_channels)
+def build_dataloader(args: Args) -> tuple[grain.DataLoader, grain.DataLoaderIterator]:
+    image_shape = (args.image_height, args.image_width, args.image_channels)
     array_record_files = [
-        os.path.join(a.data_dir, x)
-        for x in os.listdir(a.data_dir)
+        os.path.join(args.data_dir, x)
+        for x in os.listdir(args.data_dir)
         if x.endswith(".array_record")
     ]
     grain_dataloader = get_dataloader(
         array_record_files,
-        a.seq_len,
+        args.seq_len,
         # NOTE: We deliberately pass the global batch size
         # The dataloader shards the dataset across all processes
-        a.batch_size,
+        args.batch_size,
         *image_shape,
         num_workers=8,
         prefetch_buffer_size=1,
-        seed=a.seed,
+        seed=args.seed,
     )
     initial_state = grain_dataloader._create_initial_state()
     grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
     return grain_dataloader, grain_iterator
 
 
-def build_checkpoint_manager(a: Args) -> ocp.CheckpointManager:
+def build_checkpoint_manager(args: Args) -> ocp.CheckpointManager:
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add(
         "model_state", ocp.args.PyTreeSave, ocp.handlers.PyTreeCheckpointHandler
@@ -277,14 +277,14 @@ def build_checkpoint_manager(a: Args) -> ocp.CheckpointManager:
         cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
     )
     checkpoint_options = ocp.CheckpointManagerOptions(
-        save_interval_steps=a.log_checkpoint_interval,
+        save_interval_steps=args.log_checkpoint_interval,
         max_to_keep=3,
-        keep_period=a.log_checkpoint_keep_period,
+        keep_period=args.log_checkpoint_keep_period,
         step_format_fixed_length=6,
         cleanup_tmp_directories=True,
     )
     checkpoint_manager = ocp.CheckpointManager(
-        a.ckpt_dir,
+        args.ckpt_dir,
         options=checkpoint_options,
         handler_registry=handler_registry,
     )
@@ -292,7 +292,7 @@ def build_checkpoint_manager(a: Args) -> ocp.CheckpointManager:
 
 
 def restore_or_initialize_components(
-    a: Args,
+    args: Args,
     checkpoint_manager: ocp.CheckpointManager,
     optimizer: nnx.Optimizer,
     grain_iterator: grain.DataLoaderIterator,
@@ -303,7 +303,7 @@ def restore_or_initialize_components(
     step = 0
     if restore_step is None:
         restore_step = checkpoint_manager.latest_step()
-    if a.restore_ckpt:
+    if args.restore_ckpt:
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
         abstract_optimizer_state = nnx.state(abstract_optimizer)
         restored = checkpoint_manager.restore(
@@ -321,7 +321,7 @@ def restore_or_initialize_components(
     else:
         # Restore from pre-trained tokenizer (and LAM)
         rng, _rng = jax.random.split(rng)
-        optimizer = restore_genie_components(optimizer, replicated_sharding, _rng, a)
+        optimizer = restore_genie_components(optimizer, replicated_sharding, _rng, args)
         # NOTE: We have to remove the (unused) tokenizer vq dropout due flax.nnx lazily initializing modules.
         # Specifically, the first dynamics model checkpoint will contain the vq dropout module,
         # but the first full restore will fail due to nnx not initializing the module when
