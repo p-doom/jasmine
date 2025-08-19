@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 import os
-from typing import cast
+from typing import cast, Optional
 
 import einops
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
@@ -293,18 +293,21 @@ def build_checkpoint_manager(a: Args) -> ocp.CheckpointManager:
 
 def restore_or_initialize_components(
     a: Args,
-    checkpoint_manager,
-    optimizer,
-    grain_iterator,
-    rng,
-    replicated_sharding,
+    checkpoint_manager: ocp.CheckpointManager,
+    optimizer: nnx.Optimizer,
+    grain_iterator: grain.DataLoaderIterator,
+    rng: jax.Array,
+    replicated_sharding: NamedSharding,
+    restore_step: Optional[int] = None,
 ) -> tuple[int, nnx.Optimizer, grain.DataLoaderIterator, jax.Array]:
     step = 0
+    if restore_step is None:
+        restore_step = checkpoint_manager.latest_step()
     if a.restore_ckpt:
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
         abstract_optimizer_state = nnx.state(abstract_optimizer)
         restored = checkpoint_manager.restore(
-            checkpoint_manager.latest_step(),
+            restore_step,
             args=ocp.args.Composite(
                 model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
                 dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),  # type: ignore
@@ -313,7 +316,7 @@ def restore_or_initialize_components(
         restored_optimizer_state = restored["model_state"]
         nnx.update(optimizer, restored_optimizer_state)
         grain_iterator = restored["dataloader_state"]
-        step = checkpoint_manager.latest_step() or 0
+        step = restore_step or 0
         print(f"Restored dataloader and model state from step {step}")
     else:
         # Restore from pre-trained tokenizer (and LAM)
@@ -382,7 +385,6 @@ if __name__ == "__main__":
     shard_optimizer_states(optimizer, replicated_sharding)
 
     # --- Initialize checkpoint manager ---
-    step = 0
     checkpoint_manager = build_checkpoint_manager(args)
 
     # --- Create DataLoaderIterator from dataloader ---
