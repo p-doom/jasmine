@@ -149,8 +149,6 @@ def train_step(
     return loss, recon, metrics
 
 
-
-
 def build_model(a: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
@@ -191,7 +189,7 @@ def build_model(a: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
     return genie, rng
 
 
-def build_optimizer(genie: Genie, a: Args):
+def build_optimizer(genie: Genie, a: Args) -> tuple[nnx.Optimizer, optax.Schedule]:
     lr_schedule = get_lr_schedule(
         a.lr_schedule,
         a.init_lr,
@@ -212,7 +210,9 @@ def build_optimizer(genie: Genie, a: Args):
     return optimizer, lr_schedule
 
 
-def build_mesh_and_sharding(num_devices: int):
+def build_mesh_and_sharding(
+    num_devices: int,
+) -> tuple[Mesh, NamedSharding, NamedSharding]:
     device_mesh_arr = create_device_mesh((num_devices,))
     mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
@@ -220,16 +220,22 @@ def build_mesh_and_sharding(num_devices: int):
     return mesh, replicated_sharding, videos_sharding
 
 
-def shard_optimizer_states(optimizer: nnx.Optimizer, replicated_sharding: NamedSharding) -> None:
+def shard_optimizer_states(
+    optimizer: nnx.Optimizer, replicated_sharding: NamedSharding
+) -> None:
     model_state = nnx.state(optimizer.model)
-    model_sharded_state = jax.lax.with_sharding_constraint(model_state, replicated_sharding)
+    model_sharded_state = jax.lax.with_sharding_constraint(
+        model_state, replicated_sharding
+    )
     nnx.update(optimizer.model, model_sharded_state)
     optimizer_state = nnx.state(optimizer, nnx.optimizer.OptState)
-    optimizer_sharded_state = jax.lax.with_sharding_constraint(optimizer_state, replicated_sharding)
+    optimizer_sharded_state = jax.lax.with_sharding_constraint(
+        optimizer_state, replicated_sharding
+    )
     nnx.update(optimizer, optimizer_sharded_state)
 
 
-def build_dataloader(a: Args):
+def build_dataloader(a: Args) -> tuple[grain.DataLoader, grain.DataLoaderIterator]:
     image_shape = (a.image_height, a.image_width, a.image_channels)
     array_record_files = [
         os.path.join(a.data_dir, x)
@@ -252,10 +258,14 @@ def build_dataloader(a: Args):
     return grain_dataloader, grain_iterator
 
 
-def build_checkpoint_manager(a: Args):
+def build_checkpoint_manager(a: Args) -> ocp.CheckpointManager:
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
-    handler_registry.add("model_state", ocp.args.PyTreeSave, ocp.handlers.PyTreeCheckpointHandler)
-    handler_registry.add("model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler)
+    handler_registry.add(
+        "model_state", ocp.args.PyTreeSave, ocp.handlers.PyTreeCheckpointHandler
+    )
+    handler_registry.add(
+        "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
+    )
     handler_registry.add(
         "dataloader_state",
         grain.checkpoint.CheckpointSave,
@@ -288,7 +298,7 @@ def restore_or_initialize_components(
     grain_iterator,
     rng,
     replicated_sharding,
-):
+) -> tuple[int, nnx.Optimizer, grain.DataLoaderIterator, jax.Array]:
     step = 0
     if a.restore_ckpt:
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
@@ -332,7 +342,7 @@ if __name__ == "__main__":
         )
 
     rng = jax.random.key(args.seed)
-    
+
     # --- Initialize model ---
     genie, rng = build_model(args, rng)
     _, params, _ = nnx.split(genie, nnx.Param, ...)

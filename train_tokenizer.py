@@ -137,29 +137,33 @@ def train_step(
     return loss, recon, metrics
 
 
-
 def build_model(a: Args, rng: jax.Array) -> tuple[TokenizerVQVAE, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
-    return TokenizerVQVAE(
-        in_dim=a.image_channels,
-        model_dim=a.model_dim,
-        ffn_dim=a.ffn_dim,
-        latent_dim=a.latent_dim,
-        num_latents=a.num_latents,
-        patch_size=a.patch_size,
-        num_blocks=a.num_blocks,
-        num_heads=a.num_heads,
-        dropout=a.dropout,
-        codebook_dropout=a.codebook_dropout,
-        param_dtype=a.param_dtype,
-        dtype=a.dtype,
-        use_flash_attention=a.use_flash_attention,
-        rngs=rngs,
-    ), rng
+    return (
+        TokenizerVQVAE(
+            in_dim=a.image_channels,
+            model_dim=a.model_dim,
+            ffn_dim=a.ffn_dim,
+            latent_dim=a.latent_dim,
+            num_latents=a.num_latents,
+            patch_size=a.patch_size,
+            num_blocks=a.num_blocks,
+            num_heads=a.num_heads,
+            dropout=a.dropout,
+            codebook_dropout=a.codebook_dropout,
+            param_dtype=a.param_dtype,
+            dtype=a.dtype,
+            use_flash_attention=a.use_flash_attention,
+            rngs=rngs,
+        ),
+        rng,
+    )
 
 
-def build_optimizer(model: TokenizerVQVAE, a: Args):
+def build_optimizer(
+    model: TokenizerVQVAE, a: Args
+) -> tuple[nnx.Optimizer, optax.Schedule]:
     lr_schedule = get_lr_schedule(
         a.lr_schedule,
         a.init_lr,
@@ -174,13 +178,15 @@ def build_optimizer(model: TokenizerVQVAE, a: Args):
         b1=0.9,
         b2=0.9,
         weight_decay=1e-4,
-        mu_dtype=a.param_dtype, # moments in full precision
+        mu_dtype=a.param_dtype,  # moments in full precision
     )
     optimizer = nnx.Optimizer(model, tx)
     return optimizer, lr_schedule
 
 
-def build_mesh_and_sharding(num_devices: int):
+def build_mesh_and_sharding(
+    num_devices: int,
+) -> tuple[Mesh, NamedSharding, NamedSharding]:
     device_mesh_arr = create_device_mesh((num_devices,))
     mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
@@ -188,16 +194,22 @@ def build_mesh_and_sharding(num_devices: int):
     return mesh, replicated_sharding, videos_sharding
 
 
-def shard_optimizer_states(optimizer: nnx.Optimizer, replicated_sharding: NamedSharding) -> None:
+def shard_optimizer_states(
+    optimizer: nnx.Optimizer, replicated_sharding: NamedSharding
+) -> None:
     model_state = nnx.state(optimizer.model)
-    model_sharded_state = jax.lax.with_sharding_constraint(model_state, replicated_sharding)
+    model_sharded_state = jax.lax.with_sharding_constraint(
+        model_state, replicated_sharding
+    )
     nnx.update(optimizer.model, model_sharded_state)
     optimizer_state = nnx.state(optimizer, nnx.optimizer.OptState)
-    optimizer_sharded_state = jax.lax.with_sharding_constraint(optimizer_state, replicated_sharding)
+    optimizer_sharded_state = jax.lax.with_sharding_constraint(
+        optimizer_state, replicated_sharding
+    )
     nnx.update(optimizer, optimizer_sharded_state)
 
 
-def build_dataloader(a: Args):
+def build_dataloader(a: Args) -> tuple[grain.DataLoader, grain.DataLoaderIterator]:
     image_shape = (a.image_height, a.image_width, a.image_channels)
     array_record_files = [
         os.path.join(a.data_dir, x)
@@ -220,10 +232,14 @@ def build_dataloader(a: Args):
     return grain_dataloader, grain_iterator
 
 
-def build_checkpoint_manager(a: Args):
+def build_checkpoint_manager(a: Args) -> ocp.CheckpointManager:
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
-    handler_registry.add("model_state", ocp.args.PyTreeSave, ocp.handlers.PyTreeCheckpointHandler)
-    handler_registry.add("model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler)
+    handler_registry.add(
+        "model_state", ocp.args.PyTreeSave, ocp.handlers.PyTreeCheckpointHandler
+    )
+    handler_registry.add(
+        "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
+    )
     handler_registry.add(
         "dataloader_state",
         grain.checkpoint.CheckpointSave,
@@ -249,7 +265,12 @@ def build_checkpoint_manager(a: Args):
     return checkpoint_manager
 
 
-def restore_checkpoint_if_needed(a: Args, checkpoint_manager, optimizer, grain_iterator):
+def restore_checkpoint_if_needed(
+    a: Args,
+    checkpoint_manager: ocp.CheckpointManager,
+    optimizer: nnx.Optimizer,
+    grain_iterator: grain.DataLoaderIterator,
+) -> tuple[int, nnx.Optimizer, grain.DataLoaderIterator]:
     step = 0
     if a.restore_ckpt:
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
