@@ -59,6 +59,8 @@ class STBlock(nnx.Module):
         dtype: jnp.dtype,
         use_flash_attention: bool,
         rngs: nnx.Rngs,
+        sow_weights: bool,
+        sow_activations: bool,
     ):
         self.dim = dim
         self.ffn_dim = ffn_dim
@@ -67,6 +69,8 @@ class STBlock(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
+        self.sow_weights = sow_weights
+        self.sow_activations = sow_activations
 
         self.spatial_norm = nnx.LayerNorm(
             num_features=self.dim,
@@ -133,13 +137,13 @@ class STBlock(nnx.Module):
     def __call__(self, x_BTNM: jax.Array) -> jax.Array:
         # --- Spatial attention ---
         z_BTNM = self.spatial_norm(x_BTNM)
-        z_BTNM = self.spatial_attention(z_BTNM)
+        z_BTNM = self.spatial_attention(z_BTNM, sow_weights=self.sow_weights)
         x_BTNM = x_BTNM + z_BTNM
 
         # --- Temporal attention ---
         x_BNTM = x_BTNM.swapaxes(1, 2)
         z_BNTM = self.temporal_norm(x_BNTM)
-        z_BNTM = self.temporal_attention(z_BNTM)
+        z_BNTM = self.temporal_attention(z_BNTM, sow_weights=self.sow_weights)
         x_BNTM = x_BNTM + z_BNTM
         x_BTNM = x_BNTM.swapaxes(1, 2)
 
@@ -149,7 +153,8 @@ class STBlock(nnx.Module):
         z_BTND = jax.nn.gelu(z_BTND)
         z_BTNM = self.ffn_dense2(z_BTND)
         x_BTNM = x_BTNM + z_BTNM
-
+        if self.sow_activations:
+            self.sow(nnx.Intermediate, 'activations', x_BTNM)
         return x_BTNM
 
 
@@ -162,7 +167,7 @@ class STTransformer(nnx.Module):
         I: number of input features
         M: model dimension
         D: FFN dimension
-        O: number of output features
+        V: vocabulary size
     """
     def __init__(
         self,
@@ -177,6 +182,9 @@ class STTransformer(nnx.Module):
         dtype: jnp.dtype,
         use_flash_attention: bool,
         rngs: nnx.Rngs,
+        sow_weights: bool = False,
+        sow_activations: bool = False,
+        sow_logits: bool = False,
         max_len: int = 5000,
     ):
         self.input_dim = input_dim
@@ -189,6 +197,9 @@ class STTransformer(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
+        self.sow_logits = sow_logits
+        self.sow_weights = sow_weights
+        self.sow_activations = sow_activations
 
         self.input_norm1 = nnx.LayerNorm(
             num_features=self.input_dim,
@@ -224,6 +235,8 @@ class STTransformer(nnx.Module):
                     dtype=self.dtype,
                     use_flash_attention=self.use_flash_attention,
                     rngs=rngs,
+                    sow_weights=self.sow_weights,
+                    sow_activations=self.sow_activations,
                 )
             )
 
@@ -243,8 +256,10 @@ class STTransformer(nnx.Module):
         for block in self.blocks:
             x_BTNM = block(x_BTNM)
 
-        x_BTNO = self.output_dense(x_BTNM)
-        return x_BTNO
+        x_BTNV = self.output_dense(x_BTNM)
+        if self.sow_logits:
+            self.sow(nnx.Intermediate, 'logits', x_BTNV)
+        return x_BTNV
 
 class TransformerBlock(nnx.Module):
     def __init__(
@@ -258,6 +273,8 @@ class TransformerBlock(nnx.Module):
         use_flash_attention: bool,
         decode: bool,
         rngs: nnx.Rngs,
+        sow_weights: bool,
+        sow_activations: bool,
     ):
         self.model_dim = model_dim
         self.ffn_dim = ffn_dim
@@ -267,6 +284,8 @@ class TransformerBlock(nnx.Module):
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
         self.decode = decode
+        self.sow_weights = sow_weights
+        self.sow_activations = sow_activations
 
         self.temporal_norm = nnx.LayerNorm(
             num_features=self.model_dim,
@@ -333,13 +352,13 @@ class TransformerBlock(nnx.Module):
         B, T, N, M = x_BTNM.shape
         z_FNM = einops.rearrange(x_BTNM, "b t n m -> (b t) n m")
         z_FNM = self.spatial_norm(z_FNM)
-        z_FNM = self.spatial_attention(z_FNM)
+        z_FNM = self.spatial_attention(z_FNM, sow_weights=self.sow_weights)
         z_BTNM = einops.rearrange(z_FNM, "(b t) n m -> b t n m", t=T)
         x_BTNM = x_BTNM + z_BTNM
         # --- Temporal attention ---
         z_PTM = einops.rearrange(x_BTNM, "b t n m -> (b n) t m")
         z_PTM = self.temporal_norm(z_PTM)
-        z_PTM = self.temporal_attention(z_PTM)
+        z_PTM = self.temporal_attention(z_PTM, sow_weights=self.sow_weights)
         z_BTNM = einops.rearrange(z_PTM, "(b n) t m -> b t n m", n=N)
         x_BTNM = x_BTNM + z_BTNM
         # --- Feedforward ---
@@ -348,6 +367,8 @@ class TransformerBlock(nnx.Module):
         z_BTND = jax.nn.gelu(z_BTND)
         z_BTNM = self.ffn_dense2(z_BTND)
         x_BTNM = x_BTNM + z_BTNM
+        if self.sow_activations:
+            self.sow(nnx.Intermediate, 'activations', x_BTNM)
 
         return x_BTNM
 
@@ -360,7 +381,7 @@ class Transformer(nnx.Module):
         I: number of input features
         M: model dimension
         D: FFN dimension
-        O: number of output features
+        V: vocabulary size
         F: number of frames in batch
         P: number of patch positions in batch
     """
@@ -378,6 +399,9 @@ class Transformer(nnx.Module):
         use_flash_attention: bool,
         decode: bool,
         rngs: nnx.Rngs,
+        sow_logits: bool = False,
+        sow_weights: bool = False,
+        sow_activations: bool = False,
         max_len: int = 5000,
     ):
         self.input_dim = input_dim
@@ -390,6 +414,9 @@ class Transformer(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
+        self.sow_logits = sow_logits
+        self.sow_weights = sow_weights
+        self.sow_activations = sow_activations
 
         self.input_norm1 = nnx.LayerNorm(
             num_features=self.input_dim,
@@ -425,6 +452,8 @@ class Transformer(nnx.Module):
                     dtype=self.dtype,
                     use_flash_attention=self.use_flash_attention,
                     decode=decode,
+                    sow_weights=self.sow_weights,
+                    sow_activations=self.sow_activations,
                     rngs=rngs,
                 )
             )
@@ -445,6 +474,8 @@ class Transformer(nnx.Module):
             x_BTNM = block(x_BTNM, pos_index)
 
         x_BTNV = self.output_dense(x_BTNM)
+        if self.sow_logits:
+            self.sow(nnx.Intermediate, 'logits', x_BTNV)
         return x_BTNV
 
 def normalize(x: jax.Array) -> jax.Array:
