@@ -403,7 +403,7 @@ if __name__ == "__main__":
                         )
                         wandb.log(log_images)
             # --- Checkpointing ---
-            if (args.save_ckpt and step % args.log_checkpoint_interval == 0) or step == args.num_steps:
+            if (args.save_ckpt and step % args.log_checkpoint_interval == 0):
                 optimizer_state = nnx.state(optimizer)
                 checkpoint_manager.save(
                     step,
