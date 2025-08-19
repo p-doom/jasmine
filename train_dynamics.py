@@ -151,7 +151,7 @@ def train_step(
 
 
 
-def build_model(a: Args, rng: jax.Array) -> Genie:
+def build_model(a: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
     genie = Genie(
@@ -188,7 +188,7 @@ def build_model(a: Args, rng: jax.Array) -> Genie:
         rngs=rngs,
     )
     del genie.lam.decoder
-    return genie
+    return genie, rng
 
 
 def build_optimizer(genie: Genie, a: Args):
@@ -307,7 +307,8 @@ def restore_or_initialize_components(
         print(f"Restored dataloader and model state from step {step}")
     else:
         # Restore from pre-trained tokenizer (and LAM)
-        optimizer = restore_genie_components(optimizer, replicated_sharding, rng, a)
+        rng, _rng = jax.random.split(rng)
+        optimizer = restore_genie_components(optimizer, replicated_sharding, _rng, a)
         # NOTE: We have to remove the (unused) tokenizer vq dropout due flax.nnx lazily initializing modules.
         # Specifically, the first dynamics model checkpoint will contain the vq dropout module,
         # but the first full restore will fail due to nnx not initializing the module when
@@ -333,7 +334,7 @@ if __name__ == "__main__":
     rng = jax.random.key(args.seed)
     
     # --- Initialize model ---
-    genie = build_model(args, rng)
+    genie, rng = build_model(args, rng)
     _, params, _ = nnx.split(genie, nnx.Param, ...)
     param_counts = count_parameters_by_component(params)
 

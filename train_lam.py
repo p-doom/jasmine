@@ -145,9 +145,8 @@ def train_step(
     return loss, recon, action_last_active, metrics
 
 
-def build_model(a: Args) -> LatentActionModel:
-    rng = jax.random.key(a.seed)
-    _, _rng = jax.random.split(rng)
+def build_model(a: Args, rng: jax.Array) -> tuple[LatentActionModel, jax.Array]:
+    rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
     return LatentActionModel(
         in_dim=a.image_channels,
@@ -164,7 +163,7 @@ def build_model(a: Args) -> LatentActionModel:
         dtype=a.dtype,
         use_flash_attention=a.use_flash_attention,
         rngs=rngs,
-    )
+    ), rng
 
 
 def build_optimizer(model: LatentActionModel, a: Args):
@@ -302,7 +301,7 @@ if __name__ == "__main__":
     rng = jax.random.key(args.seed)
 
     # --- Initialize model ---
-    lam = build_model(args)
+    lam, rng = build_model(args, rng)
 
     # Count parameters
     _, params, _ = nnx.split(lam, nnx.Param, ...)

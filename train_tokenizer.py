@@ -138,8 +138,7 @@ def train_step(
 
 
 
-def build_model(a: Args) -> TokenizerVQVAE:
-    rng = jax.random.key(a.seed)
+def build_model(a: Args, rng: jax.Array) -> tuple[TokenizerVQVAE, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
     return TokenizerVQVAE(
@@ -157,7 +156,7 @@ def build_model(a: Args) -> TokenizerVQVAE:
         dtype=a.dtype,
         use_flash_attention=a.use_flash_attention,
         rngs=rngs,
-    )
+    ), rng
 
 
 def build_optimizer(model: TokenizerVQVAE, a: Args):
@@ -287,7 +286,7 @@ if __name__ == "__main__":
     rng = jax.random.key(args.seed)
 
     # --- Initialize model ---
-    tokenizer = build_model(args)
+    tokenizer, rng = build_model(args, rng)
 
     _, params, _ = nnx.split(tokenizer, nnx.Param, ...)
     param_counts = count_parameters_by_component(params)
