@@ -73,70 +73,6 @@ class Args:
     use_flash_attention: bool = True
 
 
-def tokenizer_loss_fn(
-    model: TokenizerVQVAE, inputs: dict, args: Args
-) -> tuple[jax.Array, tuple[jax.Array, dict]]:
-    # --- Compute loss ---
-    # FIXME (f.srambical): Can we even do native int8 training without casting the video at all?
-    # FIXME (f.srambical): If the tokenizer is the reason for the dynamics model being memory-bound,
-    # should we at least train the tokenizer natively in int8?
-    gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
-    inputs["videos"] = gt.astype(args.dtype)
-    model.train()
-    outputs = model(inputs, training=True)
-    outputs["recon"] = outputs["recon"].astype(jnp.float32)
-    mse = jnp.square(gt - outputs["recon"]).mean()
-    q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()
-    commitment_loss = jnp.square(
-        outputs["emb"] - jax.lax.stop_gradient(outputs["z"])
-    ).mean()
-    loss = mse + q_loss + args.vq_beta * commitment_loss
-
-    # --- Compute validation metrics ---
-    gt = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
-    recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
-    psnr = jnp.asarray(pix.psnr(gt, recon)).mean()
-    ssim = jnp.asarray(pix.ssim(gt, recon)).mean()
-    _, index_counts = jnp.unique_counts(
-        jnp.ravel(outputs["indices"]), size=args.num_latents, fill_value=0
-    )
-    codebook_usage = (index_counts != 0).mean()
-    metrics = dict(
-        loss=loss,
-        mse=mse,
-        q_loss=q_loss,
-        commitment_loss=commitment_loss,
-        psnr=psnr,
-        ssim=ssim,
-        codebook_usage=codebook_usage,
-    )
-    return loss, (outputs["recon"], metrics)
-
-
-@nnx.jit
-def train_step(
-    tokenizer: TokenizerVQVAE, optimizer: nnx.Optimizer, inputs: dict, args: Args
-) -> tuple[jax.Array, jax.Array, dict]:
-    def loss_fn(model: TokenizerVQVAE) -> tuple[jax.Array, tuple[jax.Array, dict]]:
-        return tokenizer_loss_fn(model, inputs, args)
-
-    (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
-        tokenizer
-    )
-    optimizer.update(grads)
-    if args.log_gradients:
-        metrics["encoder_gradients_std/"] = jax.tree.map(
-            lambda x: x.std(), grads["params"]["encoder"]
-        )
-        metrics["vq_gradients_std/"] = jax.tree.map(
-            lambda x: x.std(), grads["params"]["vq"]
-        )
-        metrics["decoder_gradients_std/"] = jax.tree.map(
-            lambda x: x.std(), grads["params"]["decoder"]
-        )
-    return loss, recon, metrics
-
-
 def build_model(args: Args, rng: jax.Array) -> tuple[TokenizerVQVAE, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
@@ -293,9 +229,8 @@ def restore_checkpoint_if_needed(
     return step, optimizer, grain_iterator
 
 
-if __name__ == "__main__":
+def main(args: Args) -> None:
     jax.distributed.initialize()
-    args = tyro.cli(Args)
     num_devices = jax.device_count()
     if num_devices == 0:
         raise ValueError("No JAX devices found.")
@@ -358,6 +293,66 @@ if __name__ == "__main__":
         args, checkpoint_manager, optimizer, grain_iterator
     )
 
+    # --- Define loss and train step (close over args) ---
+    def tokenizer_loss_fn(
+        model: TokenizerVQVAE, inputs: dict
+    ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
+        gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
+        inputs["videos"] = gt.astype(args.dtype)
+        model.train()
+        outputs = model(inputs, training=True)
+        outputs["recon"] = outputs["recon"].astype(jnp.float32)
+        mse = jnp.square(gt - outputs["recon"]).mean()
+        q_loss = jnp.square(
+            jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]
+        ).mean()
+        commitment_loss = jnp.square(
+            outputs["emb"] - jax.lax.stop_gradient(outputs["z"])
+        ).mean()
+        loss = mse + q_loss + args.vq_beta * commitment_loss
+
+        gt_clipped = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
+        recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
+        psnr = jnp.asarray(pix.psnr(gt_clipped, recon)).mean()
+        ssim = jnp.asarray(pix.ssim(gt_clipped, recon)).mean()
+        _, index_counts = jnp.unique_counts(
+            jnp.ravel(outputs["indices"]), size=args.num_latents, fill_value=0
+        )
+        codebook_usage = (index_counts != 0).mean()
+        metrics = dict(
+            loss=loss,
+            mse=mse,
+            q_loss=q_loss,
+            commitment_loss=commitment_loss,
+            psnr=psnr,
+            ssim=ssim,
+            codebook_usage=codebook_usage,
+        )
+        return loss, (outputs["recon"], metrics)
+
+    @nnx.jit
+    def train_step(
+        tokenizer: TokenizerVQVAE, optimizer: nnx.Optimizer, inputs: dict
+    ) -> tuple[jax.Array, jax.Array, dict]:
+        def loss_fn(model: TokenizerVQVAE) -> tuple[jax.Array, tuple[jax.Array, dict]]:
+            return tokenizer_loss_fn(model, inputs)
+
+        (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
+            tokenizer
+        )
+        optimizer.update(grads)
+        if args.log_gradients:
+            metrics["encoder_gradients_std/"] = jax.tree.map(
+                lambda x: x.std(), grads["params"]["encoder"]
+            )
+            metrics["vq_gradients_std/"] = jax.tree.map(
+                lambda x: x.std(), grads["params"]["vq"]
+            )
+            metrics["decoder_gradients_std/"] = jax.tree.map(
+                lambda x: x.std(), grads["params"]["decoder"]
+            )
+        return loss, recon, metrics
+
     # --- TRAIN LOOP ---
     dataloader = (
         jax.make_array_from_process_local_data(videos_sharding, elem)
@@ -368,7 +363,7 @@ if __name__ == "__main__":
         for videos in dataloader:
             # --- Train step ---
             inputs = dict(videos=videos)
-            loss, recon, metrics = train_step(tokenizer, optimizer, inputs, args)
+            loss, recon, metrics = train_step(tokenizer, optimizer, inputs)
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1
@@ -419,3 +414,8 @@ if __name__ == "__main__":
                 break
 
     checkpoint_manager.close()
+
+
+if __name__ == "__main__":
+    args = tyro.cli(Args)
+    main(args)

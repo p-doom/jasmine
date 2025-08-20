@@ -88,67 +88,6 @@ class Args:
     wandb_id: str = ""
 
 
-def dynamics_loss_fn(
-    model: Genie, inputs: dict, args: Args
-) -> tuple[jax.Array, tuple[jax.Array, dict]]:
-    """Compute masked dynamics loss"""
-    gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
-    inputs["videos"] = gt.astype(args.dtype)
-    model.train()
-    outputs = model(inputs, training=True)
-    mask = outputs["mask"]
-    outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
-    ce_loss = optax.softmax_cross_entropy_with_integer_labels(
-        outputs["token_logits"], outputs["video_tokens"]
-    )
-    ce_loss = (mask * ce_loss).sum() / mask.sum()
-    acc = outputs["token_logits"].argmax(-1) == outputs["video_tokens"]
-    acc = (mask * acc).sum() / mask.sum()
-    select_probs = jax.nn.softmax(outputs["token_logits"])
-    gt = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
-    recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
-    psnr = jnp.asarray(pix.psnr(gt, recon)).mean()
-    ssim = jnp.asarray(pix.ssim(gt, recon)).mean()
-    _, index_counts_lam = jnp.unique_counts(
-        jnp.ravel(outputs["lam_indices"]), size=args.num_latent_actions, fill_value=0
-    )
-    _, index_counts_tokenizer = jnp.unique_counts(
-        jnp.ravel(outputs["video_tokens"]), size=args.num_patch_latents, fill_value=0
-    )
-    codebook_usage_lam = (index_counts_lam != 0).mean()
-    codebook_usage_tokenizer = (index_counts_tokenizer != 0).mean()
-    metrics = dict(
-        cross_entropy_loss=ce_loss,
-        masked_token_accuracy=acc,
-        select_logit=outputs["token_logits"].max(-1).mean(),
-        select_p=select_probs.max(-1).mean(),
-        entropy=jax.scipy.special.entr(select_probs).sum(-1).mean(),
-        psnr=psnr,
-        ssim=ssim,
-        codebook_usage_lam=codebook_usage_lam,
-        codebook_usage_tokenizer=codebook_usage_tokenizer,
-    )
-    return ce_loss, (outputs["recon"], metrics)
-
-
-@nnx.jit
-def train_step(
-    model: Genie, optimizer: nnx.Optimizer, inputs: dict, args: Args
-) -> tuple[jax.Array, jax.Array, dict]:
-    """Update state and compute metrics"""
-
-    def loss_fn(model: Genie) -> tuple[jax.Array, tuple[jax.Array, dict]]:
-        return dynamics_loss_fn(model, inputs, args)
-
-    (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
-    optimizer.update(grads)
-    if args.log_gradients:
-        metrics["gradients_std/"] = jax.tree.map(
-            lambda x: x.std(), grads["params"]["dynamics"]
-        )
-    return loss, recon, metrics
-
-
 def build_model(args: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
@@ -330,9 +269,8 @@ def restore_or_initialize_components(
     return step, optimizer, grain_iterator, rng
 
 
-if __name__ == "__main__":
+def main(args: Args) -> None:
     jax.distributed.initialize()
-    args = tyro.cli(Args)
     num_devices = jax.device_count()
     if num_devices == 0:
         raise ValueError("No JAX devices found.")
@@ -395,6 +333,65 @@ if __name__ == "__main__":
         args, checkpoint_manager, optimizer, grain_iterator, rng, replicated_sharding
     )
 
+    # --- Define loss and train step (close over args) ---
+    def dynamics_loss_fn(
+        model: Genie, inputs: dict
+    ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
+        gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
+        inputs["videos"] = gt.astype(args.dtype)
+        model.train()
+        outputs = model(inputs, training=True)
+        mask = outputs["mask"]
+        outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
+        ce_loss = optax.softmax_cross_entropy_with_integer_labels(
+            outputs["token_logits"], outputs["video_tokens"]
+        )
+        ce_loss = (mask * ce_loss).sum() / mask.sum()
+        acc = outputs["token_logits"].argmax(-1) == outputs["video_tokens"]
+        acc = (mask * acc).sum() / mask.sum()
+        select_probs = jax.nn.softmax(outputs["token_logits"])
+        gt_val = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
+        recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
+        psnr = jnp.asarray(pix.psnr(gt_val, recon)).mean()
+        ssim = jnp.asarray(pix.ssim(gt_val, recon)).mean()
+        _, index_counts_lam = jnp.unique_counts(
+            jnp.ravel(outputs["lam_indices"]), size=args.num_latent_actions, fill_value=0
+        )
+        _, index_counts_tokenizer = jnp.unique_counts(
+            jnp.ravel(outputs["video_tokens"]), size=args.num_patch_latents, fill_value=0
+        )
+        codebook_usage_lam = (index_counts_lam != 0).mean()
+        codebook_usage_tokenizer = (index_counts_tokenizer != 0).mean()
+        metrics = dict(
+            cross_entropy_loss=ce_loss,
+            masked_token_accuracy=acc,
+            select_logit=outputs["token_logits"].max(-1).mean(),
+            select_p=select_probs.max(-1).mean(),
+            entropy=jax.scipy.special.entr(select_probs).sum(-1).mean(),
+            psnr=psnr,
+            ssim=ssim,
+            codebook_usage_lam=codebook_usage_lam,
+            codebook_usage_tokenizer=codebook_usage_tokenizer,
+        )
+        return ce_loss, (outputs["recon"], metrics)
+
+    @nnx.jit
+    def train_step(
+        model: Genie, optimizer: nnx.Optimizer, inputs: dict
+    ) -> tuple[jax.Array, jax.Array, dict]:
+        def loss_fn(model: Genie) -> tuple[jax.Array, tuple[jax.Array, dict]]:
+            return dynamics_loss_fn(model, inputs)
+
+        (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
+            model
+        )
+        optimizer.update(grads)
+        if args.log_gradients:
+            metrics["gradients_std/"] = jax.tree.map(
+                lambda x: x.std(), grads["params"]["dynamics"]
+            )
+        return loss, recon, metrics
+
     # --- TRAIN LOOP ---
     dataloader = (
         jax.make_array_from_process_local_data(videos_sharding, elem)
@@ -406,7 +403,7 @@ if __name__ == "__main__":
             # --- Train step ---
             rng, _rng_mask = jax.random.split(rng, 2)
             inputs = dict(videos=videos, mask_rng=_rng_mask)
-            loss, recon, metrics = train_step(optimizer.model, optimizer, inputs, args)
+            loss, recon, metrics = train_step(optimizer.model, optimizer, inputs)
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1
@@ -454,3 +451,8 @@ if __name__ == "__main__":
                 break
 
     checkpoint_manager.close()
+
+
+if __name__ == "__main__":
+    args = tyro.cli(Args)
+    main(args)

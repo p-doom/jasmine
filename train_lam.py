@@ -73,78 +73,6 @@ class Args:
     use_flash_attention: bool = True
 
 
-def lam_loss_fn(
-    model: LatentActionModel, inputs: dict, args: Args
-) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict]]:
-    # --- Compute loss ---
-    gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
-    inputs["videos"] = gt.astype(args.dtype)
-    model.train()
-    outputs = model(inputs, training=True)
-    outputs["recon"] = outputs["recon"].astype(jnp.float32)
-    gt_future_frames = gt[:, 1:]
-    mse = jnp.square(gt_future_frames - outputs["recon"]).mean()
-    q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()
-    commitment_loss = jnp.square(
-        outputs["emb"] - jax.lax.stop_gradient(outputs["z"])
-    ).mean()
-    loss = mse + q_loss + args.vq_beta * commitment_loss
-
-    # --- Compute validation metrics ---
-    gt = gt_future_frames.clip(0, 1).reshape(-1, *gt_future_frames.shape[2:])
-    recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
-    psnr = jnp.asarray(pix.psnr(gt, recon)).mean()
-    ssim = jnp.asarray(pix.ssim(gt, recon)).mean()
-    count_fn = jax.vmap(lambda i: (outputs["indices"] == i).sum())
-    index_counts = count_fn(jnp.arange(args.num_latents))
-    metrics = dict(
-        loss=loss,
-        mse=mse,
-        q_loss=q_loss,
-        commitment_loss=commitment_loss,
-        psnr=psnr,
-        ssim=ssim,
-        codebook_usage=(index_counts != 0).mean(),
-    )
-    return loss, (outputs["recon"], index_counts, metrics)
-
-
-@nnx.jit
-def train_step(
-    lam: LatentActionModel,
-    optimizer: nnx.Optimizer,
-    inputs: dict,
-    action_last_active: jax.Array,
-    rng: jax.Array,
-    args: Args,
-) -> tuple[jax.Array, jax.Array, jax.Array, dict]:
-    def loss_fn(
-        model: LatentActionModel,
-    ) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict]]:
-        return lam_loss_fn(model, inputs, args)
-
-    # --- Update model ---
-    (loss, (recon, idx_counts, metrics)), grads = nnx.value_and_grad(
-        loss_fn, has_aux=True
-    )(lam)
-    optimizer.update(grads)
-
-    # --- Reset inactive latent actions ---
-    codebook = lam.vq.codebook
-    num_codes = len(codebook)
-    active_codes = idx_counts != 0.0
-    action_last_active = jnp.where(active_codes, 0, action_last_active + 1)
-    p_code = active_codes / active_codes.sum()
-    reset_idxs = jax.random.choice(rng, num_codes, shape=(num_codes,), p=p_code)
-    do_reset = action_last_active >= args.vq_reset_thresh
-    new_codebook = jnp.where(
-        jnp.expand_dims(do_reset, -1), codebook[reset_idxs], codebook.value
-    )
-    lam.vq.codebook.value = new_codebook
-    action_last_active = jnp.where(do_reset, 0, action_last_active)
-    return loss, recon, action_last_active, metrics
-
-
 def build_model(args: Args, rng: jax.Array) -> tuple[LatentActionModel, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
@@ -309,9 +237,8 @@ def enable_sowing(lam: LatentActionModel) -> None:
             setattr(blk, "sow_activations", True)
 
 
-if __name__ == "__main__":
+def main(args: Args) -> None:
     jax.distributed.initialize()
-    args = tyro.cli(Args)
     num_devices = jax.device_count()
     if num_devices == 0:
         raise ValueError("No JAX devices found.")
@@ -375,6 +302,76 @@ if __name__ == "__main__":
         args, checkpoint_manager, optimizer, grain_iterator
     )
 
+    # --- Define loss and train step (close over args) ---
+    def lam_loss_fn(
+        model: LatentActionModel, inputs: dict
+    ) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict]]:
+        gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
+        inputs["videos"] = gt.astype(args.dtype)
+        model.train()
+        outputs = model(inputs, training=True)
+        outputs["recon"] = outputs["recon"].astype(jnp.float32)
+        gt_future_frames = gt[:, 1:]
+        mse = jnp.square(gt_future_frames - outputs["recon"]).mean()
+        q_loss = jnp.square(
+            jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]
+        ).mean()
+        commitment_loss = jnp.square(
+            outputs["emb"] - jax.lax.stop_gradient(outputs["z"])
+        ).mean()
+        loss = mse + q_loss + args.vq_beta * commitment_loss
+
+        gt_val = gt_future_frames.clip(0, 1).reshape(-1, *gt_future_frames.shape[2:])
+        recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
+        psnr = jnp.asarray(pix.psnr(gt_val, recon)).mean()
+        ssim = jnp.asarray(pix.ssim(gt_val, recon)).mean()
+        count_fn = jax.vmap(lambda i: (outputs["indices"] == i).sum())
+        index_counts = count_fn(jnp.arange(args.num_latents))
+        metrics = dict(
+            loss=loss,
+            mse=mse,
+            q_loss=q_loss,
+            commitment_loss=commitment_loss,
+            psnr=psnr,
+            ssim=ssim,
+            codebook_usage=(index_counts != 0).mean(),
+        )
+        return loss, (outputs["recon"], index_counts, metrics)
+
+    @nnx.jit
+    def train_step(
+        lam: LatentActionModel,
+        optimizer: nnx.Optimizer,
+        inputs: dict,
+        action_last_active: jax.Array,
+        rng: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, dict]:
+        def loss_fn(
+            model: LatentActionModel,
+        ) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict]]:
+            return lam_loss_fn(model, inputs)
+
+        # --- Update model ---
+        (loss, (recon, idx_counts, metrics)), grads = nnx.value_and_grad(
+            loss_fn, has_aux=True
+        )(lam)
+        optimizer.update(grads)
+
+        # --- Reset inactive latent actions ---
+        codebook = lam.vq.codebook
+        num_codes = len(codebook)
+        active_codes = idx_counts != 0.0
+        action_last_active = jnp.where(active_codes, 0, action_last_active + 1)
+        p_code = active_codes / active_codes.sum()
+        reset_idxs = jax.random.choice(rng, num_codes, shape=(num_codes,), p=p_code)
+        do_reset = action_last_active >= args.vq_reset_thresh
+        new_codebook = jnp.where(
+            jnp.expand_dims(do_reset, -1), codebook[reset_idxs], codebook.value
+        )
+        lam.vq.codebook.value = new_codebook
+        action_last_active = jnp.where(do_reset, 0, action_last_active)
+        return loss, recon, action_last_active, metrics
+
     # --- TRAIN LOOP ---
     dataloader = (
         jax.make_array_from_process_local_data(videos_sharding, elem)
@@ -390,7 +387,7 @@ if __name__ == "__main__":
             inputs = dict(videos=videos, rng=_rng)
             rng, _rng = jax.random.split(rng)
             loss, recon, action_last_active, metrics = train_step(
-                lam, optimizer, inputs, action_last_active, _rng, args
+                lam, optimizer, inputs, action_last_active, _rng
             )
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
@@ -442,3 +439,8 @@ if __name__ == "__main__":
                 break
 
     checkpoint_manager.close()
+
+
+if __name__ == "__main__":
+    args = tyro.cli(Args)
+    main(args)
