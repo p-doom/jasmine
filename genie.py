@@ -432,7 +432,9 @@ def restore_genie_components(
     args,
 ) -> nnx.Optimizer:
     """Restore pre-trained Genie components"""
-    rngs = nnx.Rngs(rng)
+    rng_tokenizer, rng_lam = jax.random.split(rng)
+    rngs_tokenizer = nnx.Rngs(rng_tokenizer)
+    rngs_lam = nnx.Rngs(rng_lam)
 
     tx = optimizer.tx
     model = optimizer.model
@@ -463,7 +465,7 @@ def restore_genie_components(
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
-        rngs=rngs,
+        rngs=rngs_tokenizer,
     )
     dummy_tokenizer_optimizer = nnx.Optimizer(dummy_tokenizer, tx)
     dummy_tokenizer_optimizer_state = nnx.state(dummy_tokenizer_optimizer)
@@ -502,7 +504,7 @@ def restore_genie_components(
             param_dtype=args.param_dtype,
             dtype=args.dtype,
             use_flash_attention=args.use_flash_attention,
-            rngs=rngs,
+            rngs=rngs_lam,
         )
         dummy_lam_optimizer = nnx.Optimizer(dummy_lam, tx)
         dummy_lam_optimizer_state = nnx.state(dummy_lam_optimizer)
