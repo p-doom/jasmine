@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import itertools
 import os
 from typing import cast, Optional
 
@@ -18,8 +19,7 @@ import flax.nnx as nnx
 
 from models.lam import LatentActionModel
 from utils.dataloader import get_dataloader
-from utils.lr_utils import get_lr_schedule
-from utils.parameter_utils import count_parameters_by_component
+from utils.train_utils import get_lr_schedule, count_parameters_by_component, print_compiled_memory_stats, print_compiled_cost_analysis
 
 
 @dataclass
@@ -285,6 +285,7 @@ def main(args: Args) -> None:
 
     # --- Initialize optimizer ---
     optimizer, lr_schedule = build_optimizer(lam, args)
+    del lam
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
     mesh, replicated_sharding, videos_sharding = build_mesh_and_sharding(num_devices)
@@ -340,7 +341,6 @@ def main(args: Args) -> None:
 
     @nnx.jit
     def train_step(
-        lam: LatentActionModel,
         optimizer: nnx.Optimizer,
         inputs: dict,
         action_last_active: jax.Array,
@@ -354,11 +354,11 @@ def main(args: Args) -> None:
         # --- Update model ---
         (loss, (recon, idx_counts, metrics)), grads = nnx.value_and_grad(
             loss_fn, has_aux=True
-        )(lam)
+        )(optimizer.model)
         optimizer.update(grads)
 
         # --- Reset inactive latent actions ---
-        codebook = lam.vq.codebook
+        codebook = optimizer.model.vq.codebook
         num_codes = len(codebook)
         active_codes = idx_counts != 0.0
         action_last_active = jnp.where(active_codes, 0, action_last_active + 1)
@@ -368,7 +368,7 @@ def main(args: Args) -> None:
         new_codebook = jnp.where(
             jnp.expand_dims(do_reset, -1), codebook[reset_idxs], codebook.value
         )
-        lam.vq.codebook.value = new_codebook
+        optimizer.model.vq.codebook.value = new_codebook
         action_last_active = jnp.where(do_reset, 0, action_last_active)
         return loss, recon, action_last_active, metrics
 
@@ -377,6 +377,14 @@ def main(args: Args) -> None:
         jax.make_array_from_process_local_data(videos_sharding, elem)
         for elem in grain_iterator
     )
+    if jax.process_index() == 0:
+        first_videos = next(dataloader)
+        sample_inputs = dict(videos=first_videos)
+        compiled = train_step.lower(optimizer, sample_inputs).compile()
+        print_compiled_memory_stats(compiled.memory_analysis())
+        print_compiled_cost_analysis(compiled.cost_analysis())
+        # Do not skip the first batch during training
+        dataloader = itertools.chain([first_videos], dataloader)
     print(f"Starting training from step {step}...")
     action_last_active = jnp.zeros(args.num_latents, dtype=jnp.int32)
     while step < args.num_steps:
@@ -387,7 +395,7 @@ def main(args: Args) -> None:
             inputs = dict(videos=videos, rng=_rng)
             rng, _rng = jax.random.split(rng)
             loss, recon, action_last_active, metrics = train_step(
-                lam, optimizer, inputs, action_last_active, _rng
+                optimizer, inputs, action_last_active, _rng
             )
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")

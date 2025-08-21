@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import itertools
 import os
 from typing import cast, Optional
 
@@ -18,8 +19,7 @@ import flax.nnx as nnx
 
 from genie import Genie, restore_genie_components
 from utils.dataloader import get_dataloader
-from utils.lr_utils import get_lr_schedule
-from utils.parameter_utils import count_parameters_by_component
+from utils.train_utils import get_lr_schedule, count_parameters_by_component, print_compiled_memory_stats, print_compiled_cost_analysis
 
 
 @dataclass
@@ -377,13 +377,13 @@ def main(args: Args) -> None:
 
     @nnx.jit
     def train_step(
-        model: Genie, optimizer: nnx.Optimizer, inputs: dict
+        optimizer: nnx.Optimizer, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
         def loss_fn(model: Genie) -> tuple[jax.Array, tuple[jax.Array, dict]]:
             return dynamics_loss_fn(model, inputs)
 
         (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
-            model
+            optimizer.model
         )
         optimizer.update(grads)
         if args.log_gradients:
@@ -397,6 +397,14 @@ def main(args: Args) -> None:
         jax.make_array_from_process_local_data(videos_sharding, elem)
         for elem in grain_iterator
     )
+    if jax.process_index() == 0:
+        first_videos = next(dataloader)
+        sample_inputs = dict(videos=first_videos)
+        compiled = train_step.lower(optimizer, sample_inputs).compile()
+        print_compiled_memory_stats(compiled.memory_analysis())
+        print_compiled_cost_analysis(compiled.cost_analysis())
+        # Do not skip the first batch during training
+        dataloader = itertools.chain([first_videos], dataloader)
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
