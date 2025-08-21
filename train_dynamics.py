@@ -408,7 +408,7 @@ def main(args: Args) -> None:
     )
     if jax.process_index() == 0:
         first_videos = next(dataloader)
-        sample_inputs = dict(videos=first_videos)
+        sample_inputs = dict(videos=first_videos, mask_rng=rng)
         compiled = train_step.lower(optimizer, sample_inputs).compile()
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
