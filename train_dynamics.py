@@ -19,7 +19,12 @@ import flax.nnx as nnx
 
 from genie import Genie, restore_genie_components
 from utils.dataloader import get_dataloader
-from utils.train_utils import get_lr_schedule, count_parameters_by_component, print_compiled_memory_stats, print_compiled_cost_analysis
+from utils.train_utils import (
+    get_lr_schedule,
+    count_parameters_by_component,
+    print_compiled_memory_stats,
+    print_compiled_cost_analysis,
+)
 
 
 @dataclass
@@ -355,10 +360,14 @@ def main(args: Args) -> None:
         psnr = jnp.asarray(pix.psnr(gt_val, recon)).mean()
         ssim = jnp.asarray(pix.ssim(gt_val, recon)).mean()
         _, index_counts_lam = jnp.unique_counts(
-            jnp.ravel(outputs["lam_indices"]), size=args.num_latent_actions, fill_value=0
+            jnp.ravel(outputs["lam_indices"]),
+            size=args.num_latent_actions,
+            fill_value=0,
         )
         _, index_counts_tokenizer = jnp.unique_counts(
-            jnp.ravel(outputs["video_tokens"]), size=args.num_patch_latents, fill_value=0
+            jnp.ravel(outputs["video_tokens"]),
+            size=args.num_patch_latents,
+            fill_value=0,
         )
         codebook_usage_lam = (index_counts_lam != 0).mean()
         codebook_usage_tokenizer = (index_counts_tokenizer != 0).mean()

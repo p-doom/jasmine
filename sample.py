@@ -207,10 +207,14 @@ if __name__ == "__main__":
     # --- Sample + evaluate video ---
     recon_video_BSHWC = _autoreg_sample(genie, rng, video_batch_BSHWC, action_batch_E)
     recon_video_BSHWC = recon_video_BSHWC.astype(jnp.float32)
-    gt = gt_video[:, : recon_video_BSHWC.shape[1]].clip(0, 1).reshape(-1, *gt_video.shape[2:])
+    gt = (
+        gt_video[:, : recon_video_BSHWC.shape[1]]
+        .clip(0, 1)
+        .reshape(-1, *gt_video.shape[2:])
+    )
     recon = recon_video_BSHWC.clip(0, 1).reshape(-1, *recon_video_BSHWC.shape[2:])
     ssim = jnp.asarray(
-        pix.ssim(gt[:, args.start_frame:], recon[:, args.start_frame:])
+        pix.ssim(gt[:, args.start_frame :], recon[:, args.start_frame :])
     ).mean()
     print(f"SSIM: {ssim}")
 
@@ -226,7 +230,7 @@ if __name__ == "__main__":
     imgs = [Image.fromarray(img) for img in frames]
     # Write actions on each frame, on each row (i.e., for each video in the batch, on the GT row)
     B, S, _, _, _ = video_batch_BSHWC.shape
-    action_batch_BSm11 = jnp.reshape(action_batch_E, (B, S-1, 1))
+    action_batch_BSm11 = jnp.reshape(action_batch_E, (B, S - 1, 1))
     for t, img in enumerate(imgs[1:]):
         d = ImageDraw.Draw(img)
         for row in range(action_batch_BSm11.shape[0]):

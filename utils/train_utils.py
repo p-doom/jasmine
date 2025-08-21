@@ -86,7 +86,9 @@ def count_parameters_by_component(params):
 def bytes_to_gb(num_bytes):
     return num_bytes / (1024**3)
 
+
 def print_compiled_memory_stats(compiled_stats):
+    """from: https://github.com/AI-Hypercomputer/maxtext/blob/b18829fbaa48aec7ac350a03e62248e24c6a76b2/MaxText/max_utils.py#L739"""
     output_gb = bytes_to_gb(compiled_stats.output_size_in_bytes)
     temp_gb = bytes_to_gb(compiled_stats.temp_size_in_bytes)
     argument_gb = bytes_to_gb(compiled_stats.argument_size_in_bytes)
@@ -97,6 +99,7 @@ def print_compiled_memory_stats(compiled_stats):
         f"Total memory size: {total_gb:.1f} GB, Output size: {output_gb:.1f} GB, Temp size: {temp_gb:.1f} GB, "
         f"Argument size: {argument_gb:.1f} GB, Host temp size: {host_temp_gb:.1f} GB."
     )
+
 
 def print_compiled_cost_analysis(cost_stats):
     flops = float(cost_stats.get("flops", 0.0))

@@ -19,7 +19,12 @@ import flax.nnx as nnx
 
 from models.lam import LatentActionModel
 from utils.dataloader import get_dataloader
-from utils.train_utils import get_lr_schedule, count_parameters_by_component, print_compiled_memory_stats, print_compiled_cost_analysis
+from utils.train_utils import (
+    get_lr_schedule,
+    count_parameters_by_component,
+    print_compiled_memory_stats,
+    print_compiled_cost_analysis,
+)
 
 
 @dataclass
@@ -314,9 +319,7 @@ def main(args: Args) -> None:
         outputs["recon"] = outputs["recon"].astype(jnp.float32)
         gt_future_frames = gt[:, 1:]
         mse = jnp.square(gt_future_frames - outputs["recon"]).mean()
-        q_loss = jnp.square(
-            jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]
-        ).mean()
+        q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()
         commitment_loss = jnp.square(
             outputs["emb"] - jax.lax.stop_gradient(outputs["z"])
         ).mean()
