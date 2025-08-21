@@ -150,7 +150,7 @@ def shard_optimizer_states(
     nnx.update(optimizer, optimizer_sharded_state)
 
 
-def build_dataloader(args: Args) -> tuple[grain.DataLoader, grain.DataLoaderIterator]:
+def build_dataloader(args: Args) -> grain.DataLoaderIterator:
     image_shape = (args.image_height, args.image_width, args.image_channels)
     array_record_files = [
         os.path.join(args.data_dir, x)
@@ -170,7 +170,7 @@ def build_dataloader(args: Args) -> tuple[grain.DataLoader, grain.DataLoaderIter
     )
     initial_state = grain_dataloader._create_initial_state()
     grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
-    return grain_dataloader, grain_iterator
+    return grain_iterator
 
 
 def build_checkpoint_manager(args: Args) -> ocp.CheckpointManager:
@@ -301,7 +301,7 @@ def main(args: Args) -> None:
     checkpoint_manager = build_checkpoint_manager(args)
 
     # --- Create DataLoaderIterator from dataloader ---
-    grain_dataloader, grain_iterator = build_dataloader(args)
+    grain_iterator = build_dataloader(args)
 
     # --- Restore checkpoint ---
     step, optimizer, grain_iterator = restore_checkpoint_if_needed(
