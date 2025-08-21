@@ -380,16 +380,18 @@ def main(args: Args) -> None:
         jax.make_array_from_process_local_data(videos_sharding, elem)
         for elem in grain_iterator
     )
+    action_last_active = jnp.zeros(args.num_latents, dtype=jnp.int32)
     if jax.process_index() == 0:
         first_videos = next(dataloader)
         sample_inputs = dict(videos=first_videos)
-        compiled = train_step.lower(optimizer, sample_inputs).compile()
+        compiled = train_step.lower(
+            optimizer, sample_inputs, action_last_active, rng
+        ).compile()
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
         # Do not skip the first batch during training
         dataloader = itertools.chain([first_videos], dataloader)
     print(f"Starting training from step {step}...")
-    action_last_active = jnp.zeros(args.num_latents, dtype=jnp.int32)
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
