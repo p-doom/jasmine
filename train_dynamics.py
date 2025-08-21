@@ -420,7 +420,7 @@ def main(args: Args) -> None:
             # --- Train step ---
             rng, _rng_mask = jax.random.split(rng, 2)
             inputs = dict(videos=videos, mask_rng=_rng_mask)
-            loss, recon, metrics = train_step(optimizer.model, optimizer, inputs)
+            loss, recon, metrics = train_step(optimizer, inputs)
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1
