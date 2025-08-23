@@ -380,8 +380,10 @@ def main(args: Args) -> None:
         for videos in dataloader:
             # --- Train step ---
             inputs = dict(videos=videos)
+            loss, recon, metrics = train_step(optimizer, inputs)
             if step == first_step:
                 print_mem_stats("After params initialized")
+            metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1
 
