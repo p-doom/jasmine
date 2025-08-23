@@ -11,7 +11,7 @@ from utils.nn import STTransformer, Transformer
 class DynamicsMaskGIT(nnx.Module):
     """
     MaskGIT dynamics model
-    
+
     Dimension keys:
         B: batch size
         T: sequence length
@@ -99,11 +99,16 @@ class DynamicsMaskGIT(nnx.Module):
 
         # --- Predict transition ---
         act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
-        padded_act_embed_BT1M = jnp.pad(act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0)))
-        padded_act_embed_BTNM = jnp.broadcast_to(padded_act_embed_BT1M, vid_embed_BTNM.shape)
+        padded_act_embed_BT1M = jnp.pad(
+            act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0))
+        )
+        padded_act_embed_BTNM = jnp.broadcast_to(
+            padded_act_embed_BT1M, vid_embed_BTNM.shape
+        )
         vid_embed_BTNM += padded_act_embed_BTNM
         logits_BTNV = self.transformer(vid_embed_BTNM)
         return logits_BTNV, mask
+
 
 class DynamicsCausal(nnx.Module):
     """Causal dynamics model"""
@@ -165,8 +170,12 @@ class DynamicsCausal(nnx.Module):
 
         vid_embed_BTNM = self.patch_embed(video_tokens_BTN)
         act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
-        padded_act_embed_BT1M = jnp.pad(act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0)))
-        vid_embed_BTNp1M = jnp.concatenate([padded_act_embed_BT1M, vid_embed_BTNM], axis=2)
+        padded_act_embed_BT1M = jnp.pad(
+            act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0))
+        )
+        vid_embed_BTNp1M = jnp.concatenate(
+            [padded_act_embed_BT1M, vid_embed_BTNM], axis=2
+        )
 
         logits_BTNp1V = self.transformer(vid_embed_BTNp1M)
         logits_BTNV = logits_BTNp1V[:, :, :-1]

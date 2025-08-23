@@ -11,6 +11,7 @@ class SpatioTemporalPositionalEncoding(nnx.Module):
     """
     Applies separate sinusoidal positional encodings to the temporal and spatial dimensions.
     """
+
     def __init__(self, d_model: int, max_len: int = 5000):
         self.d_model = d_model
         self.max_len = max_len
@@ -75,7 +76,7 @@ class STBlock(nnx.Module):
         self.spatial_norm = nnx.LayerNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
-            dtype=self.param_dtype, # layer norm in full precision
+            dtype=self.param_dtype,  # layer norm in full precision
             rngs=rngs,
         )
         self.spatial_attention = nnx.MultiHeadAttention(
@@ -95,7 +96,7 @@ class STBlock(nnx.Module):
         self.temporal_norm = nnx.LayerNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
-            dtype=self.param_dtype, # layer norm in full precision
+            dtype=self.param_dtype,  # layer norm in full precision
             rngs=rngs,
         )
         self.temporal_attention = nnx.MultiHeadAttention(
@@ -115,7 +116,7 @@ class STBlock(nnx.Module):
         self.ffn_norm = nnx.LayerNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
-            dtype=self.param_dtype, # layer norm in full precision
+            dtype=self.param_dtype,  # layer norm in full precision
             rngs=rngs,
         )
         self.ffn_dense1 = nnx.Linear(
@@ -154,7 +155,7 @@ class STBlock(nnx.Module):
         z_BTNM = self.ffn_dense2(z_BTND)
         x_BTNM = x_BTNM + z_BTNM
         if self.sow_activations:
-            self.sow(nnx.Intermediate, 'activations', x_BTNM)
+            self.sow(nnx.Intermediate, "activations", x_BTNM)
         return x_BTNM
 
 
@@ -169,6 +170,7 @@ class STTransformer(nnx.Module):
         D: FFN dimension
         V: vocabulary size
     """
+
     def __init__(
         self,
         input_dim: int,
@@ -204,7 +206,7 @@ class STTransformer(nnx.Module):
         self.input_norm1 = nnx.LayerNorm(
             num_features=self.input_dim,
             param_dtype=self.param_dtype,
-            dtype=self.param_dtype, # layer norm in full precision
+            dtype=self.param_dtype,  # layer norm in full precision
             rngs=rngs,
         )
         self.input_dense = nnx.Linear(
@@ -217,7 +219,7 @@ class STTransformer(nnx.Module):
         self.input_norm2 = nnx.LayerNorm(
             num_features=self.model_dim,
             param_dtype=self.param_dtype,
-            dtype=self.param_dtype, # layer norm in full precision
+            dtype=self.param_dtype,  # layer norm in full precision
             rngs=rngs,
         )
 
@@ -258,8 +260,9 @@ class STTransformer(nnx.Module):
 
         x_BTNV = self.output_dense(x_BTNM)
         if self.sow_logits:
-            self.sow(nnx.Intermediate, 'logits', x_BTNV)
+            self.sow(nnx.Intermediate, "logits", x_BTNV)
         return x_BTNV
+
 
 class TransformerBlock(nnx.Module):
     def __init__(
@@ -290,19 +293,19 @@ class TransformerBlock(nnx.Module):
         self.temporal_norm = nnx.LayerNorm(
             num_features=self.model_dim,
             param_dtype=self.param_dtype,
-            dtype=self.param_dtype, # layer norm in full precision
+            dtype=self.param_dtype,  # layer norm in full precision
             rngs=rngs,
         )
         self.spatial_norm = nnx.LayerNorm(
             num_features=self.model_dim,
             param_dtype=self.param_dtype,
-            dtype=self.param_dtype, # layer norm in full precision
+            dtype=self.param_dtype,  # layer norm in full precision
             rngs=rngs,
         )
         self.ffn_norm = nnx.LayerNorm(
             num_features=self.model_dim,
             param_dtype=self.param_dtype,
-            dtype=self.param_dtype, # layer norm in full precision
+            dtype=self.param_dtype,  # layer norm in full precision
             rngs=rngs,
         )
         self.temporal_attention = nnx.MultiHeadAttention(
@@ -347,7 +350,9 @@ class TransformerBlock(nnx.Module):
         )
 
     @nnx.remat
-    def __call__(self, x_BTNM: jax.Array, pos_index: Tuple[jax.Array, jax.Array] | None = None) -> jax.Array:
+    def __call__(
+        self, x_BTNM: jax.Array, pos_index: Tuple[jax.Array, jax.Array] | None = None
+    ) -> jax.Array:
         # --- Spatial attention ---
         B, T, N, M = x_BTNM.shape
         z_FNM = einops.rearrange(x_BTNM, "b t n m -> (b t) n m")
@@ -368,9 +373,10 @@ class TransformerBlock(nnx.Module):
         z_BTNM = self.ffn_dense2(z_BTND)
         x_BTNM = x_BTNM + z_BTNM
         if self.sow_activations:
-            self.sow(nnx.Intermediate, 'activations', x_BTNM)
+            self.sow(nnx.Intermediate, "activations", x_BTNM)
 
         return x_BTNM
+
 
 class Transformer(nnx.Module):
     """
@@ -385,6 +391,7 @@ class Transformer(nnx.Module):
         F: number of frames in batch
         P: number of patch positions in batch
     """
+
     def __init__(
         self,
         input_dim: int,
@@ -421,7 +428,7 @@ class Transformer(nnx.Module):
         self.input_norm1 = nnx.LayerNorm(
             num_features=self.input_dim,
             param_dtype=self.param_dtype,
-            dtype=self.param_dtype, # layer norm in full precision
+            dtype=self.param_dtype,  # layer norm in full precision
             rngs=rngs,
         )
         self.input_dense = nnx.Linear(
@@ -434,7 +441,7 @@ class Transformer(nnx.Module):
         self.input_norm2 = nnx.LayerNorm(
             num_features=self.model_dim,
             param_dtype=self.param_dtype,
-            dtype=self.param_dtype, # layer norm in full precision
+            dtype=self.param_dtype,  # layer norm in full precision
             rngs=rngs,
         )
 
@@ -465,7 +472,9 @@ class Transformer(nnx.Module):
             rngs=rngs,
         )
 
-    def __call__(self, x_BTNI: jax.Array, pos_index: Tuple[jax.Array, jax.Array] | None = None) -> jax.Array:
+    def __call__(
+        self, x_BTNI: jax.Array, pos_index: Tuple[jax.Array, jax.Array] | None = None
+    ) -> jax.Array:
         x_BTNI = self.input_norm1(x_BTNI)
         x_BTNM = self.input_dense(x_BTNI)
         x_BTNM = self.input_norm2(x_BTNM)
@@ -475,8 +484,9 @@ class Transformer(nnx.Module):
 
         x_BTNV = self.output_dense(x_BTNM)
         if self.sow_logits:
-            self.sow(nnx.Intermediate, 'logits', x_BTNV)
+            self.sow(nnx.Intermediate, "logits", x_BTNV)
         return x_BTNV
+
 
 def normalize(x: jax.Array) -> jax.Array:
     return x / (jnp.linalg.norm(x, ord=2, axis=-1, keepdims=True) + 1e-8)
@@ -489,6 +499,7 @@ class VectorQuantizer(nnx.Module):
         K: number of latents
         L: latent dimension
     """
+
     def __init__(
         self, latent_dim: int, num_latents: int, dropout: float, rngs: nnx.Rngs
     ):
@@ -539,7 +550,9 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool) -> Ca
     function due to strict shape checking.
     """
 
-    def attention_fn(query_BTHD, key_BSHD, value_BSHD, bias=None, mask_B111=None, **kwargs):
+    def attention_fn(
+        query_BTHD, key_BSHD, value_BSHD, bias=None, mask_B111=None, **kwargs
+    ):
         implementation = "cudnn" if use_flash_attention else None
 
         def _merge_batch_dims(x):
@@ -568,7 +581,14 @@ def _create_flash_attention_fn(use_flash_attention: bool, is_causal: bool) -> Ca
 
         mask_11TS = attention_mask[jnp.newaxis, jnp.newaxis, :, :]
 
-        bias_4d = jnp.pad(_merge_batch_dims(bias), ((0, 0), (0, 0), (0, pad_size_Q), (0, pad_size_K))) if bias is not None else None
+        bias_4d = (
+            jnp.pad(
+                _merge_batch_dims(bias),
+                ((0, 0), (0, 0), (0, pad_size_Q), (0, pad_size_K)),
+            )
+            if bias is not None
+            else None
+        )
 
         # NOTE: jax.nn.dot_product_attention does not support dropout
         output_4d = jax.nn.dot_product_attention(

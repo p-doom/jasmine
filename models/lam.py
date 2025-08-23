@@ -10,7 +10,7 @@ from utils.nn import STTransformer, VectorQuantizer
 
 class LatentActionModel(nnx.Module):
     """Latent Action ST-ViVit VQ-VAE
-    
+
     Dimension keys:
         B: batch size
         T: sequence length
@@ -155,4 +155,6 @@ class LatentActionModel(nnx.Module):
         z_EL = z_BTm1L.reshape(B * (T - 1), self.latent_dim)
         z_q_EL, z_EL, emb_EL, indices_E = self.vq(z_EL, training)
         z_q_BTm11L = z_q_EL.reshape(B, T - 1, 1, self.latent_dim)
-        return dict(patches=patch_BTNP, z_q=z_q_BTm11L, z=z_EL, emb=emb_EL, indices=indices_E)
+        return dict(
+            patches=patch_BTNP, z_q=z_q_BTm11L, z=z_EL, emb=emb_EL, indices=indices_E
+        )
