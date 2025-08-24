@@ -72,6 +72,7 @@ class TokenizerVQVAE(nnx.Module):
             self.latent_dim,
             self.num_latents,
             self.codebook_dropout,
+            self.dtype,
             rngs=rngs,
         )
         self.out_dim = self.in_dim * self.patch_size**2

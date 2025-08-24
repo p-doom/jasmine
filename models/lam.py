@@ -81,6 +81,7 @@ class LatentActionModel(nnx.Module):
             self.latent_dim,
             self.num_latents,
             self.codebook_dropout,
+            self.dtype,
             rngs=rngs,
         )
         self.patch_up = nnx.Linear(
