@@ -501,11 +501,17 @@ class VectorQuantizer(nnx.Module):
     """
 
     def __init__(
-        self, latent_dim: int, num_latents: int, dropout: float, rngs: nnx.Rngs
+        self,
+        latent_dim: int,
+        num_latents: int,
+        dropout: float,
+        dtype: jnp.dtype,
+        rngs: nnx.Rngs,
     ):
         self.latent_dim = latent_dim
         self.num_latents = num_latents
         self.dropout = dropout
+        self.dtype = dtype
 
         self.codebook = nnx.Param(
             normalize(
@@ -520,15 +526,18 @@ class VectorQuantizer(nnx.Module):
         self, x_DL: jax.Array, training: bool
     ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         # --- Compute distances ---
+        x_DL = x_DL.astype(self.dtype)
+        codebook = self.codebook.value.astype(self.dtype)
+
         x_DL = normalize(x_DL)
-        normalized_codebook_KL = normalize(self.codebook.value)
+        normalized_codebook_KL = normalize(codebook)
         distance_DK = -jnp.matmul(x_DL, normalized_codebook_KL.T)
         if training:
             distance_DK = self.drop(distance_DK)
 
         # --- Get indices and embeddings ---
         indices_D = jnp.argmin(distance_DK, axis=-1)
-        z_DL = self.codebook[indices_D]
+        z_DL = codebook[indices_D]
 
         # --- Straight through estimator ---
         z_q_DL = x_DL + jax.lax.stop_gradient(z_DL - x_DL)
