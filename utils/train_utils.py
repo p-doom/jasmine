@@ -45,18 +45,11 @@ def get_lr_schedule(
         )
 
 
-def _count_leaf(x):
-    """Count parameters in a single leaf node."""
-    if hasattr(x, "size"):
-        return x.size
-    return 0
-
-
 def _count_component(component_params):
     """Count total parameters in a component."""
-    return tree_reduce(
-        lambda x, y: x + y, tree_map(_count_leaf, component_params), initializer=0
-    )
+    params_sizes = jax.tree.map(jax.numpy.size, component_params)
+    total_parameters = jax.tree.reduce(lambda x, y: x + y, params_sizes)
+    return total_parameters
 
 
 def count_parameters_by_component(params):
