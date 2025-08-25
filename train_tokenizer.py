@@ -1,5 +1,8 @@
-from dataclasses import dataclass, field
 import os
+
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.98")
+
+from dataclasses import dataclass, field
 from typing import cast, Optional
 
 import einops
