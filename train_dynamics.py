@@ -426,6 +426,8 @@ def main(args: Args) -> None:
             rng, _rng_mask = jax.random.split(rng, 2)
             inputs = dict(videos=videos, mask_rng=_rng_mask)
             loss, recon, metrics = train_step(optimizer, inputs)
+            if step == first_step:
+                print_mem_stats("After params initialized")
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1
