@@ -342,7 +342,7 @@ def main(args: Args) -> None:
         )
         return loss, (outputs["recon"], index_counts, metrics)
 
-    @nnx.jit
+    @nnx.jit(donate_argnums=0)
     def train_step(
         optimizer: nnx.Optimizer,
         inputs: dict,
