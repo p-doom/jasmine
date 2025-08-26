@@ -1,4 +1,3 @@
-import jax
 import optax
 from jax.tree_util import tree_map, tree_reduce
 
@@ -111,16 +110,3 @@ def print_compiled_cost_analysis(cost_stats):
         f"FLOPs: {flops:.3e}, Bytes: {bytes_accessed:.3e} ({gb:.1f} GB), "
         f"Intensity: {intensity:.1f} FLOPs/byte"
     )
-
-
-def print_mem_stats(label: str):
-    """from: https://github.com/AI-Hypercomputer/maxtext/blob/7898576359bacde81be25cb3038e348aac1f943b/MaxText/max_utils.py#L713"""
-    print(f"\nMemstats: {label}:")
-    try:
-        for d in jax.local_devices():
-            stats = d.memory_stats()
-            used = round(stats["bytes_in_use"] / 2**30, 2)
-            limit = round(stats["bytes_limit"] / 2**30, 2)
-            print(f"\tUsing (GB) {used} / {limit} ({used/limit:%}) on {d}")
-    except (RuntimeError, KeyError, TypeError) as ex:
-        print(f"\tMemstats unavailable, error: {ex}")
