@@ -25,6 +25,7 @@ from utils.dataloader import get_dataloader
 from utils.train_utils import (
     get_lr_schedule,
     count_parameters_by_component,
+    print_mem_stats,
     print_compiled_memory_stats,
     print_compiled_cost_analysis,
 )
@@ -395,6 +396,7 @@ def main(args: Args) -> None:
         # Do not skip the first batch during training
         dataloader = itertools.chain([first_videos], dataloader)
     print(f"Starting training from step {step}...")
+    first_step = step
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
@@ -405,6 +407,8 @@ def main(args: Args) -> None:
             loss, recon, action_last_active, metrics = train_step(
                 optimizer, inputs, action_last_active, _rng
             )
+            if step == first_step:
+                print_mem_stats("After params initialized")
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1
