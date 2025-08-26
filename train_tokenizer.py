@@ -334,7 +334,7 @@ def main(args: Args) -> None:
         )
         return loss, (outputs["recon"], metrics)
 
-    @nnx.jit(donate_argnums=0)
+    @nnx.jit
     def train_step(
         optimizer: nnx.Optimizer, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
