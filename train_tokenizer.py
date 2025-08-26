@@ -3,6 +3,7 @@ import os
 from typing import cast, Optional
 
 import einops
+import itertools
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.mesh_utils import create_device_mesh
 import optax
@@ -18,8 +19,12 @@ import flax.nnx as nnx
 
 from models.tokenizer import TokenizerVQVAE
 from utils.dataloader import get_dataloader
-from utils.lr_utils import get_lr_schedule
-from utils.parameter_utils import count_parameters_by_component
+from utils.train_utils import (
+    get_lr_schedule,
+    count_parameters_by_component,
+    print_compiled_memory_stats,
+    print_compiled_cost_analysis,
+)
 
 
 @dataclass
@@ -145,7 +150,7 @@ def shard_optimizer_states(
     nnx.update(optimizer, optimizer_sharded_state)
 
 
-def build_dataloader(args: Args) -> tuple[grain.DataLoader, grain.DataLoaderIterator]:
+def build_dataloader(args: Args) -> grain.DataLoaderIterator:
     image_shape = (args.image_height, args.image_width, args.image_channels)
     array_record_files = [
         os.path.join(args.data_dir, x)
@@ -165,7 +170,7 @@ def build_dataloader(args: Args) -> tuple[grain.DataLoader, grain.DataLoaderIter
     )
     initial_state = grain_dataloader._create_initial_state()
     grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
-    return grain_dataloader, grain_iterator
+    return grain_iterator
 
 
 def build_checkpoint_manager(args: Args) -> ocp.CheckpointManager:
@@ -276,6 +281,7 @@ def main(args: Args) -> None:
 
     # --- Initialize optimizer ---
     optimizer, lr_schedule = build_optimizer(tokenizer, args)
+    del tokenizer
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
     mesh, replicated_sharding, videos_sharding = build_mesh_and_sharding(num_devices)
@@ -286,7 +292,7 @@ def main(args: Args) -> None:
     checkpoint_manager = build_checkpoint_manager(args)
 
     # --- Create DataLoaderIterator from dataloader ---
-    grain_dataloader, grain_iterator = build_dataloader(args)
+    grain_iterator = build_dataloader(args)
 
     # --- Restore checkpoint ---
     step, optimizer, grain_iterator = restore_checkpoint_if_needed(
@@ -303,9 +309,7 @@ def main(args: Args) -> None:
         outputs = model(inputs, training=True)
         outputs["recon"] = outputs["recon"].astype(jnp.float32)
         mse = jnp.square(gt - outputs["recon"]).mean()
-        q_loss = jnp.square(
-            jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]
-        ).mean()
+        q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()
         commitment_loss = jnp.square(
             outputs["emb"] - jax.lax.stop_gradient(outputs["z"])
         ).mean()
@@ -332,13 +336,13 @@ def main(args: Args) -> None:
 
     @nnx.jit
     def train_step(
-        tokenizer: TokenizerVQVAE, optimizer: nnx.Optimizer, inputs: dict
+        optimizer: nnx.Optimizer, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
         def loss_fn(model: TokenizerVQVAE) -> tuple[jax.Array, tuple[jax.Array, dict]]:
             return tokenizer_loss_fn(model, inputs)
 
         (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
-            tokenizer
+            optimizer.model
         )
         optimizer.update(grads)
         if args.log_gradients:
@@ -358,12 +362,20 @@ def main(args: Args) -> None:
         jax.make_array_from_process_local_data(videos_sharding, elem)
         for elem in grain_iterator
     )
+    if jax.process_index() == 0:
+        first_videos = next(dataloader)
+        sample_inputs = dict(videos=first_videos)
+        compiled = train_step.lower(optimizer, sample_inputs).compile()
+        print_compiled_memory_stats(compiled.memory_analysis())
+        print_compiled_cost_analysis(compiled.cost_analysis())
+        # Do not skip the first batch during training
+        dataloader = itertools.chain([first_videos], dataloader)
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
             inputs = dict(videos=videos)
-            loss, recon, metrics = train_step(tokenizer, optimizer, inputs)
+            loss, recon, metrics = train_step(optimizer, inputs)
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1

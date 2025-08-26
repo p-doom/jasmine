@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import itertools
 import os
 from typing import cast, Optional
 
@@ -18,8 +19,12 @@ import flax.nnx as nnx
 
 from genie import Genie, restore_genie_components
 from utils.dataloader import get_dataloader
-from utils.lr_utils import get_lr_schedule
-from utils.parameter_utils import count_parameters_by_component
+from utils.train_utils import (
+    get_lr_schedule,
+    count_parameters_by_component,
+    print_compiled_memory_stats,
+    print_compiled_cost_analysis,
+)
 
 
 @dataclass
@@ -174,7 +179,7 @@ def shard_optimizer_states(
     nnx.update(optimizer, optimizer_sharded_state)
 
 
-def build_dataloader(args: Args) -> tuple[grain.DataLoader, grain.DataLoaderIterator]:
+def build_dataloader(args: Args) -> grain.DataLoaderIterator:
     image_shape = (args.image_height, args.image_width, args.image_channels)
     array_record_files = [
         os.path.join(args.data_dir, x)
@@ -194,7 +199,7 @@ def build_dataloader(args: Args) -> tuple[grain.DataLoader, grain.DataLoaderIter
     )
     initial_state = grain_dataloader._create_initial_state()
     grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
-    return grain_dataloader, grain_iterator
+    return grain_iterator
 
 
 def build_checkpoint_manager(args: Args) -> ocp.CheckpointManager:
@@ -326,7 +331,7 @@ def main(args: Args) -> None:
     checkpoint_manager = build_checkpoint_manager(args)
 
     # --- Create DataLoaderIterator from dataloader ---
-    _, grain_iterator = build_dataloader(args)
+    grain_iterator = build_dataloader(args)
 
     # --- Restore checkpoint ---
     step, optimizer, grain_iterator, rng = restore_or_initialize_components(
@@ -355,10 +360,14 @@ def main(args: Args) -> None:
         psnr = jnp.asarray(pix.psnr(gt_val, recon)).mean()
         ssim = jnp.asarray(pix.ssim(gt_val, recon)).mean()
         _, index_counts_lam = jnp.unique_counts(
-            jnp.ravel(outputs["lam_indices"]), size=args.num_latent_actions, fill_value=0
+            jnp.ravel(outputs["lam_indices"]),
+            size=args.num_latent_actions,
+            fill_value=0,
         )
         _, index_counts_tokenizer = jnp.unique_counts(
-            jnp.ravel(outputs["video_tokens"]), size=args.num_patch_latents, fill_value=0
+            jnp.ravel(outputs["video_tokens"]),
+            size=args.num_patch_latents,
+            fill_value=0,
         )
         codebook_usage_lam = (index_counts_lam != 0).mean()
         codebook_usage_tokenizer = (index_counts_tokenizer != 0).mean()
@@ -377,13 +386,13 @@ def main(args: Args) -> None:
 
     @nnx.jit
     def train_step(
-        model: Genie, optimizer: nnx.Optimizer, inputs: dict
+        optimizer: nnx.Optimizer, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
         def loss_fn(model: Genie) -> tuple[jax.Array, tuple[jax.Array, dict]]:
             return dynamics_loss_fn(model, inputs)
 
         (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
-            model
+            optimizer.model
         )
         optimizer.update(grads)
         if args.log_gradients:
@@ -397,13 +406,21 @@ def main(args: Args) -> None:
         jax.make_array_from_process_local_data(videos_sharding, elem)
         for elem in grain_iterator
     )
+    if jax.process_index() == 0:
+        first_videos = next(dataloader)
+        sample_inputs = dict(videos=first_videos, mask_rng=rng)
+        compiled = train_step.lower(optimizer, sample_inputs).compile()
+        print_compiled_memory_stats(compiled.memory_analysis())
+        print_compiled_cost_analysis(compiled.cost_analysis())
+        # Do not skip the first batch during training
+        dataloader = itertools.chain([first_videos], dataloader)
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
         for videos in dataloader:
             # --- Train step ---
             rng, _rng_mask = jax.random.split(rng, 2)
             inputs = dict(videos=videos, mask_rng=_rng_mask)
-            loss, recon, metrics = train_step(optimizer.model, optimizer, inputs)
+            loss, recon, metrics = train_step(optimizer, inputs)
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1

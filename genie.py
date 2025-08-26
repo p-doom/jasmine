@@ -224,13 +224,17 @@ class Genie(nnx.Module):
             vid_embed_BSNM = self.dynamics.patch_embed(token_idxs_BSN)
             mask_token_111M = self.dynamics.mask_token.value
             mask_expanded_BSN1 = mask_BSN[..., None]
-            vid_embed_BSNM = jnp.where(mask_expanded_BSN1, mask_token_111M, vid_embed_BSNM)
+            vid_embed_BSNM = jnp.where(
+                mask_expanded_BSN1, mask_token_111M, vid_embed_BSNM
+            )
 
             # --- Predict transition ---
             action_tokens_BSm1L = jnp.reshape(action_tokens_EL, (B, S - 1, L))
             act_embed_BSm1M = self.dynamics.action_up(action_tokens_BSm1L)
             act_embed_BSM = jnp.pad(act_embed_BSm1M, ((0, 0), (1, 0), (0, 0)))
-            act_embed_BS1M = jnp.reshape(act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1]))
+            act_embed_BS1M = jnp.reshape(
+                act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1])
+            )
             vid_embed_BSNM += act_embed_BS1M
             unmasked_ratio = jnp.cos(jnp.pi * (step + 1) / (steps * 2))
             step_temp = temperature * (1.0 - unmasked_ratio)
@@ -252,8 +256,13 @@ class Genie(nnx.Module):
 
             # --- Update mask ---
             num_unmasked_tokens = jnp.round(N * (1.0 - unmasked_ratio)).astype(int)
-            final_token_probs_flat_BP = einops.rearrange(final_token_probs_BSN, "b s n -> b (s n)")
-            idx_mask_P = jnp.arange(final_token_probs_flat_BP.shape[-1]) <= N - num_unmasked_tokens
+            final_token_probs_flat_BP = einops.rearrange(
+                final_token_probs_BSN, "b s n -> b (s n)"
+            )
+            idx_mask_P = (
+                jnp.arange(final_token_probs_flat_BP.shape[-1])
+                <= N - num_unmasked_tokens
+            )
             sorted_idxs_BP = jnp.argsort(final_token_probs_flat_BP, axis=-1)
             mask_update_fn = jax.vmap(lambda msk, ids: msk.at[ids].set(idx_mask_P))
             mask_flat_BP = einops.rearrange(mask_BSN, "b s n -> b (s n)")
@@ -307,12 +316,12 @@ class Genie(nnx.Module):
         return final_frames_BSHWC
 
     def sample_causal(
-            self,
-            batch: Dict[str, jax.Array],
-            seq_len: int,
-            temperature: float = 1,
-            sample_argmax: bool = False,
-        ) -> jax.Array:
+        self,
+        batch: Dict[str, jax.Array],
+        seq_len: int,
+        temperature: float = 1,
+        sample_argmax: bool = False,
+    ) -> jax.Array:
         """
         Autoregressively samples up to `seq_len` future frames, following Figure 8 of the paper.
 
@@ -364,9 +373,14 @@ class Genie(nnx.Module):
             action_tokens_BSm1L = jnp.reshape(action_tokens_EL, (B, S - 1, L))
             act_embed_BSm1M = dynamics_causal.action_up(action_tokens_BSm1L)
             act_embed_BSM = jnp.pad(act_embed_BSm1M, ((0, 0), (1, 0), (0, 0)))
-            act_embed_BS1M = jnp.reshape(act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1]))
+            act_embed_BS1M = jnp.reshape(
+                act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1])
+            )
             vid_embed_BSNp1M = jnp.concatenate([act_embed_BS1M, vid_embed_BSNM], axis=2)
-            final_logits_BTNp1V = dynamics_causal.transformer(vid_embed_BSNp1M, (step_t, step_n)) / temperature
+            final_logits_BTNp1V = (
+                dynamics_causal.transformer(vid_embed_BSNp1M, (step_t, step_n))
+                / temperature
+            )
             final_logits_BV = final_logits_BTNp1V[:, step_t, step_n, :]
 
             # --- Sample new tokens for final frame ---
@@ -376,7 +390,9 @@ class Genie(nnx.Module):
                 rng, _rng = jax.random.split(rng)
                 sampled_token_idxs_B = jax.random.categorical(_rng, final_logits_BV)
             # Update next tokens only
-            token_idxs_BSN = token_idxs_BSN.at[:, step_t, step_n].set(sampled_token_idxs_B)
+            token_idxs_BSN = token_idxs_BSN.at[:, step_t, step_n].set(
+                sampled_token_idxs_B
+            )
 
             new_carry = (rng, token_idxs_BSN, action_tokens_EL, step_t)
             return new_carry, None
@@ -423,6 +439,7 @@ class Genie(nnx.Module):
         lam_output = self.lam.vq_encode(video_BTHWC, training=training)
         lam_indices_E = lam_output["indices"]
         return lam_indices_E
+
 
 # FIXME (f.srambical): add conversion script for old checkpoints
 def restore_genie_components(
@@ -524,7 +541,7 @@ def restore_genie_components(
         # Remove the LAM decoder to save memory and avoid unnecessary computation.
         del model.lam.decoder
         lam_checkpoint_manager.close()
-    
+
     # Reinitialize the optimizer states
     optimizer = nnx.Optimizer(model, tx)
     return optimizer
