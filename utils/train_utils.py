@@ -1,5 +1,6 @@
 import jax
 import optax
+import operator
 
 
 def get_lr_schedule(
@@ -47,7 +48,7 @@ def get_lr_schedule(
 def _count_component(component_params):
     """Count total parameters in a component."""
     params_sizes = jax.tree.map(jax.numpy.size, component_params)
-    total_parameters = jax.tree.reduce(lambda x, y: x + y, params_sizes)
+    total_parameters = jax.tree.reduce(operator.add, params_sizes)
     return total_parameters
 
 
