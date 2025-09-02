@@ -4,6 +4,7 @@ import grain
 from typing import Any
 import pickle
 
+RGB_TO_GRAYSCALE_WEIGHTS = np.array([0.2989, 0.5870, 0.1140])
 
 class EpisodeLengthFilter(grain.transforms.Filter):
     """
@@ -116,7 +117,7 @@ class DarknessFilter(grain.transforms.Filter):
             True if the sequence is not too dark, False otherwise.
         """
         # Convert the RGB image to grayscale using numpy
-        element_greyscale = np.dot(element[...,:3], [0.2989, 0.5870, 0.1140])
+        element_greyscale = np.dot(element[...,:3], RGB_TO_GRAYSCALE_WEIGHTS)
         average_brightness = np.mean(element_greyscale)
         if average_brightness < self.darkness_threshold:
             print(

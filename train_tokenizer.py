@@ -45,6 +45,7 @@ class Args:
     )
     lr_schedule: str = "wsd"  # supported options: wsd, cos
     warmup_steps: int = 10000
+    darkness_threshold: float = 0.0
     # Tokenizer
     model_dim: int = 512
     ffn_dim: int = 2048
@@ -289,6 +290,7 @@ if __name__ == "__main__":
         # The dataloader shards the dataset across all processes
         args.batch_size,
         *image_shape,
+        darkness_threshold=args.darkness_threshold,
         num_workers=8,
         prefetch_buffer_size=1,
         seed=args.seed,
