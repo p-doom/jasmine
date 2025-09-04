@@ -28,7 +28,7 @@ def preprocess_pngs(input_dir, output_path, original_fps, target_fps, target_wid
 
         if not png_files:
             print(f"No PNG files found in {input_dir}")
-            return input_dir, 0
+            return {"path": input_dir, "length": 0} 
 
         # Downsample indices
         n_total = len(png_files)
