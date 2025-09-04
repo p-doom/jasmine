@@ -69,6 +69,9 @@ class Args:
     log_checkpoint_interval: int = 10000
     log_checkpoint_keep_period: int = 20000
     log_gradients: bool = False
+    val_data_dir: str = ""
+    val_interval: int = 20_000
+    val_steps: int = 50
     wandb_id: str = ""
     use_flash_attention: bool = True
 
@@ -85,7 +88,6 @@ def tokenizer_loss_fn(
     # should we at least train the tokenizer natively in int8?
     gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
     inputs["videos"] = gt.astype(args.dtype)
-    model.train()
     outputs = model(inputs, training=True)
     outputs["recon"] = outputs["recon"].astype(jnp.float32)
     mse = jnp.square(gt - outputs["recon"]).mean()
@@ -121,6 +123,7 @@ def train_step(
     tokenizer: TokenizerVQVAE, optimizer: nnx.Optimizer, inputs: dict
 ) -> tuple[jax.Array, jax.Array, dict]:
     def loss_fn(model: TokenizerVQVAE) -> tuple[jax.Array, tuple[jax.Array, dict]]:
+        model.train()
         return tokenizer_loss_fn(model, inputs)
 
     (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
@@ -138,6 +141,62 @@ def train_step(
             lambda x: x.std(), grads["params"]["decoder"]
         )
     return loss, recon, metrics
+
+@nnx.jit
+def val_step(tokenizer: TokenizerVQVAE, inputs: dict) -> tuple[jax.Array, jax.Array, dict]:
+    tokenizer.eval()
+    (loss, (recon, metrics)) = tokenizer_loss_fn(tokenizer, inputs)
+    return loss, recon, metrics
+
+def create_dataloader_iterator(data_dir):
+    image_shape = (args.image_height, args.image_width, args.image_channels)
+    array_record_files = [
+        os.path.join(data_dir, x)
+        for x in os.listdir(data_dir)
+        if x.endswith(".array_record")
+    ]
+    grain_dataloader = get_dataloader(
+        array_record_files,
+        args.seq_len,
+        # NOTE: We deliberately pass the global batch size
+        # The dataloader shards the dataset across all processes
+        args.batch_size,
+        *image_shape,
+        num_workers=8,
+        prefetch_buffer_size=1,
+        seed=args.seed,
+    )
+    initial_state = grain_dataloader._create_initial_state()
+    grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
+
+    return grain_iterator
+
+
+# TODO mihir find appropriate name for this fn
+def calculate_validation_loss(val_dataloader):
+    step = 0
+    loss_per_step = []
+    metrics_per_step = []
+    for videos in val_dataloader:
+        inputs = dict(videos=videos)
+        loss, recon, metrics = val_step(tokenizer, inputs)
+        loss_per_step.append(loss)
+        metrics_per_step.append(metrics)
+        print(f"Step {step}, loss: {loss}")
+        step += 1
+        if step > args.val_steps:
+            break
+
+    if step < args.val_steps:
+        print(f"Warning: Your validation dataset is too small to make val_steps many steps. Made {step} steps, expected {args.val_steps}")
+
+    val_loss = np.mean(loss_per_step)
+    val_metrics = {
+        f"val_{key}": np.mean([m[key] for m in metrics_per_step])
+        for key in metrics_per_step[0].keys()
+    }
+    return val_loss, recon, val_metrics
+
 
 
 if __name__ == "__main__":
@@ -251,12 +310,22 @@ if __name__ == "__main__":
         "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
     )
     handler_registry.add(
-        "dataloader_state",
+        "train_dataloader_state",
         grain.checkpoint.CheckpointSave,
         cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
     )
     handler_registry.add(
-        "dataloader_state",
+        "train_dataloader_state",
+        grain.checkpoint.CheckpointRestore,
+        cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
+    )
+    handler_registry.add(
+        "val_dataloader_state",
+        grain.checkpoint.CheckpointSave,
+        cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
+    )
+    handler_registry.add(
+        "val_dataloader_state",
         grain.checkpoint.CheckpointRestore,
         cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
     )
@@ -276,25 +345,8 @@ if __name__ == "__main__":
     )
 
     # --- Create DataLoaderIterator from dataloader ---
-    image_shape = (args.image_height, args.image_width, args.image_channels)
-    array_record_files = [
-        os.path.join(args.data_dir, x)
-        for x in os.listdir(args.data_dir)
-        if x.endswith(".array_record")
-    ]
-    grain_dataloader = get_dataloader(
-        array_record_files,
-        args.seq_len,
-        # NOTE: We deliberately pass the global batch size
-        # The dataloader shards the dataset across all processes
-        args.batch_size,
-        *image_shape,
-        num_workers=8,
-        prefetch_buffer_size=1,
-        seed=args.seed,
-    )
-    initial_state = grain_dataloader._create_initial_state()
-    grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
+    train_iterator = create_dataloader_iterator()
+    val_iterator = create_dataloader_iterator()
 
     # --- Restore checkpoint ---
     if args.restore_ckpt:
@@ -304,29 +356,40 @@ if __name__ == "__main__":
             checkpoint_manager.latest_step(),
             args=ocp.args.Composite(
                 model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
-                dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),  # type: ignore
+                train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
+                val_dataloader_state=grain.checkpoint.CheckpointRestore(val_iterator),  # type: ignore
             ),
         )
         restored_optimizer_state = restored["model_state"]
         nnx.update(optimizer, restored_optimizer_state)
-        grain_iterator = restored["dataloader_state"]
+        train_iterator = restored["train_dataloader_state"]
+        val_iterator = restored["val_dataloader_state"]
         step = checkpoint_manager.latest_step() or 0
         print(f"Restored dataloader and model state from step {step}")
 
+    
     # --- TRAIN LOOP ---
-    dataloader = (
+    dataloader_train = (
         jax.make_array_from_process_local_data(videos_sharding, elem)
-        for elem in grain_iterator
+        for elem in train_iterator
+    )
+    dataloader_val = (
+        jax.make_array_from_process_local_data(videos_sharding, elem)
+        for elem in val_iterator
     )
     print(f"Starting training from step {step}...")
     while step < args.num_steps:
-        for videos in dataloader:
+        for videos in dataloader_train:
             # --- Train step ---
             inputs = dict(videos=videos)
             loss, recon, metrics = train_step(tokenizer, optimizer, inputs)
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1
+
+            # --- Validation loss ---
+            if args.val_data_dir and step % args.val_interval == 0:
+                val_loss, val_recon, val_metrics = calculate_validation_loss(dataloader_val)
 
             # --- Logging ---
             if args.log:
@@ -364,8 +427,11 @@ if __name__ == "__main__":
                     step,
                     args=ocp.args.Composite(
                         model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
-                        dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
-                            grain_iterator  # type: ignore
+                        train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
+                            train_iterator  # type: ignore
+                        ),
+                        val_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
+                            val_iterator  # type: ignore
                         ),
                     ),
                 )
