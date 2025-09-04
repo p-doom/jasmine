@@ -13,10 +13,10 @@ from array_record.python.array_record_module import ArrayRecordWriter
 class Args:
     input_path: str
     output_path: str
+    env_name: str
     original_fps: int = 60
     target_fps: int = 10
     target_width: int = 64 
-    env_name: str = "atari"
 
 def preprocess_pngs(input_dir, output_path, original_fps, target_fps, target_width=None):
     print(f"Processing PNGs in {input_dir}")

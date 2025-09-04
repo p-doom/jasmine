@@ -13,10 +13,10 @@ from array_record.python.array_record_module import ArrayRecordWriter
 class Args:
     input_path: str
     output_path: str
+    env_name: str
     target_width: int = 160
     target_height: int = 90
     target_fps: int = 10
-    env_name: str = "minecraft"
 
 
 def preprocess_video(
@@ -66,18 +66,19 @@ def main():
     print(f"Number of processes: {num_processes}")
 
     print("Converting video to array_record files...")
-    pool_args = [
-        (
-            idx,
-            os.path.join(args.input_path, in_filename),
-            args.output_path,
-            args.target_width,
-            args.target_height,
-            args.target_fps,
-        )
-        for idx, in_filename in enumerate(os.listdir(args.input_path))
-        if in_filename.endswith(".mp4") or in_filename.endswith(".webm")
-    ]
+    pool_args = []
+    for idx, in_filename in enumerate(os.listdir(args.input_path)):
+        if in_filename.endswith(".mp4") or in_filename.endswith(".webm"):
+            pool_args.append((
+                idx,
+                os.path.join(args.input_path, in_filename),
+                args.output_path,
+                args.target_width,
+                args.target_height,
+                args.target_fps,
+            ))
+        else:
+            print(f"Warning: {in_filename} is not a supported video format. Skipping...")
 
     results = []
     with mp.Pool(processes=num_processes) as pool:
