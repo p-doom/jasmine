@@ -529,9 +529,9 @@ class VectorQuantizer(nnx.Module):
         x_DL = x_DL.astype(self.dtype)
         codebook = self.codebook.value.astype(self.dtype)
 
-        x_DL = normalize(x_DL)
+        x_normalized_DL = normalize(x_DL)
         normalized_codebook_KL = normalize(codebook)
-        distance_DK = -jnp.matmul(x_DL, normalized_codebook_KL.T)
+        distance_DK = -jnp.matmul(x_normalized_DL, normalized_codebook_KL.T)
         if training:
             distance_DK = self.drop(distance_DK)
 
@@ -540,7 +540,7 @@ class VectorQuantizer(nnx.Module):
         z_DL = codebook[indices_D]
 
         # --- Straight through estimator ---
-        z_q_DL = x_DL + jax.lax.stop_gradient(z_DL - x_DL)
+        z_q_DL = x_normalized_DL + jax.lax.stop_gradient(z_DL - x_normalized_DL)
         return z_q_DL, z_DL, x_DL, indices_D
 
     def get_codes(self, indices_E: jax.Array) -> jax.Array:
