@@ -45,7 +45,7 @@ while i < args.num_episodes:
 
     # --- Save episode ---
     if len(observations_seq) >= args.min_episode_length:
-        observations_data = np.concatenate(observations_seq, axis=0)
+        observations_data = np.concatenate(observations_seq, axis=0).astype(np.uint8)
         episode_path = output_dir / f"episode_{i}.array_record"  
 
         # --- Save as ArrayRecord ---
