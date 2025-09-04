@@ -173,7 +173,7 @@ def create_dataloader_iterator(data_dir):
 
 
 # TODO mihir find appropriate name for this fn
-def calculate_validation_loss(val_dataloader):
+def calculate_validation_metrics(val_dataloader):
     step = 0
     loss_per_step = []
     metrics_per_step = []
@@ -389,19 +389,24 @@ if __name__ == "__main__":
 
             # --- Validation loss ---
             if args.val_data_dir and step % args.val_interval == 0:
-                val_loss, val_recon, val_metrics = calculate_validation_loss(dataloader_val)
+                val_loss, val_recon, val_metrics = calculate_validation_metrics(dataloader_val)
 
             # --- Logging ---
             if args.log:
                 if step % args.log_interval == 0 and jax.process_index() == 0:
-                    wandb.log(
-                        {
-                            "loss": loss,
-                            "step": step,
-                            **metrics,
+                    log_dict = {
+                        "loss": loss,
+                        "step": step,
+                        **metrics
                         }
-                    )
+                    if args.val_data_dir and step % args.val_interval == 0:
+                        log_dict.update({
+                            "val_loss": val_loss,
+                            **val_metrics
+                        })
+                    wandb.log(log_dict)
                 if step % args.log_image_interval == 0:
+                    # TODO mihir: add validation recons here
                     gt_seq = inputs["videos"][0].astype(jnp.float32) / 255.0
                     recon_seq = recon[0].clip(0, 1)
                     comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
