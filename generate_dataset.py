@@ -39,7 +39,6 @@ while i < args.num_episodes:
     # --- Run episode ---
     for j in range(1000):
         action = types_np.sample(env.ac_space, bshape=(env.num,))
-        print(action)
         env.act(action)
         rew, obs, first = env.observe()
         observations_seq.append(obs["rgb"])
