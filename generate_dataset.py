@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from gym3 import types_np
+import os
 import numpy as np
 from procgen import ProcgenGym3Env
 import tyro
@@ -51,7 +52,7 @@ def generate_episodes(num_episodes, split):
         if len(observations_seq) >= args.min_episode_length:
             observations_data = np.concatenate(observations_seq, axis=0).astype(np.uint8)
             action_data = np.concatenate(actions_seq, axis=0)
-            episode_path = args.output_dir / split / f"episode_{i}.array_record"  
+            episode_path = os.path.join(args.output_dir, split, f"episode_{i}.array_record")  
 
             # --- Save as ArrayRecord ---
             writer = ArrayRecordWriter(str(episode_path), "group_size:1")
