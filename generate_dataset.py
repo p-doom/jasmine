@@ -34,23 +34,28 @@ while i < args.num_episodes:
     seed = np.random.randint(0, 10000)
     env = ProcgenGym3Env(num=1, env_name="coinrun", start_level=seed)
     observations_seq = []
+    actions_seq = []
 
     # --- Run episode ---
     for j in range(1000):
-        env.act(types_np.sample(env.ac_space, bshape=(env.num,)))
+        action = types_np.sample(env.ac_space, bshape=(env.num,))
+        print(action)
+        env.act(action)
         rew, obs, first = env.observe()
         observations_seq.append(obs["rgb"])
+        actions_seq.append(action)
         if first:
             break
 
     # --- Save episode ---
     if len(observations_seq) >= args.min_episode_length:
         observations_data = np.concatenate(observations_seq, axis=0)
+        action_data = np.concatenate(actions_seq, axis=0)
         episode_path = output_dir / f"episode_{i}.array_record"  
 
         # --- Save as ArrayRecord ---
         writer = ArrayRecordWriter(str(episode_path), "group_size:1")
-        record = {"raw_video": observations_data.tobytes(), "sequence_length": len(observations_seq)}
+        record = {"raw_video": observations_data.tobytes(), "actions": action_data, "sequence_length": len(observations_seq)}
         writer.write(pickle.dumps(record))
         writer.close()
 
@@ -63,6 +68,7 @@ while i < args.num_episodes:
 # --- Save metadata ---
 metadata = {
     "env": "coinrun",
+    "num_actions": env.ac_space.eltype.n,
     "num_episodes": args.num_episodes,
     "avg_episode_len": np.mean([ep["length"] for ep in episode_metadata]),
     "episode_metadata": episode_metadata,
