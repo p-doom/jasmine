@@ -11,10 +11,11 @@ from array_record.python.array_record_module import ArrayRecordWriter
 
 @dataclass
 class Args:
-    target_width, target_height = 160, 90
-    target_fps = 10
-    input_path: str = "data/minecraft_videos"
-    output_path: str = "data/minecraft_arrayrecords"
+    input_path: str
+    output_path: str
+    target_width: int = 160
+    target_height: int = 90
+    target_fps: int = 10
 
 
 def preprocess_video(

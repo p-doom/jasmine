@@ -11,8 +11,8 @@ from array_record.python.array_record_module import ArrayRecordWriter
 
 @dataclass
 class Args:
-    input_path: str = "data/rl_pngs"
-    output_path: str = "data/rl_arrayrecords"
+    input_path: str
+    output_path: str
     original_fps: int = 60
     target_fps: int = 10
     target_width: int = 64 
