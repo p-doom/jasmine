@@ -67,7 +67,7 @@ metadata = {
     "avg_episode_len": np.mean([ep["length"] for ep in episode_metadata]),
     "episode_metadata": episode_metadata,
 }
-with open(output_dir / "meta_data.json", "w") as f:
+with open(output_dir / "metadata.json", "w") as f:
     json.dump(metadata, f)
 
 print(f"Dataset generated with {len(episode_metadata)} valid episodes")

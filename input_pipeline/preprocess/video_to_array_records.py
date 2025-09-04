@@ -16,6 +16,7 @@ class Args:
     target_width: int = 160
     target_height: int = 90
     target_fps: int = 10
+    env_name: str = "minecraft"
 
 
 def preprocess_video(
@@ -49,10 +50,10 @@ def preprocess_video(
         writer.write(pickle.dumps(record))
         writer.close()
 
-        return in_filename, n_frames
+        return {"path": in_filename, "length": n_frames}
     except Exception as e:
         print(f"Error processing video {idx} ({in_filename}): {e}")
-        return in_filename, 0
+        return {"path": in_filename, "length": 0}
 
 
 def main():
@@ -85,17 +86,26 @@ def main():
     print("Done converting video to array_record files")
 
     # count the number of failed videos
-    failed_videos = [result for result in results if result[1] == 0]
-    short_episodes = [result for result in results if result[1] < 1600]
+    failed_videos = [result for result in results if result["length"] == 0]
+    short_videos = [result for result in results if result["length"] < 1600]
+    num_successful_videos = len(results) - len(failed_videos) - len(short_videos)
     print(f"Number of failed videos: {len(failed_videos)}")
-    print(f"Number of short episodes: {len(short_episodes)}")
-    print(
-        f"Number of successful videos: {len(results) - len(failed_videos) - len(short_episodes)}"
-    )
+    print(f"Number of short videos: {len(short_videos)}")
+    print(f"Number of successful videos: {num_successful_videos}")
     print(f"Number of total videos: {len(results)}")
 
-    with open(os.path.join(args.output_path, "meta_data.json"), "w") as f:
-        json.dump(results, f)
+    metadata = {
+        "env": args.env_name,
+        "total_videos": len(results),
+        "num_successful_videos": len(results) - len(failed_videos) - len(short_videos),
+        "num_failed_videos": len(failed_videos),
+        "num_short_videos": len(short_videos),
+        "avg_episode_len": np.mean([ep["length"] for ep in results]),
+        "episode_metadata": results,
+    }
+
+    with open(os.path.join(args.output_path, "metadata.json"), "w") as f:
+        json.dump(metadata, f)
 
 
 if __name__ == "__main__":
