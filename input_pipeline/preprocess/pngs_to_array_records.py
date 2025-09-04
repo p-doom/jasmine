@@ -13,6 +13,7 @@ from array_record.python.array_record_module import ArrayRecordWriter
 class Args:
     input_path: str
     output_path: str
+    env_name: str
     original_fps: int = 60
     target_fps: int = 10
     target_width: int = 64 
@@ -27,7 +28,7 @@ def preprocess_pngs(input_dir, output_path, original_fps, target_fps, target_wid
 
         if not png_files:
             print(f"No PNG files found in {input_dir}")
-            return input_dir, 0
+            return {"path": input_dir, "length": 0} 
 
         # Downsample indices
         n_total = len(png_files)
@@ -67,10 +68,10 @@ def preprocess_pngs(input_dir, output_path, original_fps, target_fps, target_wid
         writer.write(pickle.dumps(record))
         writer.close()
         print(f"Saved {frames.shape[0]} frames to {out_file}")
-        return input_dir, frames.shape[0]
+        return {"path": input_dir, "length": frames.shape[0]}
     except Exception as e:
         print(f"Error processing {input_dir}: {e}")
-        return input_dir, 0
+        return {"path": input_dir, "length": 0}
 
 def main():
     args = tyro.cli(Args)
@@ -102,17 +103,27 @@ def main():
     print("Done converting png to array_record files")
 
     # count the number of failed videos
-    failed_videos = [result for result in results if result[1] == 0]
-    short_episodes = [result for result in results if result[1] < 1600]
+    failed_videos = [result for result in results if result["length"] == 0]
+    short_videos = [result for result in results if result["length"] < 1600]
+    num_successful_videos = len(results) - len(failed_videos) - len(short_videos)
     print(f"Number of failed videos: {len(failed_videos)}")
-    print(f"Number of short episodes: {len(short_episodes)}")
-    print(
-        f"Number of successful videos: {len(results) - len(failed_videos) - len(short_episodes)}"
-    )
+    print(f"Number of short videos: {len(short_videos)}")
+    print(f"Number of successful videos: {num_successful_videos}")
     print(f"Number of total videos: {len(results)}")
 
-    with open(os.path.join(args.output_path, "meta_data.json"), "w") as f:
-        json.dump(results, f)
+    metadata = {
+        "env": args.env_name,
+        "total_videos": len(results),
+        "num_successful_videos": len(results) - len(failed_videos) - len(short_videos),
+        "num_failed_videos": len(failed_videos),
+        "num_short_videos": len(short_videos),
+        "avg_episode_len": np.mean([ep["length"] for ep in results]),
+        "episode_metadata": results,
+    }
+
+    with open(os.path.join(args.output_path, "metadata.json"), "w") as f:
+        json.dump(metadata, f)
+
     print("Done.")
 
 if __name__ == "__main__":
