@@ -3,6 +3,7 @@ import numpy as np
 import grain
 from typing import Any
 import pickle
+import os
 
 
 class EpisodeLengthFilter(grain.transforms.Filter):
@@ -156,3 +157,31 @@ def get_dataloader(
     )
 
     return dataloader
+
+def create_dataloader_iterator(
+    data_dir: str, 
+    image_shape: tuple[int, int, int], 
+    seq_len: int, 
+    batch_size: int, 
+    seed: int = 42
+) -> grain.DataLoaderIterator:
+    array_record_files = [
+        os.path.join(data_dir, x)
+        for x in os.listdir(data_dir)
+        if x.endswith(".array_record")
+    ]
+    grain_dataloader = get_dataloader(
+        array_record_files,
+        seq_len,
+        # NOTE: We deliberately pass the global batch size
+        # The dataloader shards the dataset across all processes
+        batch_size,
+        *image_shape,
+        num_workers=8,
+        prefetch_buffer_size=1,
+        seed=seed,
+    )
+    initial_state = grain_dataloader._create_initial_state()
+    grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
+
+    return grain_iterator
