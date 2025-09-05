@@ -155,11 +155,10 @@ def val_step(lam: LatentActionModel, inputs: dict) -> tuple[jax.Array, jax.Array
     (loss, (recon, _, metrics)) = lam_loss_fn(lam, inputs, training=False)
     return loss, recon, metrics
 
-def calculate_validation_metrics(val_dataloader):
+def calculate_validation_metrics(val_dataloader, lam):
     step = 0
     loss_per_step = []
     metrics_per_step = []
-    print(f"Calculating validation metrics...")
     for videos in val_dataloader:
         inputs = dict(videos=videos)
         loss, recon, metrics = val_step(lam, inputs)
@@ -384,13 +383,12 @@ if __name__ == "__main__":
             )
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
-            print(recon.shape)
             step += 1
 
             # --- Validation loss ---
             if args.val_data_dir and step % args.val_interval == 0:
                 print(f"Calculating validation metrics...")
-                val_loss, val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(dataloader_val)
+                val_loss, val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(dataloader_val, lam)
                 print(f"Step {step}, validation loss: {val_loss}")
 
             # --- Logging ---
@@ -408,14 +406,14 @@ if __name__ == "__main__":
                         })
                     wandb.log(log_dict)
                 if step % args.log_image_interval == 0:
-                    gt_seq = inputs["videos"][0].astype(jnp.float32) / 255.0
+                    gt_seq = inputs["videos"][0, 1:].astype(jnp.float32) / 255.0
                     recon_seq = recon[0].clip(0, 1)
                     comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
                     comparison_seq = einops.rearrange(
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
                     if args.val_data_dir and step % args.val_interval == 0:
-                        gt_seq_val = val_gt_batch["videos"][0].astype(jnp.float32) / 255.0
+                        gt_seq_val = val_gt_batch["videos"][0, 1:].astype(jnp.float32) / 255.0
                         recon_seq_val = val_recon[0].clip(0, 1)
                         val_comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
                         val_comparison_seq = einops.rearrange(
@@ -466,7 +464,7 @@ if __name__ == "__main__":
                 checkpoint_manager.save(
                     step,
                     args=ckpt_manager_args
-                    ),
+                    )
                 print(f"Saved checkpoint at step {step}")
             if step >= args.num_steps:
                 break
