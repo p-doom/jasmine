@@ -338,13 +338,13 @@ if __name__ == "__main__":
         if args.val_data_dir:
             restore_args = ocp.args.Composite(
                     model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
-                    dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
+                    train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
                     val_dataloader_state=grain.checkpoint.CheckpointRestore(val_iterator),  # type: ignore
                 )
         else: 
             restore_args = ocp.args.Composite(
                     model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
-                    dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
+                    train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
                 )
         restored = checkpoint_manager.restore(
             checkpoint_manager.latest_step(),
