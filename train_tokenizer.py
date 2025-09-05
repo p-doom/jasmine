@@ -17,7 +17,7 @@ import grain
 import flax.nnx as nnx
 
 from models.tokenizer import TokenizerVQVAE
-from utils.dataloader import get_dataloader
+from utils.dataloader import create_dataloader_iterator
 from utils.lr_utils import get_lr_schedule
 from utils.parameter_utils import count_parameters_by_component
 
@@ -148,31 +148,6 @@ def val_step(tokenizer: TokenizerVQVAE, inputs: dict) -> tuple[jax.Array, jax.Ar
     (loss, (recon, metrics)) = tokenizer_loss_fn(tokenizer, inputs)
     return loss, recon, metrics
 
-def create_dataloader_iterator(data_dir):
-    image_shape = (args.image_height, args.image_width, args.image_channels)
-    array_record_files = [
-        os.path.join(data_dir, x)
-        for x in os.listdir(data_dir)
-        if x.endswith(".array_record")
-    ]
-    grain_dataloader = get_dataloader(
-        array_record_files,
-        args.seq_len,
-        # NOTE: We deliberately pass the global batch size
-        # The dataloader shards the dataset across all processes
-        args.batch_size,
-        *image_shape,
-        num_workers=8,
-        prefetch_buffer_size=1,
-        seed=args.seed,
-    )
-    initial_state = grain_dataloader._create_initial_state()
-    grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
-
-    return grain_iterator
-
-
-# TODO mihir find appropriate name for this fn
 def calculate_validation_metrics(val_dataloader):
     step = 0
     loss_per_step = []
@@ -182,7 +157,6 @@ def calculate_validation_metrics(val_dataloader):
         loss, recon, metrics = val_step(tokenizer, inputs)
         loss_per_step.append(loss)
         metrics_per_step.append(metrics)
-        print(f"Step {step}, loss: {loss}")
         step += 1
         if step > args.val_steps:
             break
@@ -195,9 +169,7 @@ def calculate_validation_metrics(val_dataloader):
         f"val_{key}": np.mean([m[key] for m in metrics_per_step])
         for key in metrics_per_step[0].keys()
     }
-    return val_loss, recon, val_metrics
-
-
+    return val_loss, val_metrics, inputs, recon
 
 if __name__ == "__main__":
     jax.distributed.initialize()
@@ -345,8 +317,9 @@ if __name__ == "__main__":
     )
 
     # --- Create DataLoaderIterator from dataloader ---
-    train_iterator = create_dataloader_iterator()
-    val_iterator = create_dataloader_iterator()
+    image_shape = (args.image_height, args.image_width, args.image_channels)
+    train_iterator = create_dataloader_iterator(args.data_dir, image_shape, args.seq_len, args.batch_size, args.seed)
+    val_iterator = create_dataloader_iterator(args.val_data_dir, image_shape, args.seq_len, args.batch_size, args.seed)
 
     # --- Restore checkpoint ---
     if args.restore_ckpt:
@@ -389,7 +362,9 @@ if __name__ == "__main__":
 
             # --- Validation loss ---
             if args.val_data_dir and step % args.val_interval == 0:
-                val_loss, val_recon, val_metrics = calculate_validation_metrics(dataloader_val)
+                print(f"Calculating validation metrics...")
+                val_loss, val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(dataloader_val)
+                print(f"Step {step}, validation loss: {val_loss}")
 
             # --- Logging ---
             if args.log:
@@ -406,12 +381,17 @@ if __name__ == "__main__":
                         })
                     wandb.log(log_dict)
                 if step % args.log_image_interval == 0:
-                    # TODO mihir: add validation recons here
                     gt_seq = inputs["videos"][0].astype(jnp.float32) / 255.0
                     recon_seq = recon[0].clip(0, 1)
                     comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
                     comparison_seq = einops.rearrange(
                         comparison_seq * 255, "t h w c -> h (t w) c"
+                    )
+                    gt_seq_val = val_gt_batch["videos"][0].astype(jnp.float32) / 255.0
+                    recon_seq_val = val_recon[0].clip(0, 1)
+                    val_comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
+                    val_comparison_seq = einops.rearrange(
+                        val_comparison_seq * 255, "t h w c -> h (t w) c"
                     )
                     # NOTE: Process-dependent control flow deliberately happens
                     # after indexing operation since it must not contain code
@@ -422,6 +402,11 @@ if __name__ == "__main__":
                             recon=wandb.Image(np.asarray(recon_seq[0])),
                             true_vs_recon=wandb.Image(
                                 np.asarray(comparison_seq.astype(np.uint8))
+                            ),
+                            val_image=wandb.Image(np.asarray(gt_seq_val[0])),
+                            val_recon=wandb.Image(np.asarray(recon_seq_val[0])),
+                            val_true_vs_recon=wandb.Image(
+                                np.asarray(val_comparison_seq.astype(np.uint8))
                             ),
                         )
                         wandb.log(log_images)
