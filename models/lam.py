@@ -132,8 +132,8 @@ class LatentActionModel(nnx.Module):
         video_recon_BTm1P = video_recon_BTm1P.astype(jnp.float32)
         video_recon_BTm1P = nnx.sigmoid(video_recon_BTm1P)
         video_recon_BTm1P = video_recon_BTm1P.astype(self.dtype)
-        video_recon_BTHWC = unpatchify(video_recon_BTm1P, self.patch_size, H, W)
-        outputs["recon"] = video_recon_BTHWC
+        video_recon_BTm1HWC = unpatchify(video_recon_BTm1P, self.patch_size, H, W)
+        outputs["recon"] = video_recon_BTm1HWC
         return outputs
 
     def vq_encode(
