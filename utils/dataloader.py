@@ -3,40 +3,43 @@ import numpy as np
 import grain
 from typing import Any
 import pickle
+import os
 
 
 class EpisodeLengthFilter(grain.transforms.Filter):
     """
     A Grain Filter that keeps only episodes with sufficient length.
     """
-    
+
     def __init__(self, seq_len: int, image_h: int, image_w: int, image_c: int):
         """Initializes the filter with sequence length requirements."""
         self.seq_len = seq_len
         self.image_h = image_h
         self.image_w = image_w
         self.image_c = image_c
-    
+
     def filter(self, element: Any) -> bool:
         """
         Filters episodes based on length.
-        
+
         Args:
             element: A dictionary representing one record from the DataSource.
                      Expected to contain 'raw_video' (bytes) and 'sequence_length' (int)
-        
+
         Returns:
             True if the episode has sufficient length, False otherwise.
         """
         assert isinstance(element, bytes)
         element = pickle.loads(element)
-        
+
         current_episode_len = element["sequence_length"]
         if current_episode_len < self.seq_len:
-            print(f"Filtering out episode with length {current_episode_len}, which is "
-                f"shorter than the requested sequence length {self.seq_len}.")
+            print(
+                f"Filtering out episode with length {current_episode_len}, which is "
+                f"shorter than the requested sequence length {self.seq_len}."
+            )
             return False
-        
+
         return True
 
 
@@ -67,7 +70,7 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
         """
         assert isinstance(element, bytes)
         element = pickle.loads(element)
-        
+
         video_shape = (
             element["sequence_length"],
             self.image_h,
@@ -79,12 +82,14 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
 
         current_episode_len = episode_tensor.shape[0]
         if current_episode_len < self.seq_len:
-            raise ValueError(f"Episode length {current_episode_len} is shorter than "
-                           f"requested sequence length {self.seq_len}. This should "
-                           f"have been filtered out.")
-        
+            raise ValueError(
+                f"Episode length {current_episode_len} is shorter than "
+                f"requested sequence length {self.seq_len}. This should "
+                f"have been filtered out."
+            )
+
         max_start_idx = current_episode_len - self.seq_len
-        
+
         start_idx = rng.integers(0, max_start_idx + 1)
 
         seq = episode_tensor[start_idx : start_idx + self.seq_len]
@@ -119,7 +124,7 @@ def get_dataloader(
     per_process_batch_size = global_batch_size // num_processes
 
     source = grain.sources.ArrayRecordDataSource(array_record_paths)
-    
+
     sampler = grain.samplers.IndexSampler(
         num_records=len(source),
         shard_options=grain.sharding.ShardByJaxProcess(drop_remainder=True),
@@ -153,3 +158,30 @@ def get_dataloader(
 
     return dataloader
 
+def create_dataloader_iterator(
+    data_dir: str, 
+    image_shape: tuple[int, int, int], 
+    seq_len: int, 
+    batch_size: int, 
+    seed: int = 42
+) -> grain.DataLoaderIterator:
+    array_record_files = [
+        os.path.join(data_dir, x)
+        for x in os.listdir(data_dir)
+        if x.endswith(".array_record")
+    ]
+    grain_dataloader = get_dataloader(
+        array_record_files,
+        seq_len,
+        # NOTE: We deliberately pass the global batch size
+        # The dataloader shards the dataset across all processes
+        batch_size,
+        *image_shape,
+        num_workers=8,
+        prefetch_buffer_size=1,
+        seed=seed,
+    )
+    initial_state = grain_dataloader._create_initial_state()
+    grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
+
+    return grain_iterator

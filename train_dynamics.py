@@ -1,8 +1,8 @@
 from dataclasses import dataclass, field
 import os
+from typing import cast
 
 import einops
-from flax.training.train_state import TrainState
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.mesh_utils import create_device_mesh
 import optax
@@ -14,11 +14,13 @@ import jax.numpy as jnp
 import tyro
 import wandb
 import grain
+import flax.nnx as nnx
 
 from genie import Genie, restore_genie_components
-from utils.dataloader import get_dataloader
+from utils.dataloader import create_dataloader_iterator
 from utils.lr_utils import get_lr_schedule
 from utils.parameter_utils import count_parameters_by_component
+
 
 @dataclass
 class Args:
@@ -37,33 +39,39 @@ class Args:
     init_lr: float = 0.0
     max_lr: float = 3e-5
     decay_end: float = 0.0
-    wsd_decay_steps: int = 10000 # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
+    wsd_decay_steps: int = (
+        10000  # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
+    )
     warmup_steps: int = 5000
-    lr_schedule : str = "wsd" # supported options: wsd, cos
+    lr_schedule: str = "wsd"  # supported options: wsd, cos
     # Tokenizer
     tokenizer_dim: int = 512
+    tokenizer_ffn_dim: int = 2048
     latent_patch_dim: int = 32
     num_patch_latents: int = 1024
     patch_size: int = 4
-    tokenizer_num_blocks: int = 8
+    tokenizer_num_blocks: int = 4
     tokenizer_num_heads: int = 8
     tokenizer_checkpoint: str = ""
     # LAM
     lam_dim: int = 512
+    lam_ffn_dim: int = 2048
     latent_action_dim: int = 32
     num_latent_actions: int = 6
     lam_patch_size: int = 16
-    lam_num_blocks: int = 8
+    lam_num_blocks: int = 4
     lam_num_heads: int = 8
     lam_checkpoint: str = ""
     # Dynamics
+    dyna_type: str = "maskgit"  # supported options: maskgit, causal
     dyna_dim: int = 512
-    dyna_num_blocks: int = 12
+    dyna_ffn_dim: int = 2048
+    dyna_num_blocks: int = 6
     dyna_num_heads: int = 8
     dropout: float = 0.0
     mask_limit: float = 0.5
-    param_dtype: jnp.dtype = jnp.float32
-    dtype: jnp.dtype = jnp.bfloat16
+    param_dtype = jnp.float32
+    dtype = jnp.bfloat16
     use_flash_attention: bool = True
     # Logging
     log: bool = False
@@ -77,21 +85,22 @@ class Args:
     log_checkpoint_interval: int = 25000
     log_checkpoint_keep_period: int = 20000
     log_gradients: bool = False
+    val_data_dir: str = ""
+    val_interval: int = 20_000
+    val_steps: int = 50
     wandb_id: str = ""
 
 
 args = tyro.cli(Args)
 
 
-def dynamics_loss_fn(params, state, inputs):
+def dynamics_loss_fn(
+    model: Genie, inputs: dict
+) -> tuple[jax.Array, tuple[jax.Array, dict]]:
     """Compute masked dynamics loss"""
-    inputs["videos"] = inputs["videos"].astype(args.dtype) / 255.0
-    outputs = state.apply_fn(
-        params,
-        inputs,
-        training=True,
-        rngs={"params": inputs["rng"], "dropout": inputs["dropout_rng"]},
-    )
+    gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
+    inputs["videos"] = gt.astype(args.dtype)
+    outputs = model(inputs, training=True)
     mask = outputs["mask"]
     outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
     ce_loss = optax.softmax_cross_entropy_with_integer_labels(
@@ -101,10 +110,10 @@ def dynamics_loss_fn(params, state, inputs):
     acc = outputs["token_logits"].argmax(-1) == outputs["video_tokens"]
     acc = (mask * acc).sum() / mask.sum()
     select_probs = jax.nn.softmax(outputs["token_logits"])
-    gt = inputs["videos"].clip(0, 1).reshape(-1, *inputs["videos"].shape[2:])
+    gt = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
     recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
-    psnr = pix.psnr(gt, recon).mean() # type: ignore
-    ssim = pix.ssim(gt, recon).mean() # type: ignore
+    psnr = jnp.asarray(pix.psnr(gt, recon)).mean()
+    ssim = jnp.asarray(pix.ssim(gt, recon)).mean()
     _, index_counts_lam = jnp.unique_counts(
         jnp.ravel(outputs["lam_indices"]), size=args.num_latent_actions, fill_value=0
     )
@@ -127,18 +136,55 @@ def dynamics_loss_fn(params, state, inputs):
     return ce_loss, (outputs["recon"], metrics)
 
 
-@jax.jit
-def train_step(state, inputs):
+@nnx.jit
+def train_step(
+    model: Genie, optimizer: nnx.Optimizer, inputs: dict
+) -> tuple[jax.Array, jax.Array, dict]:
     """Update state and compute metrics"""
-    grad_fn = jax.value_and_grad(dynamics_loss_fn, has_aux=True, allow_int=True)
-    (loss, (recon, metrics)), grads = grad_fn(state.params, state, inputs)
-    state = state.apply_gradients(grads=grads)
+
+    def loss_fn(model: Genie) -> tuple[jax.Array, tuple[jax.Array, dict]]:
+        model.train()
+        return dynamics_loss_fn(model, inputs)
+
+    (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
+    optimizer.update(grads)
     if args.log_gradients:
         metrics["gradients_std/"] = jax.tree.map(
             lambda x: x.std(), grads["params"]["dynamics"]
         )
-    return state, loss, recon, metrics
+    return loss, recon, metrics
 
+@nnx.jit
+def val_step(genie: Genie, inputs: dict) -> tuple[jax.Array, jax.Array, dict]:
+    """Evaluate model and compute metrics"""
+    genie.eval()
+    (loss, (recon, metrics)) = dynamics_loss_fn(genie, inputs)
+    return loss, recon, metrics
+
+
+def calculate_validation_metrics(val_dataloader, genie, rng):
+    step = 0
+    loss_per_step = []
+    metrics_per_step = []
+    for videos in val_dataloader:
+        rng, _rng_mask = jax.random.split(rng, 2)
+        inputs = dict(videos=videos, mask_rng=_rng_mask)
+        loss, recon, metrics = val_step(genie, inputs)
+        loss_per_step.append(loss)
+        metrics_per_step.append(metrics)
+        step += 1
+        if step > args.val_steps:
+            break
+
+    if step < args.val_steps:
+        print(f"Warning: Your validation dataset is too small to make val_steps many steps. Made {step} steps, expected {args.val_steps}")
+
+    val_loss = np.mean(loss_per_step)
+    val_metrics = {
+        f"val_{key}": np.mean([m[key] for m in metrics_per_step])
+        for key in metrics_per_step[0].keys()
+    }
+    return val_loss, val_metrics, inputs, recon
 
 if __name__ == "__main__":
     jax.distributed.initialize()
@@ -155,13 +201,16 @@ if __name__ == "__main__":
 
     per_device_batch_size_for_init = args.batch_size // num_devices
 
-    rng = jax.random.PRNGKey(args.seed)
+    rng = jax.random.key(args.seed)
 
     # --- Initialize model ---
+    rng, _rng = jax.random.split(rng)
+    rngs = nnx.Rngs(_rng)
     genie = Genie(
         # Tokenizer
         in_dim=args.image_channels,
         tokenizer_dim=args.tokenizer_dim,
+        tokenizer_ffn_dim=args.tokenizer_ffn_dim,
         latent_patch_dim=args.latent_patch_dim,
         num_patch_latents=args.num_patch_latents,
         patch_size=args.patch_size,
@@ -169,6 +218,7 @@ if __name__ == "__main__":
         tokenizer_num_heads=args.tokenizer_num_heads,
         # LAM
         lam_dim=args.lam_dim,
+        lam_ffn_dim=args.lam_ffn_dim,
         latent_action_dim=args.latent_action_dim,
         num_latent_actions=args.num_latent_actions,
         lam_patch_size=args.lam_patch_size,
@@ -176,7 +226,9 @@ if __name__ == "__main__":
         lam_num_heads=args.lam_num_heads,
         lam_co_train=not args.lam_checkpoint,
         # Dynamics
+        dyna_type=args.dyna_type,
         dyna_dim=args.dyna_dim,
+        dyna_ffn_dim=args.dyna_ffn_dim,
         dyna_num_blocks=args.dyna_num_blocks,
         dyna_num_heads=args.dyna_num_heads,
         dropout=args.dropout,
@@ -184,23 +236,12 @@ if __name__ == "__main__":
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
+        decode=False,
+        rngs=rngs,
     )
-    rng, _rng = jax.random.split(rng)
-    image_shape = (args.image_height, args.image_width, args.image_channels)
-    dummy_inputs = dict(
-        videos=jnp.zeros(
-            (per_device_batch_size_for_init, args.seq_len, *image_shape),
-            dtype=args.dtype,
-        ),
-        action=jnp.zeros(
-            (per_device_batch_size_for_init, args.seq_len), dtype=args.dtype
-        ),
-        mask_rng=_rng,
-    )
-    rng, _rng = jax.random.split(rng)
-    init_params = genie.init(_rng, dummy_inputs)
 
-    param_counts = count_parameters_by_component(init_params)
+    _, params, _ = nnx.split(genie, nnx.Param, ...)
+    param_counts = count_parameters_by_component(params)
 
     if args.log and jax.process_index() == 0:
         wandb_init_kwargs = {
@@ -227,34 +268,74 @@ if __name__ == "__main__":
     print(param_counts)
 
     # --- Initialize optimizer ---
-    lr_schedule = get_lr_schedule(args.lr_schedule, 
-                                  args.init_lr, 
-                                  args.max_lr, 
-                                  args.decay_end, 
-                                  args.num_steps, 
-                                  args.warmup_steps, 
-                                  args.wsd_decay_steps)
-    tx = optax.adamw(learning_rate=lr_schedule, b1=0.9, b2=0.9, weight_decay=1e-4, mu_dtype=args.dtype)
-    train_state = TrainState.create(apply_fn=genie.apply, params=init_params, tx=tx)
+    lr_schedule = get_lr_schedule(
+        args.lr_schedule,
+        args.init_lr,
+        args.max_lr,
+        args.decay_end,
+        args.num_steps,
+        args.warmup_steps,
+        args.wsd_decay_steps,
+    )
+    tx = optax.adamw(
+        learning_rate=lr_schedule,
+        b1=0.9,
+        b2=0.9,
+        weight_decay=1e-4,
+        mu_dtype=args.dtype,
+    )
+    optimizer = nnx.Optimizer(genie, tx)
+    del genie
 
+    # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
     device_mesh_arr = create_device_mesh((num_devices,))
     mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
 
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
     videos_sharding = NamedSharding(mesh, PartitionSpec("data", None, None, None, None))
-    train_state = jax.device_put(train_state, replicated_sharding)
+
+    model_state = nnx.state(optimizer.model)
+    model_sharded_state = jax.lax.with_sharding_constraint(
+        model_state, replicated_sharding
+    )
+    nnx.update(optimizer.model, model_sharded_state)
+    optimizer_state = nnx.state(optimizer, nnx.optimizer.OptState)
+    optimizer_sharded_state = jax.lax.with_sharding_constraint(
+        optimizer_state, replicated_sharding
+    )
+    nnx.update(optimizer, optimizer_sharded_state)
 
     # --- Initialize checkpoint manager ---
     step = 0
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add(
-        "model_state", ocp.args.StandardSave, ocp.handlers.StandardCheckpointHandler
+        "model_state", ocp.args.PyTreeSave, ocp.handlers.PyTreeCheckpointHandler
     )
     handler_registry.add(
-        "model_state", ocp.args.StandardRestore, ocp.handlers.StandardCheckpointHandler
+        "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
     )
-    handler_registry.add("dataloader_state", grain.checkpoint.CheckpointSave, grain.checkpoint.CheckpointHandler)  # type: ignore
-    handler_registry.add("dataloader_state", grain.checkpoint.CheckpointRestore, grain.checkpoint.CheckpointHandler)  # type: ignore
+    handler_registry.add(
+        "train_dataloader_state",
+        grain.checkpoint.CheckpointSave,
+        cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
+    )
+    handler_registry.add(
+        "train_dataloader_state",
+        grain.checkpoint.CheckpointRestore,
+        cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
+    )
+    if args.val_data_dir:
+        handler_registry.add(
+            "val_dataloader_state",
+            grain.checkpoint.CheckpointSave,
+            cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
+        )
+        handler_registry.add(
+            "val_dataloader_state",
+            grain.checkpoint.CheckpointRestore,
+            cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
+        )
+
 
     checkpoint_options = ocp.CheckpointManagerOptions(
         save_interval_steps=args.log_checkpoint_interval,
@@ -271,76 +352,88 @@ if __name__ == "__main__":
     )
 
     # --- Create DataLoaderIterator from dataloader ---
-    array_record_files = [
-        os.path.join(args.data_dir, x)
-        for x in os.listdir(args.data_dir)
-        if x.endswith(".array_record")
-    ]
-    grain_dataloader = get_dataloader(
-        array_record_files,
-        args.seq_len,
-        # NOTE: We deliberately pass the global batch size
-        # The dataloader shards the dataset across all processes
-        args.batch_size,
-        *image_shape,
-        num_workers=8,
-        prefetch_buffer_size=1,
-        seed=args.seed,
-    )
-    initial_state = grain_dataloader._create_initial_state()
-    grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
+    image_shape = (args.image_height, args.image_width, args.image_channels)
+    train_iterator = create_dataloader_iterator(args.data_dir, image_shape, args.seq_len, args.batch_size, args.seed)
+    if args.val_data_dir:
+        val_iterator = create_dataloader_iterator(args.val_data_dir, image_shape, args.seq_len, args.batch_size, args.seed)
 
     # --- Restore checkpoint ---
     if args.restore_ckpt:
-        # Restore full dynamics model
-        abstract_train_state = jax.tree_util.tree_map(
-            ocp.utils.to_shape_dtype_struct, train_state
-        )
+        abstract_optimizer = nnx.eval_shape(lambda: optimizer)
+        abstract_optimizer_state = nnx.state(abstract_optimizer)
+        if args.val_data_dir:
+            restore_args = ocp.args.Composite(
+                    model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
+                    train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
+                    val_dataloader_state=grain.checkpoint.CheckpointRestore(val_iterator),  # type: ignore
+                )
+        else: 
+            restore_args = ocp.args.Composite(
+                    model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
+                    train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
+                )
         restored = checkpoint_manager.restore(
             checkpoint_manager.latest_step(),
-            args=ocp.args.Composite(
-                model_state=ocp.args.StandardRestore(abstract_train_state),
-                dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),
-            ),
+            args=restore_args
         )
-        train_state = restored["model_state"]
-        grain_iterator = restored["dataloader_state"]
+        restored_optimizer_state = restored["model_state"]
+        nnx.update(optimizer, restored_optimizer_state)
+        train_iterator = restored["train_dataloader_state"]
+        if args.val_data_dir:
+            val_iterator = restored["val_dataloader_state"]
         step = checkpoint_manager.latest_step() or 0
         print(f"Restored dataloader and model state from step {step}")
     else:
         # Restore from pre-trained tokenizer (and LAM)
-        train_state = restore_genie_components(
-            train_state, replicated_sharding, grain_iterator, dummy_inputs, rng, args
-        )
+        optimizer = restore_genie_components(optimizer, replicated_sharding, rng, args)
+        # NOTE: We have to remove the (unused) tokenizer vq dropout due flax.nnx lazily initializing modules.
+        # Specifically, the first dynamics model checkpoint will contain the vq dropout module,
+        # but the first full restore will fail due to nnx not initializing the module when
+        # dropout is set to 0.0.
+        del optimizer.model.tokenizer.vq.drop
 
     # --- TRAIN LOOP ---
-    dataloader = (jax.make_array_from_process_local_data(videos_sharding, elem) for elem in grain_iterator)  # type: ignore
+    dataloader_train = (
+        jax.make_array_from_process_local_data(videos_sharding, elem)
+        for elem in train_iterator
+    )
+    if args.val_data_dir:
+        dataloader_val = (
+            jax.make_array_from_process_local_data(videos_sharding, elem)
+            for elem in val_iterator
+        )
+    print(f"Starting training from step {step}...")
     while step < args.num_steps:
-        for videos in dataloader:
+        for videos in dataloader_train:
             # --- Train step ---
-            rng, _rng, _rng_dropout, _rng_mask = jax.random.split(rng, 4)
-
-            inputs = dict(
-                videos=videos,
-                rng=_rng,
-                dropout_rng=_rng_dropout,
-                mask_rng=_rng_mask,
-            )
-            train_state, loss, recon, metrics = train_step(train_state, inputs)
+            rng, _rng_mask = jax.random.split(rng, 2)
+            inputs = dict(videos=videos, mask_rng=_rng_mask)
+            loss, recon, metrics = train_step(optimizer.model, optimizer, inputs)
             metrics["lr"] = lr_schedule(step)
             print(f"Step {step}, loss: {loss}")
             step += 1
 
+            # --- Validation loss ---
+            if args.val_data_dir and step % args.val_interval == 0:
+                rng, _rng_mask_val = jax.random.split(rng, 2)
+                print(f"Calculating validation metrics...")
+                val_loss, val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(dataloader_val, optimizer.model, _rng_mask_val)
+                print(f"Step {step}, validation loss: {val_loss}")
+
             # --- Logging ---
             if args.log:
                 if step % args.log_interval == 0 and jax.process_index() == 0:
-                    wandb.log(
-                        {
-                            "loss": loss,
-                            "step": step,
-                            **metrics,
+                    log_dict = {
+                        "loss": loss,
+                        "step": step,
+                        **metrics
                         }
-                    )
+                    if args.val_data_dir and step % args.val_interval == 0:
+                        log_dict.update({
+                            "val_loss": val_loss,
+                            **val_metrics
+                        })
+                    wandb.log(log_dict)
                 if step % args.log_image_interval == 0:
                     gt_seq = inputs["videos"][0].astype(jnp.float32) / 255.0
                     recon_seq = recon[0].clip(0, 1)
@@ -348,26 +441,59 @@ if __name__ == "__main__":
                     comparison_seq = einops.rearrange(
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
+                    if args.val_data_dir and step % args.val_interval == 0:
+                        gt_seq_val = val_gt_batch["videos"][0].astype(jnp.float32) / 255.0
+                        recon_seq_val = val_recon[0].clip(0, 1)
+                        val_comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
+                        val_comparison_seq = einops.rearrange(
+                            val_comparison_seq * 255, "t h w c -> h (t w) c"
+                        )
+                    # NOTE: Process-dependent control flow deliberately happens
+                    # after indexing operation since it must not contain code
+                    # sections that lead to cross-accelerator communication.
                     if jax.process_index() == 0:
                         log_images = dict(
-                            image=wandb.Image(np.asarray(gt_seq[args.seq_len - 1])),
-                            recon=wandb.Image(np.asarray(recon_seq[args.seq_len - 1])),
+                            image=wandb.Image(np.asarray(gt_seq[0])),
+                            recon=wandb.Image(np.asarray(recon_seq[0])),
                             true_vs_recon=wandb.Image(
                                 np.asarray(comparison_seq.astype(np.uint8))
                             ),
                         )
+                        if args.val_data_dir and step % args.val_interval == 0:
+                            log_images.update(
+                                dict(
+                                    val_image=wandb.Image(np.asarray(gt_seq_val[0])),
+                                    val_recon=wandb.Image(np.asarray(recon_seq_val[0])),
+                                    val_true_vs_recon=wandb.Image(
+                                        np.asarray(val_comparison_seq.astype(np.uint8))
+                                    )
+                                )
+                            )
                         wandb.log(log_images)
             # --- Checkpointing ---
             if args.save_ckpt and step % args.log_checkpoint_interval == 0:
+                optimizer_state = nnx.state(optimizer)
+                if args.val_data_dir:
+                    ckpt_manager_args = ocp.args.Composite(
+                        model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
+                        train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
+                            train_iterator  # type: ignore
+                        ),
+                        val_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
+                            val_iterator  # type: ignore
+                        )
+                    )
+                else: 
+                    ckpt_manager_args = ocp.args.Composite(
+                        model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
+                        train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
+                            train_iterator  # type: ignore
+                        )
+                    )
                 checkpoint_manager.save(
                     step,
-                    args=ocp.args.Composite(
-                        model_state=ocp.args.StandardSave(train_state),
-                        dataloader_state=grain.checkpoint.CheckpointSave(
-                            grain_iterator
-                        ),
-                    ),
-                )
+                    args=ckpt_manager_args
+                    )
                 print(f"Saved checkpoint at step {step}")
             if step >= args.num_steps:
                 break

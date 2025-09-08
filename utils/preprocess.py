@@ -1,4 +1,3 @@
-import dm_pix as pix
 import einops
 import jax
 import jax.numpy as jnp
