@@ -93,8 +93,16 @@ class ProcessEpisodeAndSlice(grain.transforms.RandomMap):
         start_idx = rng.integers(0, max_start_idx + 1)
 
         seq = episode_tensor[start_idx : start_idx + self.seq_len]
+        data_dict = {
+            "frames": seq
+        }
+        if "actions" in element.keys():
+            actions_tensor = np.array(element["actions"])
+            actions = actions_tensor[start_idx : start_idx + self.seq_len]
+            data_dict["actions"] = actions
 
-        return seq
+
+        return data_dict
 
 
 def get_dataloader(
