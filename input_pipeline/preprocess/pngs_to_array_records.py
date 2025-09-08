@@ -104,19 +104,16 @@ def main():
 
     # count the number of failed videos
     failed_videos = [result for result in results if result["length"] == 0]
-    short_videos = [result for result in results if result["length"] < 1600]
-    num_successful_videos = len(results) - len(failed_videos) - len(short_videos)
+    num_successful_videos = len(results) - len(failed_videos)
     print(f"Number of failed videos: {len(failed_videos)}")
-    print(f"Number of short videos: {len(short_videos)}")
     print(f"Number of successful videos: {num_successful_videos}")
     print(f"Number of total videos: {len(results)}")
 
     metadata = {
         "env": args.env_name,
         "total_videos": len(results),
-        "num_successful_videos": len(results) - len(failed_videos) - len(short_videos),
+        "num_successful_videos": len(results) - len(failed_videos),
         "num_failed_videos": len(failed_videos),
-        "num_short_videos": len(short_videos),
         "avg_episode_len": np.mean([ep["length"] for ep in results]),
         "episode_metadata": results,
     }

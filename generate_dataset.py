@@ -21,6 +21,7 @@ class Args:
     num_episodes: int = 10000
     output_dir: str = "data/coinrun_episodes"
     min_episode_length: int = 50
+    max_episode_length: int = 1000
 
 
 args = tyro.cli(Args)
@@ -36,7 +37,7 @@ while i < args.num_episodes:
     observations_seq = []
 
     # --- Run episode ---
-    for j in range(1000):
+    for j in range(args.max_episode_length):
         env.act(types_np.sample(env.ac_space, bshape=(env.num,)))
         rew, obs, first = env.observe()
         observations_seq.append(obs["rgb"])
