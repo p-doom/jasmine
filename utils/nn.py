@@ -16,14 +16,13 @@ class SpatioTemporalPositionalEncoding(nnx.Module):
         self.d_model = d_model
         self.max_len = max_len
 
-        pe = jnp.zeros((self.max_len, self.d_model))
+        self.pe = jnp.zeros((self.max_len, self.d_model))
         position = jnp.arange(0, self.max_len, dtype=jnp.float32)[:, None]
         div_term = jnp.exp(
             jnp.arange(0, self.d_model, 2) * (-math.log(10000.0) / self.d_model)
         )
-        pe = pe.at[:, 0::2].set(jnp.sin(position * div_term))
-        pe = pe.at[:, 1::2].set(jnp.cos(position * div_term))
-        self.pe = nnx.Variable(pe)
+        self.pe = self.pe.at[:, 0::2].set(jnp.sin(position * div_term))
+        self.pe = self.pe.at[:, 1::2].set(jnp.cos(position * div_term))
 
     def __call__(self, x: jax.Array) -> jax.Array:
         """
@@ -39,11 +38,11 @@ class SpatioTemporalPositionalEncoding(nnx.Module):
         num_spatial_patches = x.shape[2]
 
         # Temporal positional encoding: (1, T, 1, D)
-        temporal_pe = self.pe.value[None, :num_timesteps, None, :]
+        temporal_pe = self.pe[None, :num_timesteps, None, :]
         x = x + temporal_pe
 
         # Spatial positional encoding: (1, 1, S, D)
-        spatial_pe = self.pe.value[None, None, :num_spatial_patches, :]
+        spatial_pe = self.pe[None, None, :num_spatial_patches, :]
         x = x + spatial_pe
 
         return x
