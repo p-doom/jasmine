@@ -170,7 +170,7 @@ def main():
     results = []
     with mp.Pool(processes=num_processes) as pool:
         for result in pool.starmap(preprocess_video, pool_args):
-            results += result
+            results.extend(result)
     print("Done converting video to array_record files")
 
     # count the number of short and failed videos
