@@ -52,7 +52,7 @@ while episode_idx < args.num_episodes:
         env.act(types_np.sample(env.ac_space, bshape=(env.num,)))
         rew, obs, first = env.observe()
         observations_seq.append(obs["rgb"])
-        if len(observations_seq) >= args.chunk_size:
+        if len(observations_seq) == args.chunk_size:
             episode_chunks.append(observations_seq)
             observations_seq = []
         if first:
@@ -69,16 +69,19 @@ while episode_idx < args.num_episodes:
             episode_path = output_dir / f"coinrun_episodes_{file_idx:04d}.array_record"  
             # --- Save as ArrayRecord ---
             writer = ArrayRecordWriter(str(episode_path), "group_size:1")
+            seq_lens = []
             for chunk in chunk_batch:
+                seq_len = chunk.shape[0]
+                seq_lens.append(seq_len)
                 chunk_record = {
                     "raw_video": chunk.tobytes(),
-                    "sequence_length": chunk.shape[0],
+                    "sequence_length": seq_len,
                 }
                 writer.write(pickle.dumps(chunk_record))
             writer.close()
             file_idx += 1
 
-            episode_metadata.append({"path": episode_path, "chunk_size": args.chunk_size, "num_chunks": len(chunk_batch)})
+            episode_metadata.append({"path": episode_path, "avg_seq_len": np.mean(seq_lens), "num_chunks": len(chunk_batch)})
             print(f"Created {episode_path} with {len(chunk_batch)} video chunks")
 
         print(f"Episode {episode_idx} completed, length: {step_t + 1}.")
@@ -90,7 +93,7 @@ while episode_idx < args.num_episodes:
 metadata = {
     "env": "coinrun",
     "num_episodes": args.num_episodes,
-    "avg_episode_len": np.mean([ep["length"] for ep in episode_metadata]),
+    "avg_episode_len": np.mean([ep["avg_seq_len"] for ep in episode_metadata]),
     "episode_metadata": episode_metadata,
 }
 with open(output_dir / "metadata.json", "w") as f:
