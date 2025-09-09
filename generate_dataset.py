@@ -24,21 +24,24 @@ class Args:
     num_episodes_test: int = 500
     output_dir: str = "data/coinrun_episodes"
     min_episode_length: int = 50
+    max_episode_length: int = 1000
+    chunk_size: int = 160
+    chunks_per_file: int = 100
     seed: int = 0
 
 
 args = tyro.cli(Args)
 
 def generate_episodes(num_episodes, split):
-    i = 0
+    episode_idx = 0
     episode_metadata = []
-    while i < num_episodes:
+    while episode_idx < num_episodes:
         seed = np.random.randint(0, 10000)
         env = ProcgenGym3Env(num=1, env_name="coinrun", start_level=seed)
         observations_seq = []
 
         # --- Run episode ---
-        for _ in range(1000):
+        for _ in range(args.max_episode_length):
             env.act(types_np.sample(env.ac_space, bshape=(env.num,)))
             _ , obs, first = env.observe()
             observations_seq.append(obs["rgb"])
@@ -48,19 +51,33 @@ def generate_episodes(num_episodes, split):
         # --- Save episode ---
         if len(observations_seq) >= args.min_episode_length:
             observations_data = np.concatenate(observations_seq, axis=0).astype(np.uint8)
-            episode_path = os.path.join(args.output_dir, split, f"episode_{i}.array_record")  
 
+            file_chunks = []
+            for start_idx in range(0, observations_data.shape[0] - args.chunk_size + 1, args.chunk_size):
+                chunk = observations_data[start_idx : start_idx + args.chunk_size]
+
+                chunk_record = {
+                    "raw_video": chunk.tobytes(),
+                    "sequence_length": args.chunk_size,
+                }
+
+                file_chunks.append(chunk_record)
             # --- Save as ArrayRecord ---
-            writer = ArrayRecordWriter(str(episode_path), "group_size:1")
-            record = {"raw_video": observations_data.tobytes(), "sequence_length": len(observations_seq)}
-            writer.write(pickle.dumps(record))
-            writer.close()
-
-            episode_metadata.append({"path": str(episode_path), "length": len(observations_seq)})
-            print(f"Episode {i} completed, length: {len(observations_seq)}")
-            i += 1
+            for file_idx in range(0, len(file_chunks), args.chunks_per_file):
+                batch_chunks = file_chunks[file_idx : file_idx + args.chunks_per_file]
+                episode_path = os.path.join(args.output_dir, split, f"episode_{episode_idx:04d}_part_{file_idx:04d}.array_record")   
+                writer = ArrayRecordWriter(str(episode_path), "group_size:1")
+                for chunk in batch_chunks:
+                    writer.write(pickle.dumps(chunk))
+                writer.close()
+                episode_metadata.append({"path": episode_path, "chunk_size": args.chunk_size, "num_chunks": len(batch_chunks)})
+                print(f"Created {episode_path} with {len(batch_chunks)} video chunks")
+            
+            print(f"Episode {episode_idx} completed, length: {len(observations_seq)}. Saved across {len(file_chunks) // args.chunks_per_file} array_records files.")
+            episode_idx += 1
         else:
             print(f"Episode too short ({len(observations_seq)}), resampling...")
+
     print(f"Done generating {split} split")
     return episode_metadata
 
