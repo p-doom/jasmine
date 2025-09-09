@@ -35,6 +35,30 @@ if args.min_episode_length < args.chunk_size:
 output_dir = Path(args.output_dir)
 output_dir.mkdir(parents=True, exist_ok=True)
 
+def _save_chunks(chunks, file_idx):
+    ep_metadata = []
+    while len(chunks) >= args.chunks_per_file:
+        chunk_batch = chunks[:args.chunks_per_file]
+        chunks = chunks[args.chunks_per_file:]
+        episode_path = output_dir / f"coinrun_episodes_{file_idx:04d}.array_record"  
+        # --- Save as ArrayRecord ---
+        writer = ArrayRecordWriter(str(episode_path), "group_size:1")
+        seq_lens = []
+        for chunk in chunk_batch:
+            seq_len = chunk.shape[0]
+            seq_lens.append(seq_len)
+            chunk_record = {
+                "raw_video": chunk.tobytes(),
+                "sequence_length": seq_len,
+            }
+            writer.write(pickle.dumps(chunk_record))
+        writer.close()
+        file_idx += 1
+
+        ep_metadata.append({"path": str(episode_path), "avg_seq_len": np.mean(seq_lens), "num_chunks": len(chunk_batch)})
+        print(f"Created {episode_path} with {len(chunk_batch)} video chunks")
+    return ep_metadata, chunks, file_idx
+
 # --- Generate episodes ---
 episode_idx = 0
 episode_metadata = []
@@ -59,36 +83,26 @@ while episode_idx < args.num_episodes:
             break
 
     # --- Save episode ---
-    if step_t >= args.min_episode_length:
-        chunks_data = np.array([np.concatenate(seq, axis=0) for seq in episode_chunks], dtype=np.uint8)
+    if step_t + 1  >= args.min_episode_length:
+        if len(observations_seq) < args.chunk_size:
+            print(
+                f"Warning: Inconsistent chunk_sizes. Episode has {len(observations_seq)} frames, "
+                f"which is smaller than the requested chunk_size: {args.chunk_size}. "
+                "This might lead to performance degradation during training."
+            )
+        episode_chunks.append(observations_seq)
+        chunks_data = [np.concatenate(seq, axis=0).astype(np.uint8) for seq in episode_chunks]
         chunks.extend(chunks_data)
 
-        while len(chunks) >= args.chunks_per_file:
-            chunk_batch = chunks[:args.chunks_per_file]
-            chunks = chunks[args.chunks_per_file:]
-            episode_path = output_dir / f"coinrun_episodes_{file_idx:04d}.array_record"  
-            # --- Save as ArrayRecord ---
-            writer = ArrayRecordWriter(str(episode_path), "group_size:1")
-            seq_lens = []
-            for chunk in chunk_batch:
-                seq_len = chunk.shape[0]
-                seq_lens.append(seq_len)
-                chunk_record = {
-                    "raw_video": chunk.tobytes(),
-                    "sequence_length": seq_len,
-                }
-                writer.write(pickle.dumps(chunk_record))
-            writer.close()
-            file_idx += 1
-
-            episode_metadata.append({"path": episode_path, "avg_seq_len": np.mean(seq_lens), "num_chunks": len(chunk_batch)})
-            print(f"Created {episode_path} with {len(chunk_batch)} video chunks")
+        ep_metadata, chunks, file_idx = _save_chunks(chunks, file_idx)
+        episode_metadata.extend(ep_metadata)
 
         print(f"Episode {episode_idx} completed, length: {step_t + 1}.")
         episode_idx += 1
     else:
-        print(f"Episode too short ({len(observations_seq)}), resampling...")
-
+        print(f"Episode too short ({step_t + 1}), resampling...")
+ep_metadata, chunks, file_idx = _save_chunks(chunks, file_idx)
+episode_metadata.extend(ep_metadata)
 # --- Save metadata ---
 metadata = {
     "env": "coinrun",
@@ -99,4 +113,4 @@ metadata = {
 with open(output_dir / "metadata.json", "w") as f:
     json.dump(metadata, f)
 
-print(f"Dataset generated with {len(episode_metadata)} valid episodes")
+print(f"Dataset generated with {args.num_episodes} episodes, saved over {len(episode_metadata)} files")

@@ -43,7 +43,7 @@ def _save_chunks(chunks, file_idx, chunks_per_file, output_dir):
         metadata.append({"path": episode_path, "num_chunks": len(chunk_batch), "avg_seq_len": np.mean(seq_lens)})
         print(f"Created {episode_path} with {len(chunk_batch)} video chunks")
 
-    return metadata
+    return metadata, chunks, file_idx
 
 def preprocess_pngs(input_dir, original_fps, target_fps, chunk_size, target_width):
     print(f"Processing PNGs in {input_dir}")
@@ -136,17 +136,13 @@ def main():
         with mp.Pool(processes=num_processes) as pool:
             for episode_chunks in pool.starmap(preprocess_pngs, args_batch):
                 chunks.extend(episode_chunks)
-        results_batch = _save_chunks(chunks, file_idx, args.chunks_per_file, args.output_path) 
+        results_batch, chunks, file_idx = _save_chunks(chunks, file_idx, args.chunks_per_file, args.output_path) 
         results.extend(results_batch)
 
     print("Done converting png to array_record files")
 
     # count the number of failed videos
-    failed_videos = [result for result in results if result["length"] == 0]
-    num_successful_videos = len(results) - len(failed_videos)
-    print(f"Number of failed videos: {len(failed_videos)}")
-    print(f"Number of successful videos: {num_successful_videos}")
-    print(f"Number of total videos: {len(results)}")
+    print(f"Total number of chunks: {len(results)}")
 
     metadata = {
         "env": args.env_name,
