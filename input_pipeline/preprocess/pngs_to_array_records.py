@@ -81,7 +81,14 @@ def preprocess_pngs(input_dir, original_fps, target_fps, chunk_size, target_widt
             if len(frames) == chunk_size:
                 chunks.append(frames)
                 frames = []
-
+        
+        if len(frames) < chunk_size:
+            print(
+                f"Warning: Inconsistent chunk_sizes. Episode has {len(frames)} frames, "
+                f"which is smaller than the requested chunk_size: {chunk_size}. "
+                "This might lead to performance degradation during training."
+            )
+        chunks.append(frames)
         chunks = [np.stack(chunk, axis=0) for chunk in chunks]
 
         return chunks
