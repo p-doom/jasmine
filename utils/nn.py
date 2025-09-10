@@ -514,7 +514,7 @@ class VectorQuantizer(nnx.Module):
 
         self.codebook = nnx.Param(
             normalize(
-                nnx.initializers.lecun_uniform()(
+                nnx.initializers.normal(stddev=1)(
                     rngs.params(), (self.num_latents, self.latent_dim)
                 )
             )
