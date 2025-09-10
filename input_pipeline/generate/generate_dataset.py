@@ -10,8 +10,15 @@ import numpy as np
 from procgen import ProcgenGym3Env
 import tyro
 import json
-from ..utils import save_chunks
+import sys
+import os
 
+# required for relative import of input_pipeline/utils 
+current = os.path.dirname(os.path.realpath(__file__))
+parent = os.path.dirname(current)
+sys.path.append(parent)
+
+from utils import save_chunks
 
 
 @dataclass
@@ -72,7 +79,7 @@ while episode_idx < args.num_episodes:
         episode_idx += 1
     else:
         print(f"Episode too short ({step_t + 1}), resampling...")
-ep_metadata, chunks, file_idx = _save_chunks(chunks, file_idx)
+ep_metadata, chunks, file_idx = save_chunks(chunks, file_idx)
 episode_metadata.extend(ep_metadata)
 # --- Save metadata ---
 metadata = {
@@ -81,7 +88,7 @@ metadata = {
     "avg_episode_len": np.mean([ep["avg_seq_len"] for ep in episode_metadata]),
     "episode_metadata": episode_metadata,
 }
-with open(output_dir / "metadata.json", "w") as f:
+with open(args.output_dir / "metadata.json", "w") as f:
     json.dump(metadata, f)
 
 print(f"Dataset generated with {args.num_episodes} episodes, saved over {len(episode_metadata)} files")

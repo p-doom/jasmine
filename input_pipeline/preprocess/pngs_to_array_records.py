@@ -5,8 +5,14 @@ import tyro
 from dataclasses import dataclass
 import json
 import multiprocessing as mp
+import sys
 
-from ..utils import save_chunks
+# required for relative import of input_pipeline/utils 
+current = os.path.dirname(os.path.realpath(__file__))
+parent = os.path.dirname(current)
+sys.path.append(parent)
+
+from utils import save_chunks
 
 @dataclass
 class Args:
