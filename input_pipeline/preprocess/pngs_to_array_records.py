@@ -3,10 +3,10 @@ import numpy as np
 from PIL import Image
 import tyro
 from dataclasses import dataclass
-import pickle
 import json
 import multiprocessing as mp
-from array_record.python.array_record_module import ArrayRecordWriter
+
+from ..utils import save_chunks
 
 @dataclass
 class Args:
@@ -19,31 +19,6 @@ class Args:
     target_width: int = 64
     chunk_size: int = 160
     chunks_per_file: int = 100
-
-def _save_chunks(chunks, file_idx, chunks_per_file, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
-
-    metadata = []
-    while len(chunks) >= chunks_per_file:
-        chunk_batch = chunks[:chunks_per_file]
-        chunks = chunks[chunks_per_file:]
-        episode_path = os.path.join(output_dir, f"data_{file_idx:04d}.array_record")  
-        writer = ArrayRecordWriter(str(episode_path), "group_size:1")
-        seq_lens = []
-        for chunk in chunk_batch:
-            seq_len = chunk.shape[0]
-            seq_lens.append(seq_len)
-            chunk_record = {
-                "raw_video": chunk.tobytes(),
-                "sequence_length": seq_len,
-            }
-            writer.write(pickle.dumps(chunk_record))
-        writer.close()
-        file_idx += 1
-        metadata.append({"path": episode_path, "num_chunks": len(chunk_batch), "avg_seq_len": np.mean(seq_lens)})
-        print(f"Created {episode_path} with {len(chunk_batch)} video chunks")
-
-    return metadata, chunks, file_idx
 
 def preprocess_pngs(input_dir, original_fps, target_fps, chunk_size, target_width):
     print(f"Processing PNGs in {input_dir}")
@@ -98,7 +73,6 @@ def preprocess_pngs(input_dir, original_fps, target_fps, chunk_size, target_widt
 
 def main():
     args = tyro.cli(Args)
-    os.makedirs(args.output_path, exist_ok=True)
     print(f"Output path: {args.output_path}")
 
     directories = [
@@ -136,7 +110,7 @@ def main():
         with mp.Pool(processes=num_processes) as pool:
             for episode_chunks in pool.starmap(preprocess_pngs, args_batch):
                 chunks.extend(episode_chunks)
-        results_batch, chunks, file_idx = _save_chunks(chunks, file_idx, args.chunks_per_file, args.output_path) 
+        results_batch, chunks, file_idx = save_chunks(chunks, file_idx, args.chunks_per_file, args.output_path) 
         results.extend(results_batch)
 
     print("Done converting png to array_record files")

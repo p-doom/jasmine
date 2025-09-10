@@ -175,10 +175,8 @@ def main():
 
     # count the number of short and failed videos
     failed_videos = [result for result in results if result["length"] == 0]
-    short_videos = [result for result in results if result["length"] < args.chunk_size]
-    num_successful_videos = len(results) - len(failed_videos) - len(short_videos)
+    num_successful_videos = len(results) - len(failed_videos)
     print(f"Number of failed videos: {len(failed_videos)}")
-    print(f"Number of short videos (less than chunk size): {len(short_videos)}")
     print(f"Number of successful videos: {num_successful_videos}")
     print(f"Number of total videos: {len(pool_args)}")
     print(f"Number of total chunks: {len(results)}")
@@ -187,9 +185,8 @@ def main():
         "env": args.env_name,
         "total_chunks": len(results),
         "total_videos": len(pool_args),
-        "num_successful_videos": len(pool_args) - len(failed_videos) - len(short_videos),
+        "num_successful_videos": len(pool_args) - len(failed_videos),
         "num_failed_videos": len(failed_videos),
-        "num_short_videos": len(short_videos),
         "avg_episode_len": np.mean([ep["length"] for ep in results]),
         "episode_metadata": results,
     }
