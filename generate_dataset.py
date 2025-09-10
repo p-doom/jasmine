@@ -20,7 +20,7 @@ from array_record.python.array_record_module import ArrayRecordWriter
 class Args:
     num_episodes: int = 10000
     output_dir: str = "data/coinrun_episodes"
-    min_episode_length: int = 50
+    min_episode_length: int = 1000
     max_episode_length: int = 1000
     chunk_size: int = 160
     chunks_per_file: int = 100
