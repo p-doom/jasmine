@@ -501,7 +501,7 @@ def main(args: Args) -> None:
             print(f"Step {step}, loss: {loss}")
             step += 1
 
-           # --- Validation loss ---
+            # --- Validation loss ---
             if args.val_data_dir and step % args.val_interval == 0:
                 rng, _rng_mask_val = jax.random.split(rng, 2)
                 print(f"Calculating validation metrics...")

@@ -36,6 +36,7 @@ def generate_episodes(num_episodes, split):
     episode_metadata = []
     chunks = []
     file_idx = 0
+    output_dir_split = os.path.join(args.output_dir, split)
     while episode_idx < num_episodes:
         seed = np.random.randint(0, 10000)
         env = ProcgenGym3Env(num=1, env_name="coinrun", start_level=seed)
@@ -46,7 +47,7 @@ def generate_episodes(num_episodes, split):
         # --- Run episode ---
         for step_t in range(args.max_episode_length):
             env.act(types_np.sample(env.ac_space, bshape=(env.num,)))
-            _ , obs, first = env.observe()
+            _, obs, first = env.observe()
             observations_seq.append(obs["rgb"])
             if len(observations_seq) == args.chunk_size:
                 episode_chunks.append(observations_seq)
@@ -66,7 +67,6 @@ def generate_episodes(num_episodes, split):
             chunks_data = [np.concatenate(seq, axis=0).astype(np.uint8) for seq in episode_chunks]
             chunks.extend(chunks_data)
 
-            output_dir_split = os.path.join(args.output_dir, split)
 
             ep_metadata, chunks, file_idx = save_chunks(chunks, file_idx, args.chunks_per_file, output_dir_split)
             episode_metadata.extend(ep_metadata)
@@ -75,7 +75,7 @@ def generate_episodes(num_episodes, split):
             episode_idx += 1
         else:
             print(f"Episode too short ({step_t + 1}), resampling...")
-    ep_metadata, chunks, file_idx = save_chunks(chunks, file_idx)
+    ep_metadata, chunks, file_idx = save_chunks(chunks, file_idx, args.chunks_per_file, output_dir_split)
     episode_metadata.extend(ep_metadata)
     print(f"Done generating {split} split")
     return episode_metadata
