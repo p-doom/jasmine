@@ -186,11 +186,11 @@ def shard_optimizer_states(
     nnx.update(optimizer, optimizer_sharded_state)
 
 
-def build_dataloader(args: Args) -> grain.DataLoaderIterator:
+def build_dataloader(args: Args, data_dir: str) -> grain.DataLoaderIterator:
     image_shape = (args.image_height, args.image_width, args.image_channels)
     array_record_files = [
-        os.path.join(args.data_dir, x)
-        for x in os.listdir(args.data_dir)
+        os.path.join(data_dir, x)
+        for x in os.listdir(data_dir)
         if x.endswith(".array_record")
     ]
     grain_dataloader = get_dataloader(
@@ -262,7 +262,7 @@ def restore_or_initialize_components(
     replicated_sharding: NamedSharding,
     val_iterator: grain.DataLoaderIterator = None,
     restore_step: Optional[int] = None,
-) -> tuple[int, nnx.Optimizer, grain.DataLoaderIterator, jax.Array]:
+) -> tuple[int, nnx.Optimizer, grain.DataLoaderIterator, grain.DataLoaderIterator, jax.Array]:
     step = 0
     if restore_step is None:
         restore_step = checkpoint_manager.latest_step()
@@ -360,9 +360,9 @@ def main(args: Args) -> None:
     checkpoint_manager = build_checkpoint_manager(args)
 
     # --- Create DataLoaderIterator from dataloader ---
-    train_iterator = build_dataloader(args)
+    train_iterator = build_dataloader(args, args.data_dir)
     if args.val_data_dir:
-        val_iterator = build_dataloader(args)
+        val_iterator = build_dataloader(args, args.val_data_dir)
  
     # --- Restore checkpoint ---
     if args.val_data_dir:
