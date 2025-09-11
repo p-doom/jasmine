@@ -20,6 +20,9 @@ class Args:
     input_path: str
     output_path: str
     env_name: str
+    train_ratio: float = 0.8
+    val_ratio: float = 0.1
+    test_ratio: float = 0.1
     target_width: int = 160
     target_height: int = 90
     target_fps: int = 10
@@ -140,45 +143,69 @@ def preprocess_video(
         print(f"Error processing video {idx} ({in_filename}): {e}")
         return [{"path": "", "length": 0, "video_file_name": in_filename}]
 
+def save_split(pool_args):
+    num_processes = mp.cpu_count()
+    print(f"Number of processes: {num_processes}")
+    results = []
+    with mp.Pool(processes=num_processes) as pool:
+        for result in pool.starmap(preprocess_video, pool_args):
+            results.extend(result)
+    return results
 
 def main():
     args = tyro.cli(Args)
 
-    os.makedirs(args.output_path, exist_ok=True)
     print(f"Output path: {args.output_path}")
 
-    num_processes = mp.cpu_count()
-    print(f"Number of processes: {num_processes}")
+    total_ratio = args.train_ratio + args.val_ratio + args.test_ratio
+    assert np.isclose(total_ratio, 1.0), "Ratios must sum to 1.0"
+
 
     print("Converting video to array_record files...")
-    pool_args = []
-    for idx, in_filename in enumerate(os.listdir(args.input_path)):
-        if in_filename.endswith(".mp4") or in_filename.endswith(".webm"):
-            pool_args.append((
+    input_files = [os.path.join(args.input_path, in_filename) 
+                    for in_filename in os.listdir(args.input_path)
+                    if in_filename.endswith(".mp4") or in_filename.endswith(".webm") 
+                    ]
+    n_total = len(input_files)
+    n_train = int(n_total * args.train_ratio)
+    n_val = int(n_total * args.val_ratio)
+
+    np.random.shuffle(input_files)
+    file_splits = {
+        "train": input_files[:n_train],
+        "val": input_files[n_train:n_train + n_val],
+        "test": input_files[n_train + n_val :]
+    }
+
+    pool_args = dict()
+    for split in file_splits.keys():
+        pool_args[split] = []
+        os.makedirs(os.path.join(args.output_path, split), exist_ok=True)
+        for idx, in_filename in enumerate(file_splits[split]):
+            pool_args[split].append((
                 idx,
-                os.path.join(args.input_path, in_filename),
-                args.output_path,
+                in_filename,
+                os.path.join(args.output_path, split),
                 args.target_width,
                 args.target_height,
                 args.target_fps,
                 args.chunk_size,
                 args.chunks_per_file
             ))
-        else:
-            print(f"Warning: {in_filename} is not a supported video format. Skipping...")
+        
+    train_episode_metadata = save_split(pool_args["train"])
+    val_episode_metadata = save_split(pool_args["val"])
+    test_episode_metadata = save_split(pool_args["test"])
 
-    results = []
-    with mp.Pool(processes=num_processes) as pool:
-        for result in pool.starmap(preprocess_video, pool_args):
-            results.extend(result)
     print("Done converting video to array_record files")
 
+    results = train_episode_metadata + val_episode_metadata + test_episode_metadata
     # count the number of short and failed videos
     failed_videos = [result for result in results if result["length"] == 0]
     num_successful_videos = len(results) - len(failed_videos)
     print(f"Number of failed videos: {len(failed_videos)}")
     print(f"Number of successful videos: {num_successful_videos}")
-    print(f"Number of total videos: {len(pool_args)}")
+    print(f"Number of total files: {len(pool_args)}")
     print(f"Number of total chunks: {len(results)}")
 
     metadata = {
@@ -187,8 +214,12 @@ def main():
         "total_videos": len(pool_args),
         "num_successful_videos": len(pool_args) - len(failed_videos),
         "num_failed_videos": len(failed_videos),
-        "avg_episode_len": np.mean([ep["length"] for ep in results]),
-        "episode_metadata": results,
+        "avg_episode_len_train": np.mean([ep["length"] for ep in train_episode_metadata]),
+        "avg_episode_len_val": np.mean([ep["length"] for ep in val_episode_metadata]),
+        "avg_episode_len_test": np.mean([ep["length"] for ep in test_episode_metadata]),
+        "episode_metadata_train": train_episode_metadata,
+        "episode_metadata_val": val_episode_metadata,
+        "episode_metadata_test": test_episode_metadata,
     }
 
     with open(os.path.join(args.output_path, "metadata.json"), "w") as f:

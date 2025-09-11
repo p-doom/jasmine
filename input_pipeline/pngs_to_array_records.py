@@ -12,6 +12,9 @@ class Args:
     input_path: str
     output_path: str
     env_name: str
+    train_ratio: float = 0.8
+    val_ratio: float = 0.1
+    test_ratio: float = 0.1
     multigame: bool = False
     original_fps: int = 60
     target_fps: int = 10
@@ -70,9 +73,30 @@ def preprocess_pngs(input_dir, original_fps, target_fps, chunk_size, target_widt
         print(f"Error processing {input_dir}: {e}")
         return []
 
+def save_split(pool_args, chunks_per_file, output_path):
+    num_processes = mp.cpu_count()
+    print(f"Number of processes: {num_processes}")
+    chunks = []
+    file_idx = 0
+    results = []
+    for bucket_idx in range(0, len(pool_args), num_processes):
+        args_batch = pool_args[bucket_idx : bucket_idx + num_processes]
+        with mp.Pool(processes=num_processes) as pool:
+            for episode_chunks in pool.starmap(preprocess_pngs, args_batch):
+                chunks.extend(episode_chunks)
+        results_batch, chunks, file_idx = save_chunks(chunks, file_idx, chunks_per_file, output_path) 
+        results.extend(results_batch)
+
+    results_batch, chunks, file_idx = save_chunks(chunks, file_idx, chunks_per_file, output_path) 
+    results.extend(results_batch)
+    print(f"Done processing files. Saved to {output_path}")
+    return results
+
 def main():
     args = tyro.cli(Args)
     print(f"Output path: {args.output_path}")
+    total_ratio = args.train_ratio + args.val_ratio + args.test_ratio
+    assert np.isclose(total_ratio, 1.0), "Ratios must sum to 1.0"
 
     directories = [
         os.path.join(args.input_path, d)
@@ -88,40 +112,55 @@ def main():
     else: 
         episodes = directories
 
-    num_processes = mp.cpu_count()
-    print(f"Number of processes: {num_processes}")
-    pool_args = [
-        (
+    n_total = sum([len(os.listdir(episode)) for episode in episodes])
+    n_train = int(n_total * args.train_ratio)
+    n_val = int(n_total * args.val_ratio)
+
+    pool_args_train = []
+    pool_args_val = []
+    pool_args_test = []
+
+    train_counter = 0
+    val_counter = 0
+    np.random.shuffle(episodes)
+    for episode in episodes:
+        pool_arg = (
             episode, 
             args.original_fps, 
             args.target_fps, 
             args.chunk_size, 
             args.target_width, 
         )
-        for episode in episodes
-    ]
+        n_frames = len(os.listdir(episode))
+        if train_counter < n_train:            
+            pool_args_train.append(pool_arg)
+            train_counter += n_frames
+        elif val_counter < n_val:
+            pool_args_val.append(pool_arg)
+            val_counter += n_frames
+        else:
+            pool_args_test.append(pool_arg)
 
-    chunks = []
-    file_idx = 0
-    results = []
-    for bucket_idx in range(0, len(pool_args), num_processes):
-        args_batch = pool_args[bucket_idx : bucket_idx + num_processes]
-        with mp.Pool(processes=num_processes) as pool:
-            for episode_chunks in pool.starmap(preprocess_pngs, args_batch):
-                chunks.extend(episode_chunks)
-        results_batch, chunks, file_idx = save_chunks(chunks, file_idx, args.chunks_per_file, args.output_path) 
-        results.extend(results_batch)
+    train_episode_metadata = save_split(pool_args_train, args.chunks_per_file, os.path.join(args.output_path, "train"))
+    val_episode_metadata = save_split(pool_args_val, args.chunks_per_file, os.path.join(args.output_path, "val"))
+    test_episode_metadata = save_split(pool_args_test, args.chunks_per_file, os.path.join(args.output_path, "test"))
+
+    # Calculate total number of chunks
+    total_chunks = sum(ep["num_chunks"] for ep in train_episode_metadata + val_episode_metadata + test_episode_metadata)
 
     print("Done converting png to array_record files")
 
-    # count the number of failed videos
-    print(f"Total number of chunks: {len(results)}")
+    print(f"Total number of chunks: {total_chunks}")
 
     metadata = {
         "env": args.env_name,
-        "total_chunks": len(results),
-        "avg_episode_len": np.mean([ep["avg_seq_len"] for ep in results]),
-        "episode_metadata": results,
+        "total_chunks": total_chunks,
+        "avg_episode_len_train": np.mean([ep["avg_seq_len"] for ep in train_episode_metadata]),
+        "avg_episode_len_val": np.mean([ep["avg_seq_len"] for ep in val_episode_metadata]),
+        "avg_episode_len_test": np.mean([ep["avg_seq_len"] for ep in test_episode_metadata]),
+        "episode_metadata_train": train_episode_metadata,
+        "episode_metadata_val": val_episode_metadata,
+        "episode_metadata_test": test_episode_metadata,
     }
 
     with open(os.path.join(args.output_path, "metadata.json"), "w") as f:

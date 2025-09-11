@@ -16,7 +16,9 @@ from utils import save_chunks
 
 @dataclass
 class Args:
-    num_episodes: int = 10000
+    num_episodes_train: int = 10000
+    num_episodes_val: int = 500
+    num_episodes_test: int = 500
     output_dir: str = "data/coinrun_episodes"
     min_episode_length: int = 1000
     max_episode_length: int = 1000
