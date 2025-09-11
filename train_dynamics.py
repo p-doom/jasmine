@@ -1,6 +1,5 @@
 import os
 
-from jax._src.lax.special import evaluate_chebyshev_polynomial
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.98")
 
