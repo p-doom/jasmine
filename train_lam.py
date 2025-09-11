@@ -508,7 +508,7 @@ def main(args: Args) -> None:
                     if args.val_data_dir and step % args.val_interval == 0:
                         gt_seq_val = val_gt_batch["videos"][0, 1:].astype(jnp.float32) / 255.0
                         recon_seq_val = val_recon[0].clip(0, 1)
-                        val_comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
+                        val_comparison_seq = jnp.concatenate((gt_seq_val, recon_seq_val), axis=1)
                         val_comparison_seq = einops.rearrange(
                             val_comparison_seq * 255, "t h w c -> h (t w) c"
                         )
