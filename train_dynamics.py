@@ -1,5 +1,7 @@
 import os
 
+from jax._src.lax.special import evaluate_chebyshev_polynomial
+
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.98")
 
 from dataclasses import dataclass, field
@@ -376,11 +378,11 @@ def main(args: Args) -> None:
 
     # --- Define loss and train step (close over args) ---
     def dynamics_loss_fn(
-        model: Genie, inputs: dict
+        model: Genie, inputs: dict, training: bool = False, evaluate_full_frame_pred: bool = False
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
-        outputs = model(inputs, training=True)
+        outputs = model(inputs, training=training, evaluate_full_frame_pred=False)
         mask = outputs["mask"]
         outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(
@@ -425,7 +427,7 @@ def main(args: Args) -> None:
     ) -> tuple[jax.Array, jax.Array, dict]:
         def loss_fn(model: Genie) -> tuple[jax.Array, tuple[jax.Array, dict]]:
             model.train()
-            return dynamics_loss_fn(model, inputs)
+            return dynamics_loss_fn(model, inputs, training=True)
 
         (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
             optimizer.model
@@ -441,20 +443,25 @@ def main(args: Args) -> None:
     def val_step(genie: Genie, inputs: dict) -> tuple[jax.Array, jax.Array, dict]:
         """Evaluate model and compute metrics"""
         genie.eval()
-        (loss, (recon, metrics)) = dynamics_loss_fn(genie, inputs)
-        return loss, recon, metrics
+        (loss, (recon, metrics)) = dynamics_loss_fn(genie, inputs, training=False, evaluate_full_frame_pred=False)
+        (loss_full_frame, (recon_full_frame, metrics_full_frame)) = dynamics_loss_fn(genie, inputs, training=False, evaluate_full_frame_pred=True)
+        return loss, recon, metrics, loss_full_frame, recon_full_frame, metrics_full_frame
 
 
     def calculate_validation_metrics(val_dataloader, genie, rng):
         step = 0
         loss_per_step = []
         metrics_per_step = []
+        loss_full_frame_per_step = []
+        metrics_full_frame_per_step = []
         for videos in val_dataloader:
             rng, _rng_mask = jax.random.split(rng, 2)
             inputs = dict(videos=videos, mask_rng=_rng_mask)
-            loss, recon, metrics = val_step(genie, inputs)
+            loss, recon, metrics, loss_full_frame, recon_full_frame, metrics_full_frame = val_step(genie, inputs)
             loss_per_step.append(loss)
             metrics_per_step.append(metrics)
+            loss_full_frame_per_step.append(loss_full_frame)
+            metrics_full_frame_per_step.append(metrics_full_frame)
             step += 1
             if step > args.val_steps:
                 break
@@ -462,12 +469,21 @@ def main(args: Args) -> None:
         if step < args.val_steps:
             print(f"Warning: Your validation dataset is too small to make val_steps many steps. Made {step} steps, expected {args.val_steps}")
 
-        val_loss = np.mean(loss_per_step)
         val_metrics = {
             f"val_{key}": np.mean([float(m[key]) for m in metrics_per_step])
             for key in metrics_per_step[0].keys()
         }
-        return val_loss, val_metrics, inputs, recon
+        val_metrics_full_frame = {
+            f"val_full_frame_{key}": np.mean([float(m[key]) for m in metrics_full_frame_per_step])
+            for key in metrics_full_frame_per_step[0].keys()
+        }
+        val_losses = {
+            "val_loss": np.mean(loss_per_step),
+            "vall_loss_full_frame": np.mean(loss_full_frame_per_step)
+        }
+        val_metrics.update(val_metrics_full_frame)
+        val_metrics.update(val_losses)
+        return val_metrics, inputs, recon, recon_full_frame
 
     # --- TRAIN LOOP ---
     dataloader_train = (
@@ -505,8 +521,8 @@ def main(args: Args) -> None:
             if args.val_data_dir and step % args.val_interval == 0:
                 rng, _rng_mask_val = jax.random.split(rng, 2)
                 print(f"Calculating validation metrics...")
-                val_loss, val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(dataloader_val, optimizer.model, _rng_mask_val)
-                print(f"Step {step}, validation loss: {val_loss}")
+                val_metrics, val_gt_batch, val_recon, val_full_frame = calculate_validation_metrics(dataloader_val, optimizer.model, _rng_mask_val)
+                print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
 
             # --- Logging ---
             if args.log:
@@ -518,7 +534,6 @@ def main(args: Args) -> None:
                         }
                     if args.val_data_dir and step % args.val_interval == 0:
                         log_dict.update({
-                            "val_loss": val_loss,
                             **val_metrics
                         })
                     wandb.log(log_dict)
@@ -536,6 +551,12 @@ def main(args: Args) -> None:
                         val_comparison_seq = einops.rearrange(
                             val_comparison_seq * 255, "t h w c -> h (t w) c"
                         )
+                        if val_full_frame is not None:
+                            full_frame_seq_val = val_full_frame[0].clip(0, 1)
+                            val_full_frame_comparison_seq = jnp.concatenate((gt_seq_val, full_frame_seq_val), axis=1)
+                            val_full_frame_comparison_seq = einops.rearrange(
+                                val_full_frame_comparison_seq * 255, "t h w c -> h (t w) c"
+                            )
                     # NOTE: Process-dependent control flow deliberately happens
                     # after indexing operation since it must not contain code
                     # sections that lead to cross-accelerator communication.
@@ -557,6 +578,15 @@ def main(args: Args) -> None:
                                     )
                                 )
                             )
+                            if val_full_frame is not None:
+                                log_images.update(
+                                    dict(
+                                        val_full_frame=wandb.Image(np.asarray(full_frame_seq_val[args.seq_len - 1])),
+                                        val_true_vs_full_frame=wandb.Image(
+                                            np.asarray(val_full_frame_comparison_seq.astype(np.uint8))
+                                        )
+                                    )
+                                )
                         wandb.log(log_images)
             # --- Checkpointing ---
             if args.save_ckpt and step % args.log_checkpoint_interval == 0:

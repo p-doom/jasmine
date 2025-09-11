@@ -73,8 +73,9 @@ class DynamicsMaskGIT(nnx.Module):
         )
 
     def __call__(
-        self, batch: Dict[str, jax.Array], training: bool = True
+        self, batch: Dict[str, jax.Array], training: bool = True, eval_full_frame_pred: bool = False,
     ) -> tuple[jax.Array, jax.Array | None]:
+        assert not (training and eval_full_frame_pred), "Cannot evaluate full frame prediction during training."
         # --- Mask videos ---
         video_tokens_BTN = batch["video_tokens"]
         latent_actions_BTm11L = batch["latent_actions"]
@@ -94,8 +95,14 @@ class DynamicsMaskGIT(nnx.Module):
             vid_embed_BTNM = jnp.where(
                 jnp.expand_dims(mask, -1), self.mask_token.value, vid_embed_BTNM
             )
+        elif eval_full_frame_pred:
+            mask = jnp.zeros_like(vid_embed_BTNM)
+            mask = mask.at[: -1].set(True)
+            vid_embed_BTNM = jnp.where(
+                jnp.expand_dims(mask, -1), self.mask_token.value, vid_embed_BTNM
+            )
         else:
-            mask = None
+            mask = jnp.ones_like(video_tokens_BTN)
 
         # --- Predict transition ---
         act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
@@ -163,21 +170,47 @@ class DynamicsCausal(nnx.Module):
         )
 
     def __call__(
-        self, batch: Dict[str, jax.Array], training: bool = True
+        self, batch: Dict[str, jax.Array], training: bool = True, eval_full_frame_pred: bool = False,
     ) -> tuple[jax.Array, jax.Array | None]:
+        assert not (training and eval_full_frame_pred), "Cannot evaluate full frame prediction during training."
         video_tokens_BTN = batch["video_tokens"]
         latent_actions_BTm11L = batch["latent_actions"]
-
-        vid_embed_BTNM = self.patch_embed(video_tokens_BTN)
-        act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
-        padded_act_embed_BT1M = jnp.pad(
-            act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0))
-        )
-        vid_embed_BTNp1M = jnp.concatenate(
-            [padded_act_embed_BT1M, vid_embed_BTNM], axis=2
-        )
-
-        logits_BTNp1V = self.transformer(vid_embed_BTNp1M)
-        logits_BTNV = logits_BTNp1V[:, :, :-1]
-
-        return logits_BTNV, jnp.ones_like(video_tokens_BTN)
+        if eval_full_frame_pred:
+            def _eval_full_frame_pred(carry, step_n):
+                video_tokens_BTN, final_logits_BTNV = carry
+                vid_embed_BTNM = self.patch_embed(video_tokens_BTN)
+                act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
+                padded_act_embed_BT1M = jnp.pad(
+                    act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0))
+                )
+                vid_embed_BTNp1M = jnp.concatenate(
+                    [padded_act_embed_BT1M, vid_embed_BTNM], axis=2
+                )
+                step_logits_BTNp1V = self.transformer(vid_embed_BTNp1M)
+                step_logits_BV = step_logits_BTNp1V[:, -1, step_n, :]
+                final_logits_BTNV = final_logits_BTNV.at[:, -1, step_n].set(step_logits_BV)
+                sampled_token_idxs_B = jnp.argmax(step_logits_BV, axis=-1)
+                video_tokens_BTN = video_tokens_BTN.at[:, -1, step_n].set(
+                    sampled_token_idxs_B
+                )
+                return (video_tokens_BTN, final_logits_BTNV), None
+            final_logits_BTNV = jax.lax.scan(
+                _eval_full_frame_pred, 
+                (video_tokens_BTN, jnp.zeros(video_tokens_BTN.shape + [self.num_latents])), 
+                jnp.arange(video_tokens_BTN.shape[1])
+            )
+            mask_out = jnp.zeros_like(video_tokens_BTN)
+            mask_out = mask_out.at[:, -1].set(True)
+            return final_logits_BTNV, mask_out
+        else:
+            vid_embed_BTNM = self.patch_embed(video_tokens_BTN)
+            act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
+            padded_act_embed_BT1M = jnp.pad(
+                act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0))
+            )
+            vid_embed_BTNp1M = jnp.concatenate(
+                [padded_act_embed_BT1M, vid_embed_BTNM], axis=2
+            )
+            logits_BTNp1V = self.transformer(vid_embed_BTNp1M)
+            logits_BTNV = logits_BTNp1V[:, :, :-1]
+            return logits_BTNV, jnp.ones_like(video_tokens_BTN)

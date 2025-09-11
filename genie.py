@@ -141,7 +141,7 @@ class Genie(nnx.Module):
             raise ValueError(f"Invalid dynamics type: {self.dyna_type}")
 
     def __call__(
-        self, batch: Dict[str, jax.Array], training: bool = True
+        self, batch: Dict[str, jax.Array], training: bool = True, evaluate_full_frame_pred: bool = False
     ) -> Dict[str, jax.Array]:
         videos_BTHWC = batch["videos"]
         tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
@@ -159,7 +159,7 @@ class Genie(nnx.Module):
             latent_actions=latent_actions_BTm11L,
         )
         outputs["mask_rng"] = batch["mask_rng"]
-        dyna_logits_BTNV, dyna_mask = self.dynamics(outputs, training)
+        dyna_logits_BTNV, dyna_mask = self.dynamics(outputs, training, evaluate_full_frame_pred)
         outputs["token_logits"] = dyna_logits_BTNV
         if dyna_mask is not None:
             outputs["mask"] = dyna_mask

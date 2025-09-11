@@ -337,11 +337,11 @@ def main(args: Args) -> None:
 
     # --- Define loss and train step (close over args) ---
     def tokenizer_loss_fn(
-        model: TokenizerVQVAE, inputs: dict
+        model: TokenizerVQVAE, inputs: dict, training: bool = False
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
-        outputs = model(inputs, training=True)
+        outputs = model(inputs, training=training)
         outputs["recon"] = outputs["recon"].astype(jnp.float32)
         mse = jnp.square(gt - outputs["recon"]).mean()
         q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()
@@ -375,7 +375,7 @@ def main(args: Args) -> None:
     ) -> tuple[jax.Array, jax.Array, dict]:
         def loss_fn(model: TokenizerVQVAE) -> tuple[jax.Array, tuple[jax.Array, dict]]:
             model.train()
-            return tokenizer_loss_fn(model, inputs)
+            return tokenizer_loss_fn(model, inputs, training=True)
 
         (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
             optimizer.model
@@ -396,7 +396,7 @@ def main(args: Args) -> None:
     @nnx.jit(donate_argnums=0)
     def val_step(tokenizer: TokenizerVQVAE, inputs: dict) -> tuple[jax.Array, jax.Array, dict]:
         tokenizer.eval()
-        (loss, (recon, metrics)) = tokenizer_loss_fn(tokenizer, inputs)
+        (loss, (recon, metrics)) = tokenizer_loss_fn(tokenizer, inputs, training=False)
         return loss, recon, metrics
 
     def calculate_validation_metrics(val_dataloader, tokenizer):
