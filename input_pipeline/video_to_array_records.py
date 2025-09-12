@@ -58,7 +58,7 @@ def _chunk_and_save_video(
         print(
             f"Warning: Video has {current_episode_len} frames, skipping (need {chunk_size})"
         )
-        return [{"path": "", "length": current_episode_len, "video_file_name": video_file_name}]
+        return [{"path": "", "length": 0, "video_file_name": video_file_name}]
 
     for start_idx in range(0, current_episode_len - chunk_size + 1, chunk_size):
         chunk = video_tensor[start_idx : start_idx + chunk_size]
@@ -211,8 +211,8 @@ def main():
     metadata = {
         "env": args.env_name,
         "total_chunks": len(results),
-        "total_videos": len(pool_args),
-        "num_successful_videos": len(pool_args) - len(failed_videos),
+        "total_videos": len(input_files),
+        "num_successful_videos": len(input_files) - len(failed_videos),
         "num_failed_videos": len(failed_videos),
         "avg_episode_len_train": np.mean([ep["length"] for ep in train_episode_metadata]),
         "avg_episode_len_val": np.mean([ep["length"] for ep in val_episode_metadata]),
