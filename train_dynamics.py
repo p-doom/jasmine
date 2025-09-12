@@ -377,11 +377,11 @@ def main(args: Args) -> None:
 
     # --- Define loss and train step (close over args) ---
     def dynamics_loss_fn(
-        model: Genie, inputs: dict, training: bool = False, evaluate_full_frame_pred: bool = False
+        model: Genie, inputs: dict, training: bool = False, pred_full_frame: bool = False
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
-        outputs = model(inputs, training=training, evaluate_full_frame_pred=False)
+        outputs = model(inputs, training=training, pred_full_frame=pred_full_frame)
         mask = outputs["mask"]
         outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(
@@ -439,11 +439,11 @@ def main(args: Args) -> None:
         return loss, recon, metrics
 
     @nnx.jit
-    def val_step(genie: Genie, inputs: dict) -> tuple[jax.Array, jax.Array, dict]:
+    def val_step(genie: Genie, inputs: dict) -> tuple[jax.Array, jax.Array, dict, jax.Array, jax.Array, dict]:
         """Evaluate model and compute metrics"""
         genie.eval()
-        (loss, (recon, metrics)) = dynamics_loss_fn(genie, inputs, training=False, evaluate_full_frame_pred=False)
-        (loss_full_frame, (recon_full_frame, metrics_full_frame)) = dynamics_loss_fn(genie, inputs, training=False, evaluate_full_frame_pred=True)
+        (loss, (recon, metrics)) = dynamics_loss_fn(genie, inputs, training=False, pred_full_frame=False)
+        (loss_full_frame, (recon_full_frame, metrics_full_frame)) = dynamics_loss_fn(genie, inputs, training=False, pred_full_frame=True)
         return loss, recon, metrics, loss_full_frame, recon_full_frame, metrics_full_frame
 
 
@@ -478,7 +478,7 @@ def main(args: Args) -> None:
         }
         val_losses = {
             "val_loss": np.mean(loss_per_step),
-            "vall_loss_full_frame": np.mean(loss_full_frame_per_step)
+            "val_loss_full_frame": np.mean(loss_full_frame_per_step)
         }
         val_metrics.update(val_metrics_full_frame)
         val_metrics.update(val_losses)
@@ -550,12 +550,11 @@ def main(args: Args) -> None:
                         val_comparison_seq = einops.rearrange(
                             val_comparison_seq * 255, "t h w c -> h (t w) c"
                         )
-                        if val_full_frame is not None:
-                            full_frame_seq_val = val_full_frame[0].clip(0, 1)
-                            val_full_frame_comparison_seq = jnp.concatenate((gt_seq_val, full_frame_seq_val), axis=1)
-                            val_full_frame_comparison_seq = einops.rearrange(
-                                val_full_frame_comparison_seq * 255, "t h w c -> h (t w) c"
-                            )
+                        full_frame_seq_val = val_full_frame[0].clip(0, 1)
+                        val_full_frame_comparison_seq = jnp.concatenate((gt_seq_val, full_frame_seq_val), axis=1)
+                        val_full_frame_comparison_seq = einops.rearrange(
+                            val_full_frame_comparison_seq * 255, "t h w c -> h (t w) c"
+                        )
                     # NOTE: Process-dependent control flow deliberately happens
                     # after indexing operation since it must not contain code
                     # sections that lead to cross-accelerator communication.
@@ -574,18 +573,13 @@ def main(args: Args) -> None:
                                     val_recon=wandb.Image(np.asarray(recon_seq_val[args.seq_len - 1])),
                                     val_true_vs_recon=wandb.Image(
                                         np.asarray(val_comparison_seq.astype(np.uint8))
+                                    ),
+                                    val_full_frame=wandb.Image(np.asarray(full_frame_seq_val[args.seq_len - 1])),
+                                    val_true_vs_full_frame=wandb.Image(
+                                        np.asarray(val_full_frame_comparison_seq.astype(np.uint8))
                                     )
                                 )
                             )
-                            if val_full_frame is not None:
-                                log_images.update(
-                                    dict(
-                                        val_full_frame=wandb.Image(np.asarray(full_frame_seq_val[args.seq_len - 1])),
-                                        val_true_vs_full_frame=wandb.Image(
-                                            np.asarray(val_full_frame_comparison_seq.astype(np.uint8))
-                                        )
-                                    )
-                                )
                         wandb.log(log_images)
             # --- Checkpointing ---
             if args.save_ckpt and step % args.log_checkpoint_interval == 0:
