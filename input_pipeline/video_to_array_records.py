@@ -205,7 +205,7 @@ def main():
     num_successful_videos = len(results) - len(failed_videos)
     print(f"Number of failed videos: {len(failed_videos)}")
     print(f"Number of successful videos: {num_successful_videos}")
-    print(f"Number of total files: {len(pool_args)}")
+    print(f"Number of total files: {len(input_files)}")
     print(f"Number of total chunks: {len(results)}")
 
     metadata = {

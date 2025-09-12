@@ -105,7 +105,7 @@ def main():
         "episode_metadata_test": test_episode_metadata,
 
     }
-    with open(args.output_dir / "metadata.json", "w") as f:
+    with open(os.path.join(args.output_dir, "metadata.json"), "w") as f:
         json.dump(metadata, f)
 
     print(f"Done generating dataset.")
