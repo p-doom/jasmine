@@ -181,31 +181,20 @@ class DynamicsCausal(nnx.Module):
             patch_embed_state = nnx.state(self.patch_embed)
             action_up_state = nnx.state(self.action_up)
             transformer_state = nnx.state(self.transformer)
-            model_dim = self.model_dim
-            latent_action_dim = self.latent_action_dim
-            num_latents = self.num_latents
-            ffn_dim = self.ffn_dim
-            num_blocks = self.num_blocks
-            num_heads = self.num_heads
-            dropout = self.dropout
-            param_dtype = self.param_dtype
-            dtype = self.dtype
-            use_flash_attention = self.use_flash_attention
-            decode = self.decode
 
             def _pred_full_frame(carry, step_n):
                 video_tokens_BTN, final_logits_BTNV = carry
                 # We need to reconstruct submodules inside scan body to prevent trace context mismatches
-                patch_embed = nnx.Embed(num_latents, model_dim, rngs=nnx.Rngs(0))
+                patch_embed = nnx.Embed(self.num_latents, self.model_dim, rngs=nnx.Rngs(0))
                 nnx.update(patch_embed, patch_embed_state)
                 action_up = nnx.Linear(
-                    latent_action_dim, model_dim, param_dtype=param_dtype, dtype=dtype, rngs=nnx.Rngs(0)
+                    self.latent_action_dim, self.model_dim, param_dtype=self.param_dtype, dtype=self.dtype, rngs=nnx.Rngs(0)
                 )
                 nnx.update(action_up, action_up_state)
                 transformer = Transformer(
-                    model_dim, model_dim, ffn_dim, num_latents, num_blocks, num_heads,
-                    dropout, param_dtype, dtype, use_flash_attention=use_flash_attention,
-                    decode=decode, rngs=nnx.Rngs(0)
+                    self.model_dim, self.model_dim, self.ffn_dim, self.num_latents, self.num_blocks, self.num_heads,
+                    self.dropout, self.param_dtype, self.dtype, use_flash_attention=self.use_flash_attention,
+                    decode=self.decode, rngs=nnx.Rngs(0)
                 )
                 nnx.update(transformer, transformer_state)
 
