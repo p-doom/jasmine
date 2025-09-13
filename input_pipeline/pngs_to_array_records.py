@@ -87,8 +87,10 @@ def save_split(pool_args, chunks_per_file, output_path):
         results_batch, chunks, file_idx = save_chunks(chunks, file_idx, chunks_per_file, output_path) 
         results.extend(results_batch)
 
-    results_batch, _, _ = save_chunks(chunks, file_idx, chunks_per_file, output_path) 
-    results.extend(results_batch)
+    if len(chunks) > 0:
+        print(f"Warning: Dropping {len(chunks)} chunks for consistent number of chunks per file.",
+        "Consider changing the chunk_size and chunks_per_file parameters to prevent data-loss.")
+
     print(f"Done processing files. Saved to {output_path}")
     return results
 

@@ -24,6 +24,7 @@ class Args:
     max_episode_length: int = 1000
     chunk_size: int = 160
     chunks_per_file: int = 100
+    seed: int = 0
 
 
 args = tyro.cli(Args)
@@ -77,8 +78,11 @@ def generate_episodes(num_episodes, split):
             episode_idx += 1
         else:
             print(f"Episode too short ({step_t + 1}), resampling...")
-    ep_metadata, _, _ = save_chunks(chunks, file_idx, args.chunks_per_file, output_dir_split)
-    episode_metadata.extend(ep_metadata)
+
+    if len(chunks) > 0:
+        print(f"Warning: Dropping {len(chunks)} chunks for consistent number of chunks per file.",
+        "Consider changing the chunk_size and chunks_per_file parameters to prevent data-loss.")
+
     print(f"Done generating {split} split")
     return episode_metadata
 
