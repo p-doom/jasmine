@@ -87,7 +87,7 @@ def save_split(pool_args, chunks_per_file, output_path):
         results_batch, chunks, file_idx = save_chunks(chunks, file_idx, chunks_per_file, output_path) 
         results.extend(results_batch)
 
-    results_batch, chunks, file_idx = save_chunks(chunks, file_idx, chunks_per_file, output_path) 
+    results_batch, _, _ = save_chunks(chunks, file_idx, chunks_per_file, output_path) 
     results.extend(results_batch)
     print(f"Done processing files. Saved to {output_path}")
     return results
