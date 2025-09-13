@@ -77,7 +77,7 @@ def generate_episodes(num_episodes, split):
             episode_idx += 1
         else:
             print(f"Episode too short ({step_t + 1}), resampling...")
-    ep_metadata, chunks, file_idx = save_chunks(chunks, file_idx, args.chunks_per_file, output_dir_split)
+    ep_metadata, _, _ = save_chunks(chunks, file_idx, args.chunks_per_file, output_dir_split)
     episode_metadata.extend(ep_metadata)
     print(f"Done generating {split} split")
     return episode_metadata
