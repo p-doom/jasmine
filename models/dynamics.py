@@ -97,7 +97,7 @@ class DynamicsMaskGIT(nnx.Module):
             )
         elif pred_full_frame:
             mask = jnp.zeros_like(video_tokens_BTN)
-            mask = mask.at[: -1].set(True)
+            mask = mask.at[:, -1].set(True)
             vid_embed_BTNM = jnp.where(
                 jnp.expand_dims(mask, -1), self.mask_token.value, vid_embed_BTNM
             )
