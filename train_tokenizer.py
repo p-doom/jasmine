@@ -322,11 +322,12 @@ def main(args: Args) -> None:
 
     # --- Create DataLoaderIterator from dataloader ---
     train_iterator = build_dataloader(args, args.data_dir)
+    val_iterator = None
     if args.val_data_dir:
         val_iterator = build_dataloader(args, args.val_data_dir)
 
     # --- Restore checkpoint ---
-    if args.val_data_dir:
+    if val_iterator:
         step, optimizer, train_iterator, val_iterator = restore_checkpoint_if_needed(
             args, checkpoint_manager, optimizer, train_iterator, val_iterator
         )
@@ -403,6 +404,8 @@ def main(args: Args) -> None:
         step = 0
         loss_per_step = []
         metrics_per_step = []
+        inputs = None
+        recon = None
         for videos in val_dataloader:
             inputs = dict(videos=videos)
             loss, recon, metrics = val_step(tokenizer, inputs)
@@ -429,7 +432,7 @@ def main(args: Args) -> None:
         for elem in train_iterator
     )
     dataloader_val = None
-    if args.val_data_dir:
+    if val_iterator:
         dataloader_val = (
             jax.make_array_from_process_local_data(videos_sharding, elem)
             for elem in val_iterator
@@ -486,11 +489,11 @@ def main(args: Args) -> None:
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
                     if args.val_data_dir and step % args.val_interval == 0:
-                        gt_seq_val = val_results["gt_batch"]["videos"][0].astype(jnp.float32) / 255.0
-                        recon_seq_val = val_results["recon"][0].clip(0, 1)
-                        val_comparison_seq = jnp.concatenate((gt_seq_val, recon_seq_val), axis=1)
-                        val_comparison_seq = einops.rearrange(
-                            val_comparison_seq * 255, "t h w c -> h (t w) c"
+                        val_results["gt_seq_val"] = val_results["gt_batch"]["videos"][0].astype(jnp.float32) / 255.0
+                        val_results["recon_seq_val"] = val_results["recon"][0].clip(0, 1)
+                        val_results["val_comparison_seq"] = jnp.concatenate((val_results["gt_seq_val"], val_results["recon_seq_val"]), axis=1)
+                        val_results["val_comparison_seq"] = einops.rearrange(
+                            val_results["val_comparison_seq"] * 255, "t h w c -> h (t w) c"
                         )
                     # NOTE: Process-dependent control flow deliberately happens
                     # after indexing operation since it must not contain code
@@ -506,10 +509,10 @@ def main(args: Args) -> None:
                         if args.val_data_dir and step % args.val_interval == 0:
                             log_images.update(
                                 dict(
-                                    val_image=wandb.Image(np.asarray(gt_seq_val[0])),
-                                    val_recon=wandb.Image(np.asarray(recon_seq_val[0])),
+                                    val_image=wandb.Image(np.asarray(val_results["gt_seq_val"][0])),
+                                    val_recon=wandb.Image(np.asarray(val_results["recon_seq_val"][0])),
                                     val_true_vs_recon=wandb.Image(
-                                        np.asarray(val_comparison_seq.astype(np.uint8))
+                                        np.asarray(val_results["val_comparison_seq"].astype(np.uint8))
                                     )
                                 )
                             )

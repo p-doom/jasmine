@@ -362,11 +362,12 @@ def main(args: Args) -> None:
 
     # --- Create DataLoaderIterator from dataloader ---
     train_iterator = build_dataloader(args, args.data_dir)
+    val_iterator = None
     if args.val_data_dir:
         val_iterator = build_dataloader(args, args.val_data_dir)
  
     # --- Restore checkpoint ---
-    if args.val_data_dir:
+    if val_iterator:
         step, optimizer, train_iterator, val_iterator, rng = restore_or_initialize_components(
             args, checkpoint_manager, optimizer, train_iterator, rng, replicated_sharding, val_iterator
         )
@@ -453,6 +454,9 @@ def main(args: Args) -> None:
         metrics_per_step = []
         loss_full_frame_per_step = []
         metrics_full_frame_per_step = []
+        inputs = None
+        recon = None
+        recon_full_frame = None
         for videos in val_dataloader:
             rng, _rng_mask = jax.random.split(rng, 2)
             inputs = dict(videos=videos, mask_rng=_rng_mask)
@@ -490,7 +494,7 @@ def main(args: Args) -> None:
         for elem in train_iterator
     )
     dataloader_val = None
-    if args.val_data_dir:
+    if val_iterator:
         dataloader_val = (
             jax.make_array_from_process_local_data(videos_sharding, elem)
             for elem in val_iterator
@@ -550,15 +554,15 @@ def main(args: Args) -> None:
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
                     if val_results:
-                        gt_seq_val = val_results["gt_batch"]["videos"][0].astype(jnp.float32) / 255.0
-                        recon_seq_val = val_results["recon"].clip(0, 1)
-                        val_comparison_seq = jnp.concatenate((gt_seq_val, recon_seq_val), axis=1)
-                        val_comparison_seq = einops.rearrange(
+                        val_results["gt_seq_val"] = val_results["gt_batch"]["videos"][0].astype(jnp.float32) / 255.0
+                        val_results["recon_seq_val"] = val_results["recon"].clip(0, 1)
+                        val_comparison_seq = jnp.concatenate((val_results["gt_seq_val"], val_results["recon_seq_val"]), axis=1)
+                        val_results["val_comparison_seq"] = einops.rearrange(
                             val_comparison_seq * 255, "t h w c -> h (t w) c"
                         )
-                        full_frame_seq_val = val_results["full_frame"][0].clip(0, 1)
-                        val_full_frame_comparison_seq = jnp.concatenate((gt_seq_val, full_frame_seq_val), axis=1)
-                        val_full_frame_comparison_seq = einops.rearrange(
+                        val_results["full_frame_seq_val"] = val_results["full_frame"][0].clip(0, 1)
+                        val_results["val_full_frame_comparison_seq"] = jnp.concatenate((val_results["gt_seq_val"], val_results["full_frame_seq_val"]), axis=1)
+                        val_results["val_full_frame_comparison_seq"] = einops.rearrange(
                             val_full_frame_comparison_seq * 255, "t h w c -> h (t w) c"
                         )
                     # NOTE: Process-dependent control flow deliberately happens
@@ -575,14 +579,14 @@ def main(args: Args) -> None:
                         if val_results:
                             log_images.update(
                                 dict(
-                                    val_image=wandb.Image(np.asarray(gt_seq_val[args.seq_len - 1])),
-                                    val_recon=wandb.Image(np.asarray(recon_seq_val[args.seq_len - 1])),
+                                    val_image=wandb.Image(np.asarray(val_results["gt_seq_val"][args.seq_len - 1])),
+                                    val_recon=wandb.Image(np.asarray(val_results["recon_seq_val"][args.seq_len - 1])),
                                     val_true_vs_recon=wandb.Image(
-                                        np.asarray(val_comparison_seq.astype(np.uint8))
+                                        np.asarray(val_results["val_comparison_seq"].astype(np.uint8))
                                     ),
-                                    val_full_frame=wandb.Image(np.asarray(full_frame_seq_val[args.seq_len - 1])),
+                                    val_full_frame=wandb.Image(np.asarray(val_results["full_frame_seq_val"][args.seq_len - 1])),
                                     val_true_vs_full_frame=wandb.Image(
-                                        np.asarray(val_full_frame_comparison_seq.astype(np.uint8))
+                                        np.asarray(val_results["val_full_frame_comparison_seq"].astype(np.uint8))
                                     )
                                 )
                             )
