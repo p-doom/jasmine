@@ -72,9 +72,14 @@ class DynamicsMaskGIT(nnx.Module):
         )
 
     def __call__(
-        self, batch: Dict[str, jax.Array], training: bool = True, pred_full_frame: bool = False,
+        self,
+        batch: Dict[str, jax.Array],
+        training: bool = True,
+        pred_full_frame: bool = False,
     ) -> tuple[jax.Array, jax.Array | None]:
-        assert not (training and pred_full_frame), "Cannot evaluate full frame prediction during training."
+        assert not (
+            training and pred_full_frame
+        ), "Cannot evaluate full frame prediction during training."
         # --- Mask videos ---
         video_tokens_BTN = batch["video_tokens"]
         latent_actions_BTm11L = batch["latent_actions"]
@@ -170,9 +175,14 @@ class DynamicsCausal(nnx.Module):
         )
 
     def __call__(
-        self, batch: Dict[str, jax.Array], training: bool = True, pred_full_frame: bool = False,
+        self,
+        batch: Dict[str, jax.Array],
+        training: bool = True,
+        pred_full_frame: bool = False,
     ) -> tuple[jax.Array, jax.Array | None]:
-        assert not (training and pred_full_frame), "Cannot evaluate full frame prediction during training."
+        assert not (
+            training and pred_full_frame
+        ), "Cannot evaluate full frame prediction during training."
         video_tokens_BTN = batch["video_tokens"]
         latent_actions_BTm11L = batch["latent_actions"]
         if pred_full_frame:
@@ -184,16 +194,31 @@ class DynamicsCausal(nnx.Module):
             def _pred_full_frame(carry, step_n):
                 video_tokens_BTN, final_logits_BTNV = carry
                 # We need to reconstruct submodules inside scan body to prevent trace context mismatches
-                patch_embed = nnx.Embed(self.num_latents, self.model_dim, rngs=nnx.Rngs(0))
+                patch_embed = nnx.Embed(
+                    self.num_latents, self.model_dim, rngs=nnx.Rngs(0)
+                )
                 nnx.update(patch_embed, patch_embed_state)
                 action_up = nnx.Linear(
-                    self.latent_action_dim, self.model_dim, param_dtype=self.param_dtype, dtype=self.dtype, rngs=nnx.Rngs(0)
+                    self.latent_action_dim,
+                    self.model_dim,
+                    param_dtype=self.param_dtype,
+                    dtype=self.dtype,
+                    rngs=nnx.Rngs(0),
                 )
                 nnx.update(action_up, action_up_state)
                 transformer = Transformer(
-                    self.model_dim, self.model_dim, self.ffn_dim, self.num_latents, self.num_blocks, self.num_heads,
-                    self.dropout, self.param_dtype, self.dtype, use_flash_attention=self.use_flash_attention,
-                    decode=self.decode, rngs=nnx.Rngs(0)
+                    self.model_dim,
+                    self.model_dim,
+                    self.ffn_dim,
+                    self.num_latents,
+                    self.num_blocks,
+                    self.num_heads,
+                    self.dropout,
+                    self.param_dtype,
+                    self.dtype,
+                    use_flash_attention=self.use_flash_attention,
+                    decode=self.decode,
+                    rngs=nnx.Rngs(0),
                 )
                 nnx.update(transformer, transformer_state)
 
@@ -207,7 +232,9 @@ class DynamicsCausal(nnx.Module):
                 )
                 step_logits_BTNp1V = transformer(vid_embed_BTNp1M)
                 step_logits_BV = step_logits_BTNp1V[:, -1, step_n, :]
-                final_logits_BTNV = final_logits_BTNV.at[:, -1, step_n].set(step_logits_BV)
+                final_logits_BTNV = final_logits_BTNV.at[:, -1, step_n].set(
+                    step_logits_BV
+                )
                 sampled_token_idxs_B = jnp.argmax(step_logits_BV, axis=-1)
                 video_tokens_BTN = video_tokens_BTN.at[:, -1, step_n].set(
                     sampled_token_idxs_B
@@ -216,10 +243,11 @@ class DynamicsCausal(nnx.Module):
 
             (_, final_logits_BTNV), _ = jax.lax.scan(
                 _pred_full_frame,
-                (video_tokens_BTN, jnp.zeros((
-                    **video_tokens_BTN.shape,
-                    self.num_latents))),
-                jnp.arange(video_tokens_BTN.shape[2])
+                (
+                    video_tokens_BTN,
+                    jnp.zeros((*video_tokens_BTN.shape, self.num_latents)),
+                ),
+                jnp.arange(video_tokens_BTN.shape[2]),
             )
             mask_out = jnp.zeros_like(video_tokens_BTN)
             mask_out = mask_out.at[:, -1].set(True)
