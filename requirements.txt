@@ -9,10 +9,15 @@ wandb>=0.17.4
 grain>=0.2.10
 array-record>=0.7.2
 
-# input pipeline
+# data pipeline
 ffmpeg-python==0.2.0
 hf-transfer==0.1.9
 huggingface-hub[cli]>=0.34.3
-pre-commit>=4.2.0
 procgen>=0.10.7
 tqdm>=4.67.1
+tensorflow>=2.19.0
+tensorflow-datasets>=4.12.0
+rlds>=0.1.1
+
+# dev
+pre-commit>=4.2.0
