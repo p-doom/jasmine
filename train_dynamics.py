@@ -261,9 +261,11 @@ def restore_or_initialize_components(
     train_iterator: grain.DataLoaderIterator,
     rng: jax.Array,
     replicated_sharding: NamedSharding,
-    val_iterator: Optional[grain.DataLoaderIterator] = None,
+    val_iterator: Optional[grain.DataLoaderIterator],
     restore_step: Optional[int] = None,
-) -> tuple[int, nnx.Optimizer, grain.DataLoaderIterator, grain.DataLoaderIterator, jax.Array]:
+) -> tuple[
+    int, nnx.Optimizer, grain.DataLoaderIterator, grain.DataLoaderIterator, jax.Array
+]:
     step = 0
     if restore_step is None:
         restore_step = checkpoint_manager.latest_step()
@@ -272,18 +274,17 @@ def restore_or_initialize_components(
         abstract_optimizer_state = nnx.state(abstract_optimizer)
         if args.val_data_dir:
             restore_args = ocp.args.Composite(
-                    model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
-                    train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
-                    val_dataloader_state=grain.checkpoint.CheckpointRestore(val_iterator),  # type: ignore
-                )
-        else: 
+                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
+                train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
+                val_dataloader_state=grain.checkpoint.CheckpointRestore(val_iterator),  # type: ignore
+            )
+        else:
             restore_args = ocp.args.Composite(
-                    model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
-                    train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
-                )
+                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
+                train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
+            )
         restored = checkpoint_manager.restore(
-            checkpoint_manager.latest_step(),
-            args=restore_args
+            checkpoint_manager.latest_step(), args=restore_args
         )
         restored_optimizer_state = restored["model_state"]
         nnx.update(optimizer, restored_optimizer_state)
@@ -365,20 +366,26 @@ def main(args: Args) -> None:
     val_iterator = None
     if args.val_data_dir:
         val_iterator = build_dataloader(args, args.val_data_dir)
- 
+
     # --- Restore checkpoint ---
-    if val_iterator:
-        step, optimizer, train_iterator, val_iterator, rng = restore_or_initialize_components(
-            args, checkpoint_manager, optimizer, train_iterator, rng, replicated_sharding, val_iterator
+    step, optimizer, train_iterator, val_iterator, rng = (
+        restore_or_initialize_components(
+            args,
+            checkpoint_manager,
+            optimizer,
+            train_iterator,
+            rng,
+            replicated_sharding,
+            val_iterator,
         )
-    else:
-        step, optimizer, train_iterator, _, rng = restore_or_initialize_components(
-            args, checkpoint_manager, optimizer, train_iterator, rng, replicated_sharding
-        )
+    )
 
     # --- Define loss and train step (close over args) ---
     def dynamics_loss_fn(
-        model: Genie, inputs: dict, training: bool = False, pred_full_frame: bool = False
+        model: Genie,
+        inputs: dict,
+        training: bool = False,
+        pred_full_frame: bool = False,
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
@@ -440,13 +447,25 @@ def main(args: Args) -> None:
         return loss, recon, metrics
 
     @nnx.jit
-    def val_step(genie: Genie, inputs: dict) -> tuple[jax.Array, jax.Array, dict, jax.Array, jax.Array, dict]:
+    def val_step(
+        genie: Genie, inputs: dict
+    ) -> tuple[jax.Array, jax.Array, dict, jax.Array, jax.Array, dict]:
         """Evaluate model and compute metrics"""
         genie.eval()
-        (loss, (recon, metrics)) = dynamics_loss_fn(genie, inputs, training=False, pred_full_frame=False)
-        (loss_full_frame, (recon_full_frame, metrics_full_frame)) = dynamics_loss_fn(genie, inputs, training=False, pred_full_frame=True)
-        return loss, recon, metrics, loss_full_frame, recon_full_frame, metrics_full_frame
-
+        (loss, (recon, metrics)) = dynamics_loss_fn(
+            genie, inputs, training=False, pred_full_frame=False
+        )
+        (loss_full_frame, (recon_full_frame, metrics_full_frame)) = dynamics_loss_fn(
+            genie, inputs, training=False, pred_full_frame=True
+        )
+        return (
+            loss,
+            recon,
+            metrics,
+            loss_full_frame,
+            recon_full_frame,
+            metrics_full_frame,
+        )
 
     def calculate_validation_metrics(val_dataloader, genie, rng):
         step = 0
@@ -460,7 +479,14 @@ def main(args: Args) -> None:
         for videos in val_dataloader:
             rng, _rng_mask = jax.random.split(rng, 2)
             inputs = dict(videos=videos, mask_rng=_rng_mask)
-            loss, recon, metrics, loss_full_frame, recon_full_frame, metrics_full_frame = val_step(genie, inputs)
+            (
+                loss,
+                recon,
+                metrics,
+                loss_full_frame,
+                recon_full_frame,
+                metrics_full_frame,
+            ) = val_step(genie, inputs)
             loss_per_step.append(loss)
             metrics_per_step.append(metrics)
             loss_full_frame_per_step.append(loss_full_frame)
@@ -470,19 +496,23 @@ def main(args: Args) -> None:
                 break
 
         if step < args.val_steps:
-            print(f"Warning: Your validation dataset is too small to make val_steps many steps. Made {step} steps, expected {args.val_steps}")
+            print(
+                f"Warning: Your validation dataset is too small to make val_steps many steps. Made {step} steps, expected {args.val_steps}"
+            )
 
         val_metrics = {
             f"val_{key}": np.mean([float(m[key]) for m in metrics_per_step])
             for key in metrics_per_step[0].keys()
         }
         val_metrics_full_frame = {
-            f"val_full_frame_{key}": np.mean([float(m[key]) for m in metrics_full_frame_per_step])
+            f"val_full_frame_{key}": np.mean(
+                [float(m[key]) for m in metrics_full_frame_per_step]
+            )
             for key in metrics_full_frame_per_step[0].keys()
         }
         val_losses = {
             "val_loss": np.mean(loss_per_step),
-            "val_loss_full_frame": np.mean(loss_full_frame_per_step)
+            "val_loss_full_frame": np.mean(loss_full_frame_per_step),
         }
         val_metrics.update(val_metrics_full_frame)
         val_metrics.update(val_losses)
@@ -526,7 +556,11 @@ def main(args: Args) -> None:
             if dataloader_val and step % args.val_interval == 0:
                 rng, _rng_mask_val = jax.random.split(rng, 2)
                 print("Calculating validation metrics...")
-                val_metrics, val_gt_batch, val_recon, val_full_frame = calculate_validation_metrics(dataloader_val, optimizer.model, _rng_mask_val)
+                val_metrics, val_gt_batch, val_recon, val_full_frame = (
+                    calculate_validation_metrics(
+                        dataloader_val, optimizer.model, _rng_mask_val
+                    )
+                )
                 print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
                 val_results = {
                     "metrics": val_metrics,
@@ -538,11 +572,7 @@ def main(args: Args) -> None:
             # --- Logging ---
             if args.log:
                 if step % args.log_interval == 0 and jax.process_index() == 0:
-                    log_dict = {
-                        "loss": loss,
-                        "step": step,
-                        **metrics
-                        }
+                    log_dict = {"loss": loss, "step": step, **metrics}
                     if val_results:
                         log_dict.update(val_results["metrics"])
                     wandb.log(log_dict)
@@ -554,16 +584,31 @@ def main(args: Args) -> None:
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
                     if val_results:
-                        val_results["gt_seq_val"] = val_results["gt_batch"]["videos"][0].astype(jnp.float32) / 255.0
+                        val_results["gt_seq_val"] = (
+                            val_results["gt_batch"]["videos"][0].astype(jnp.float32)
+                            / 255.0
+                        )
                         val_results["recon_seq_val"] = val_results["recon"].clip(0, 1)
-                        val_comparison_seq = jnp.concatenate((val_results["gt_seq_val"], val_results["recon_seq_val"]), axis=1)
+                        val_comparison_seq = jnp.concatenate(
+                            (val_results["gt_seq_val"], val_results["recon_seq_val"]),
+                            axis=1,
+                        )
                         val_results["val_comparison_seq"] = einops.rearrange(
                             val_comparison_seq * 255, "t h w c -> h (t w) c"
                         )
-                        val_results["full_frame_seq_val"] = val_results["full_frame"][0].clip(0, 1)
-                        val_results["val_full_frame_comparison_seq"] = jnp.concatenate((val_results["gt_seq_val"], val_results["full_frame_seq_val"]), axis=1)
+                        val_results["full_frame_seq_val"] = val_results["full_frame"][
+                            0
+                        ].clip(0, 1)
+                        val_results["val_full_frame_comparison_seq"] = jnp.concatenate(
+                            (
+                                val_results["gt_seq_val"],
+                                val_results["full_frame_seq_val"],
+                            ),
+                            axis=1,
+                        )
                         val_results["val_full_frame_comparison_seq"] = einops.rearrange(
-                            val_results["val_full_frame_comparison_seq"] * 255, "t h w c -> h (t w) c"
+                            val_results["val_full_frame_comparison_seq"] * 255,
+                            "t h w c -> h (t w) c",
                         )
                     # NOTE: Process-dependent control flow deliberately happens
                     # after indexing operation since it must not contain code
@@ -579,15 +624,39 @@ def main(args: Args) -> None:
                         if val_results:
                             log_images.update(
                                 dict(
-                                    val_image=wandb.Image(np.asarray(val_results["gt_seq_val"][args.seq_len - 1])),
-                                    val_recon=wandb.Image(np.asarray(val_results["recon_seq_val"][args.seq_len - 1])),
-                                    val_true_vs_recon=wandb.Image(
-                                        np.asarray(val_results["val_comparison_seq"].astype(np.uint8))
+                                    val_image=wandb.Image(
+                                        np.asarray(
+                                            val_results["gt_seq_val"][args.seq_len - 1]
+                                        )
                                     ),
-                                    val_full_frame=wandb.Image(np.asarray(val_results["full_frame_seq_val"][args.seq_len - 1])),
+                                    val_recon=wandb.Image(
+                                        np.asarray(
+                                            val_results["recon_seq_val"][
+                                                args.seq_len - 1
+                                            ]
+                                        )
+                                    ),
+                                    val_true_vs_recon=wandb.Image(
+                                        np.asarray(
+                                            val_results["val_comparison_seq"].astype(
+                                                np.uint8
+                                            )
+                                        )
+                                    ),
+                                    val_full_frame=wandb.Image(
+                                        np.asarray(
+                                            val_results["full_frame_seq_val"][
+                                                args.seq_len - 1
+                                            ]
+                                        )
+                                    ),
                                     val_true_vs_full_frame=wandb.Image(
-                                        np.asarray(val_results["val_full_frame_comparison_seq"].astype(np.uint8))
-                                    )
+                                        np.asarray(
+                                            val_results[
+                                                "val_full_frame_comparison_seq"
+                                            ].astype(np.uint8)
+                                        )
+                                    ),
                                 )
                             )
                         wandb.log(log_images)
@@ -602,19 +671,16 @@ def main(args: Args) -> None:
                         ),
                         val_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
                             val_iterator  # type: ignore
-                        )
+                        ),
                     )
-                else: 
+                else:
                     ckpt_manager_args = ocp.args.Composite(
                         model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
                         train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
                             train_iterator  # type: ignore
-                        )
+                        ),
                     )
-                checkpoint_manager.save(
-                    step,
-                    args=ckpt_manager_args
-                    )
+                checkpoint_manager.save(step, args=ckpt_manager_args)
                 print(f"Saved checkpoint at step {step}")
             if step >= args.num_steps:
                 break
