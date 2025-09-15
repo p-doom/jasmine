@@ -523,7 +523,7 @@ def main(args: Args) -> None:
 
             # --- Validation loss ---
             val_results = {}
-            if args.dataloader_val and step % args.val_interval == 0:
+            if dataloader_val and step % args.val_interval == 0:
                 rng, _rng_mask_val = jax.random.split(rng, 2)
                 print("Calculating validation metrics...")
                 val_metrics, val_gt_batch, val_recon, val_full_frame = calculate_validation_metrics(dataloader_val, optimizer.model, _rng_mask_val)
@@ -563,7 +563,7 @@ def main(args: Args) -> None:
                         val_results["full_frame_seq_val"] = val_results["full_frame"][0].clip(0, 1)
                         val_results["val_full_frame_comparison_seq"] = jnp.concatenate((val_results["gt_seq_val"], val_results["full_frame_seq_val"]), axis=1)
                         val_results["val_full_frame_comparison_seq"] = einops.rearrange(
-                            val_full_frame_comparison_seq * 255, "t h w c -> h (t w) c"
+                            val_results["val_full_frame_comparison_seq"] * 255, "t h w c -> h (t w) c"
                         )
                     # NOTE: Process-dependent control flow deliberately happens
                     # after indexing operation since it must not contain code
