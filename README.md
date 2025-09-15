@@ -59,7 +59,7 @@ You can either download our preprocessed dataset from [Hugging Face](https://hug
 The easiest way to get started is to download our preprocessed dataset from Hugging Face. This script will handle downloading and extracting it:
 
 ```bash
-bash input_pipeline/download/download_array_records.sh
+bash input_pipeline/download/huggingface/download_openai_array_records.sh
 ```
 
 ---

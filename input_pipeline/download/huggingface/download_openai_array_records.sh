@@ -7,7 +7,7 @@
 # 2. Extracts the compressed tar files in parallel for better performance
 #
 # Usage:
-#   ./download_array_records.sh [hf_download_dir] [final_dataset_dir]
+#   ./download_openai_array_records.sh [hf_download_dir] [final_dataset_dir]
 #
 # Arguments:
 #   hf_download_dir    - Directory to store compressed downloads (default: data/minecraft_arrayrecords_compressed)
