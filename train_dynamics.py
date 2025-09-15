@@ -261,7 +261,7 @@ def restore_or_initialize_components(
     train_iterator: grain.DataLoaderIterator,
     rng: jax.Array,
     replicated_sharding: NamedSharding,
-    val_iterator: grain.DataLoaderIterator = None,
+    val_iterator: Optional[grain.DataLoaderIterator] = None,
     restore_step: Optional[int] = None,
 ) -> tuple[int, nnx.Optimizer, grain.DataLoaderIterator, grain.DataLoaderIterator, jax.Array]:
     step = 0
@@ -353,7 +353,7 @@ def main(args: Args) -> None:
     del genie
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
-    mesh, replicated_sharding, videos_sharding = build_mesh_and_sharding(num_devices)
+    _, replicated_sharding, videos_sharding = build_mesh_and_sharding(num_devices)
 
     shard_optimizer_states(optimizer, replicated_sharding)
 
@@ -489,6 +489,7 @@ def main(args: Args) -> None:
         jax.make_array_from_process_local_data(videos_sharding, elem)
         for elem in train_iterator
     )
+    dataloader_val = None
     if args.val_data_dir:
         dataloader_val = (
             jax.make_array_from_process_local_data(videos_sharding, elem)
@@ -517,11 +518,18 @@ def main(args: Args) -> None:
             step += 1
 
             # --- Validation loss ---
-            if args.val_data_dir and step % args.val_interval == 0:
+            val_results = {}
+            if args.dataloader_val and step % args.val_interval == 0:
                 rng, _rng_mask_val = jax.random.split(rng, 2)
-                print(f"Calculating validation metrics...")
+                print("Calculating validation metrics...")
                 val_metrics, val_gt_batch, val_recon, val_full_frame = calculate_validation_metrics(dataloader_val, optimizer.model, _rng_mask_val)
                 print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
+                val_results = {
+                    "metrics": val_metrics,
+                    "gt_batch": val_gt_batch,
+                    "recon": val_recon,
+                    "full_frame": val_full_frame,
+                }
 
             # --- Logging ---
             if args.log:
@@ -531,10 +539,8 @@ def main(args: Args) -> None:
                         "step": step,
                         **metrics
                         }
-                    if args.val_data_dir and step % args.val_interval == 0:
-                        log_dict.update({
-                            **val_metrics
-                        })
+                    if val_results:
+                        log_dict.update(val_results["metrics"])
                     wandb.log(log_dict)
                 if step % args.log_image_interval == 0:
                     gt_seq = inputs["videos"][0].astype(jnp.float32) / 255.0
@@ -543,14 +549,14 @@ def main(args: Args) -> None:
                     comparison_seq = einops.rearrange(
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
-                    if args.val_data_dir and step % args.val_interval == 0:
-                        gt_seq_val = val_gt_batch["videos"][0].astype(jnp.float32) / 255.0
-                        recon_seq_val = val_recon[0].clip(0, 1)
+                    if val_results:
+                        gt_seq_val = val_results["gt_batch"]["videos"][0].astype(jnp.float32) / 255.0
+                        recon_seq_val = val_results["recon"].clip(0, 1)
                         val_comparison_seq = jnp.concatenate((gt_seq_val, recon_seq_val), axis=1)
                         val_comparison_seq = einops.rearrange(
                             val_comparison_seq * 255, "t h w c -> h (t w) c"
                         )
-                        full_frame_seq_val = val_full_frame[0].clip(0, 1)
+                        full_frame_seq_val = val_results["full_frame"][0].clip(0, 1)
                         val_full_frame_comparison_seq = jnp.concatenate((gt_seq_val, full_frame_seq_val), axis=1)
                         val_full_frame_comparison_seq = einops.rearrange(
                             val_full_frame_comparison_seq * 255, "t h w c -> h (t w) c"
@@ -566,7 +572,7 @@ def main(args: Args) -> None:
                                 np.asarray(comparison_seq.astype(np.uint8))
                             ),
                         )
-                        if args.val_data_dir and step % args.val_interval == 0:
+                        if val_results:
                             log_images.update(
                                 dict(
                                     val_image=wandb.Image(np.asarray(gt_seq_val[args.seq_len - 1])),
