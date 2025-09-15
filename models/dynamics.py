@@ -3,7 +3,6 @@ from typing import Dict
 import jax
 import jax.numpy as jnp
 import flax.nnx as nnx
-import einops
 
 from utils.nn import STTransformer, Transformer
 
@@ -218,9 +217,7 @@ class DynamicsCausal(nnx.Module):
             (_, final_logits_BTNV), _ = jax.lax.scan(
                 _pred_full_frame,
                 (video_tokens_BTN, jnp.zeros((
-                    video_tokens_BTN.shape[0],
-                    video_tokens_BTN.shape[1],
-                    video_tokens_BTN.shape[2],
+                    **video_tokens_BTN.shape,
                     self.num_latents))),
                 jnp.arange(video_tokens_BTN.shape[2])
             )
