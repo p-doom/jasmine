@@ -305,6 +305,10 @@ def restore_or_initialize_components(
     return step, optimizer, train_iterator, val_iterator, rng
 
 
+def _calculate_step_metrics():
+    pass
+
+
 def main(args: Args) -> None:
     jax.distributed.initialize()
     num_devices = jax.device_count()
@@ -389,7 +393,23 @@ def main(args: Args) -> None:
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
-        outputs = model(inputs, training=training, pred_full_frame=pred_full_frame)
+        if pred_full_frame:
+            lam_indices = model.vq_encode(inputs, training=False)
+            inputs["latent_actions"] = lam_indices
+            inputs["videos"] = inputs["videos"][:, :-1]
+            inputs["rng"] = inputs["mask_rng"]
+            frames, video_tokens, logits = model.sample(
+                inputs, args.seq_len  # TODO (mihir) add other args
+            )
+            outputs = {
+                "recon": frames,
+                "token_logits": logits,
+                "video_tokens": video_tokens,
+                "mask": jnp.zeros_like(video_tokens).at[:, -1].set(True),
+                "lam_indices": lam_indices,
+            }
+        else:
+            outputs = model(inputs, training=training)
         mask = outputs["mask"]
         outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(
@@ -446,7 +466,7 @@ def main(args: Args) -> None:
             )
         return loss, recon, metrics
 
-    @nnx.jit
+    @nnx.jit()
     def val_step(
         genie: Genie, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict, jax.Array, jax.Array, dict]:

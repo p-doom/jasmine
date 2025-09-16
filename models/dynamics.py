@@ -245,7 +245,7 @@ class DynamicsCausal(nnx.Module):
                 _pred_full_frame,
                 (
                     video_tokens_BTN,
-                    jnp.zeros((*video_tokens_BTN.shape, self.num_latents)),
+                    jnp.zeros(shape=(*video_tokens_BTN.shape, self.num_latents)),
                 ),
                 jnp.arange(video_tokens_BTN.shape[2]),
             )

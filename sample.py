@@ -153,20 +153,22 @@ if __name__ == "__main__":
     def _sampling_fn(model: Genie, batch: dict) -> jax.Array:
         """Runs Genie.sample with pre-defined generation hyper-parameters."""
         if args.dyna_type == "maskgit":
-            return model.sample(
+            frames, _ = model.sample_maskgit(
                 batch,
                 args.seq_len,
                 args.maskgit_steps,
                 args.temperature,
                 args.sample_argmax,
             )
+            return frames
         elif args.dyna_type == "causal":
-            return model.sample_causal(
+            frames = model.sample_causal(
                 batch,
                 args.seq_len,
                 args.temperature,
                 args.sample_argmax,
             )
+            return frames
         else:
             raise ValueError(f"Invalid dynamics type: {args.dyna_type}")
 
