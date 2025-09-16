@@ -145,7 +145,6 @@ class Genie(nnx.Module):
         self,
         batch: Dict[str, jax.Array],
         training: bool = True,
-        pred_full_frame: bool = False,
     ) -> Dict[str, jax.Array]:
         videos_BTHWC = batch["videos"]
         tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
@@ -163,7 +162,7 @@ class Genie(nnx.Module):
             latent_actions=latent_actions_BTm11L,
         )
         outputs["mask_rng"] = batch["mask_rng"]
-        dyna_logits_BTNV, dyna_mask = self.dynamics(outputs, training, pred_full_frame)
+        dyna_logits_BTNV, dyna_mask = self.dynamics(outputs, training)
         outputs["token_logits"] = dyna_logits_BTNV
         if dyna_mask is not None:
             outputs["mask"] = dyna_mask
@@ -177,19 +176,18 @@ class Genie(nnx.Module):
         self,
         batch: Dict[str, jax.Array],
         seq_len: int,
-        steps: int = 25,
         temperature: float = 1,
         sample_argmax: bool = False,
-    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+        maskgit_steps: int = 25,
+    ) -> tuple[jax.Array, jax.Array]:
         if self.dyna_type == "maskgit":
-            if self.dyna_type == "maskgit":
-                return self.sample_maskgit(
-                    batch, seq_len, steps, temperature, sample_argmax
-                )
-            elif self.dyna_type == "causal":
-                return self.sample_causal(batch, seq_len, temperature, sample_argmax)
-            else:
-                assert False, "Dynamics model type unknown."
+            return self.sample_maskgit(
+                batch, seq_len, maskgit_steps, temperature, sample_argmax
+            )
+        elif self.dyna_type == "causal":
+            return self.sample_causal(batch, seq_len, temperature, sample_argmax)
+        else:
+            assert False, "Dynamics model type unknown."
 
     def sample_maskgit(
         self,
@@ -198,7 +196,7 @@ class Genie(nnx.Module):
         steps: int = 25,
         temperature: float = 1,
         sample_argmax: bool = False,
-    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array]:
         """
         Autoregressively samples up to `seq_len` future frames, following Figure 8 of the paper.
 
@@ -371,7 +369,7 @@ class Genie(nnx.Module):
             final_token_idxs_BSN,
             video_hw=(H, W),
         )
-        return final_frames_BSHWC, final_token_idxs_BSN, final_logits_BSNV
+        return final_frames_BSHWC, final_logits_BSNV
 
     def sample_causal(
         self,
@@ -379,7 +377,7 @@ class Genie(nnx.Module):
         seq_len: int,
         temperature: float = 1,
         sample_argmax: bool = False,
-    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array]:
         """
         Autoregressively samples up to `seq_len` future frames, following Figure 8 of the paper.
 
@@ -510,7 +508,7 @@ class Genie(nnx.Module):
             final_token_idxs_BSN,
             video_hw=(H, W),
         )
-        return final_frames_BSHWC, final_token_idxs_BSN, final_logits_BSNV
+        return final_frames_BSHWC, final_logits_BSNV
 
     def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
         # --- Preprocess videos ---

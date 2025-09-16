@@ -98,6 +98,10 @@ class Args:
     val_data_dir: str = ""
     val_interval: int = 20_000
     val_steps: int = 50
+    eval_full_frame: bool = False
+    val_maskgit_steps: int = 25
+    val_temperature: float = 1
+    val_sample_argmax: bool = False
     wandb_id: str = ""
 
 
@@ -305,8 +309,49 @@ def restore_or_initialize_components(
     return step, optimizer, train_iterator, val_iterator, rng
 
 
-def _calculate_step_metrics():
-    pass
+def _calculate_step_metrics(
+    outputs: dict[str, jax.Array],
+    gt: jax.Array,
+    num_latent_actions: int,
+    num_patch_latents: int,
+) -> tuple[jax.Array, dict]:
+    mask = outputs["mask"]
+    outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
+    ce_loss = optax.softmax_cross_entropy_with_integer_labels(
+        outputs["token_logits"], outputs["video_tokens"]
+    )
+    ce_loss = (mask * ce_loss).sum() / mask.sum()
+    acc = outputs["token_logits"].argmax(-1) == outputs["video_tokens"]
+    acc = (mask * acc).sum() / mask.sum()
+    select_probs = jax.nn.softmax(outputs["token_logits"])
+    gt_val = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
+    recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
+    psnr = jnp.asarray(pix.psnr(gt_val, recon)).mean()
+    ssim = jnp.asarray(pix.ssim(gt_val, recon)).mean()
+    _, index_counts_lam = jnp.unique_counts(
+        jnp.ravel(outputs["lam_indices"]),
+        size=num_latent_actions,
+        fill_value=0,
+    )
+    _, index_counts_tokenizer = jnp.unique_counts(
+        jnp.ravel(outputs["video_tokens"]),
+        size=num_patch_latents,
+        fill_value=0,
+    )
+    codebook_usage_lam = (index_counts_lam != 0).mean()
+    codebook_usage_tokenizer = (index_counts_tokenizer != 0).mean()
+    metrics = dict(
+        cross_entropy_loss=ce_loss,
+        masked_token_accuracy=acc,
+        select_logit=outputs["token_logits"].max(-1).mean(),
+        select_p=select_probs.max(-1).mean(),
+        entropy=jax.scipy.special.entr(select_probs).sum(-1).mean(),
+        psnr=psnr,
+        ssim=ssim,
+        codebook_usage_lam=codebook_usage_lam,
+        codebook_usage_tokenizer=codebook_usage_tokenizer,
+    )
+    return ce_loss, metrics
 
 
 def main(args: Args) -> None:
@@ -389,62 +434,12 @@ def main(args: Args) -> None:
         model: Genie,
         inputs: dict,
         training: bool = False,
-        pred_full_frame: bool = False,
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
-        if pred_full_frame:
-            lam_indices = model.vq_encode(inputs, training=False)
-            inputs["latent_actions"] = lam_indices
-            inputs["videos"] = inputs["videos"][:, :-1]
-            inputs["rng"] = inputs["mask_rng"]
-            frames, video_tokens, logits = model.sample(
-                inputs, args.seq_len  # TODO (mihir) add other args
-            )
-            outputs = {
-                "recon": frames,
-                "token_logits": logits,
-                "video_tokens": video_tokens,
-                "mask": jnp.zeros_like(video_tokens).at[:, -1].set(True),
-                "lam_indices": lam_indices,
-            }
-        else:
-            outputs = model(inputs, training=training)
-        mask = outputs["mask"]
-        outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
-        ce_loss = optax.softmax_cross_entropy_with_integer_labels(
-            outputs["token_logits"], outputs["video_tokens"]
-        )
-        ce_loss = (mask * ce_loss).sum() / mask.sum()
-        acc = outputs["token_logits"].argmax(-1) == outputs["video_tokens"]
-        acc = (mask * acc).sum() / mask.sum()
-        select_probs = jax.nn.softmax(outputs["token_logits"])
-        gt_val = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
-        recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
-        psnr = jnp.asarray(pix.psnr(gt_val, recon)).mean()
-        ssim = jnp.asarray(pix.ssim(gt_val, recon)).mean()
-        _, index_counts_lam = jnp.unique_counts(
-            jnp.ravel(outputs["lam_indices"]),
-            size=args.num_latent_actions,
-            fill_value=0,
-        )
-        _, index_counts_tokenizer = jnp.unique_counts(
-            jnp.ravel(outputs["video_tokens"]),
-            size=args.num_patch_latents,
-            fill_value=0,
-        )
-        codebook_usage_lam = (index_counts_lam != 0).mean()
-        codebook_usage_tokenizer = (index_counts_tokenizer != 0).mean()
-        metrics = dict(
-            cross_entropy_loss=ce_loss,
-            masked_token_accuracy=acc,
-            select_logit=outputs["token_logits"].max(-1).mean(),
-            select_p=select_probs.max(-1).mean(),
-            entropy=jax.scipy.special.entr(select_probs).sum(-1).mean(),
-            psnr=psnr,
-            ssim=ssim,
-            codebook_usage_lam=codebook_usage_lam,
-            codebook_usage_tokenizer=codebook_usage_tokenizer,
+        outputs = model(inputs, training=training)
+        ce_loss, metrics = _calculate_step_metrics(
+            outputs, gt, args.num_latent_actions, args.num_patch_latents
         )
         return ce_loss, (outputs["recon"], metrics)
 
@@ -467,25 +462,50 @@ def main(args: Args) -> None:
         return loss, recon, metrics
 
     @nnx.jit()
-    def val_step(
-        genie: Genie, inputs: dict
-    ) -> tuple[jax.Array, jax.Array, dict, jax.Array, jax.Array, dict]:
+    def val_step(genie: Genie, inputs: dict) -> dict:
         """Evaluate model and compute metrics"""
         genie.eval()
-        (loss, (recon, metrics)) = dynamics_loss_fn(
-            genie, inputs, training=False, pred_full_frame=False
-        )
-        (loss_full_frame, (recon_full_frame, metrics_full_frame)) = dynamics_loss_fn(
-            genie, inputs, training=False, pred_full_frame=True
-        )
-        return (
-            loss,
-            recon,
-            metrics,
-            loss_full_frame,
-            recon_full_frame,
-            metrics_full_frame,
-        )
+        (loss, (recon, metrics)) = dynamics_loss_fn(genie, inputs, training=False)
+        val_output = {"loss": loss, "recon": recon, "metrics": metrics}
+
+        # --- Evaluate full frame prediction (sampling) ---
+        if args.eval_full_frame:
+            lam_indices = genie.vq_encode(inputs, training=False)
+            tokenizer_outputs = genie.tokenizer.vq_encode(
+                inputs["videos"], training=False
+            )
+            tokens_full_frame = tokenizer_outputs["indices"]
+            inputs["latent_actions"] = lam_indices
+            gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
+            inputs["videos"] = gt[:, :-1].astype(
+                args.dtype
+            )  # remove last frame for generation
+            inputs["rng"] = inputs["mask_rng"]
+            recon_full_frame, logits_full_frame = genie.sample(
+                inputs,
+                args.seq_len,
+                args.val_temperature,
+                args.val_sample_argmax,
+                args.val_maskgit_steps,
+            )
+            step_outputs = {
+                "recon": recon_full_frame,
+                "token_logits": logits_full_frame,
+                "video_tokens": tokens_full_frame,
+                "mask": jnp.zeros_like(tokens_full_frame).at[:, -1].set(True),
+                "lam_indices": lam_indices,
+            }
+            loss_full_frame, metrics_full_frame = _calculate_step_metrics(
+                step_outputs, gt, args.num_latent_actions, args.num_patch_latents
+            )
+            val_output.update(
+                {
+                    "loss_full_frame": loss_full_frame,
+                    "recon_full_frame": recon_full_frame,
+                    "metrics_full_frame": metrics_full_frame,
+                }
+            )
+        return val_output
 
     def calculate_validation_metrics(val_dataloader, genie, rng):
         step = 0
@@ -499,18 +519,12 @@ def main(args: Args) -> None:
         for videos in val_dataloader:
             rng, _rng_mask = jax.random.split(rng, 2)
             inputs = dict(videos=videos, mask_rng=_rng_mask)
-            (
-                loss,
-                recon,
-                metrics,
-                loss_full_frame,
-                recon_full_frame,
-                metrics_full_frame,
-            ) = val_step(genie, inputs)
-            loss_per_step.append(loss)
-            metrics_per_step.append(metrics)
-            loss_full_frame_per_step.append(loss_full_frame)
-            metrics_full_frame_per_step.append(metrics_full_frame)
+            val_outputs = val_step(genie, inputs)
+            loss_per_step.append(val_outputs["loss"])
+            metrics_per_step.append(val_outputs["metrics"])
+            if args.eval_full_frame:
+                loss_full_frame_per_step.append(val_outputs["loss_full_frame"])
+                metrics_full_frame_per_step.append(val_outputs["metrics_full_frame"])
             step += 1
             if step > args.val_steps:
                 break
@@ -524,18 +538,16 @@ def main(args: Args) -> None:
             f"val_{key}": np.mean([float(m[key]) for m in metrics_per_step])
             for key in metrics_per_step[0].keys()
         }
-        val_metrics_full_frame = {
-            f"val_full_frame_{key}": np.mean(
-                [float(m[key]) for m in metrics_full_frame_per_step]
-            )
-            for key in metrics_full_frame_per_step[0].keys()
-        }
-        val_losses = {
-            "val_loss": np.mean(loss_per_step),
-            "val_loss_full_frame": np.mean(loss_full_frame_per_step),
-        }
-        val_metrics.update(val_metrics_full_frame)
-        val_metrics.update(val_losses)
+        val_metrics["val_loss"] = np.mean(loss_per_step)
+        if args.eval_full_frame:
+            val_metrics_full_frame = {
+                f"val_full_frame_{key}": np.mean(
+                    [float(m[key]) for m in metrics_full_frame_per_step]
+                )
+                for key in metrics_full_frame_per_step[0].keys()
+            }
+            val_metrics.update(val_metrics_full_frame)
+            val_metrics["val_loss_full_frame"] = np.mean(loss_full_frame_per_step)
         return val_metrics, inputs, recon, recon_full_frame
 
     # --- TRAIN LOOP ---
@@ -576,7 +588,7 @@ def main(args: Args) -> None:
             if dataloader_val and step % args.val_interval == 0:
                 rng, _rng_mask_val = jax.random.split(rng, 2)
                 print("Calculating validation metrics...")
-                val_metrics, val_gt_batch, val_recon, val_full_frame = (
+                val_metrics, val_gt_batch, val_recon, val_recon_full_frame = (
                     calculate_validation_metrics(
                         dataloader_val, optimizer.model, _rng_mask_val
                     )
@@ -586,7 +598,7 @@ def main(args: Args) -> None:
                     "metrics": val_metrics,
                     "gt_batch": val_gt_batch,
                     "recon": val_recon,
-                    "full_frame": val_full_frame,
+                    "full_frame": val_recon_full_frame,
                 }
 
             # --- Logging ---
@@ -616,20 +628,25 @@ def main(args: Args) -> None:
                         val_results["val_comparison_seq"] = einops.rearrange(
                             val_comparison_seq * 255, "t h w c -> h (t w) c"
                         )
-                        val_results["full_frame_seq_val"] = val_results["full_frame"][
-                            0
-                        ].clip(0, 1)
-                        val_results["val_full_frame_comparison_seq"] = jnp.concatenate(
-                            (
-                                val_results["gt_seq_val"],
-                                val_results["full_frame_seq_val"],
-                            ),
-                            axis=1,
-                        )
-                        val_results["val_full_frame_comparison_seq"] = einops.rearrange(
-                            val_results["val_full_frame_comparison_seq"] * 255,
-                            "t h w c -> h (t w) c",
-                        )
+                        if args.eval_full_frame:
+                            val_results["full_frame_seq_val"] = val_results[
+                                "full_frame"
+                            ][0].clip(0, 1)
+                            val_results["val_full_frame_comparison_seq"] = (
+                                jnp.concatenate(
+                                    (
+                                        val_results["gt_seq_val"],
+                                        val_results["full_frame_seq_val"],
+                                    ),
+                                    axis=1,
+                                )
+                            )
+                            val_results["val_full_frame_comparison_seq"] = (
+                                einops.rearrange(
+                                    val_results["val_full_frame_comparison_seq"] * 255,
+                                    "t h w c -> h (t w) c",
+                                )
+                            )
                     # NOTE: Process-dependent control flow deliberately happens
                     # after indexing operation since it must not contain code
                     # sections that lead to cross-accelerator communication.
@@ -663,22 +680,27 @@ def main(args: Args) -> None:
                                             )
                                         )
                                     ),
-                                    val_full_frame=wandb.Image(
-                                        np.asarray(
-                                            val_results["full_frame_seq_val"][
-                                                args.seq_len - 1
-                                            ]
-                                        )
-                                    ),
-                                    val_true_vs_full_frame=wandb.Image(
-                                        np.asarray(
-                                            val_results[
-                                                "val_full_frame_comparison_seq"
-                                            ].astype(np.uint8)
-                                        )
-                                    ),
                                 )
                             )
+                            if args.eval_full_frame:
+                                log_images.update(
+                                    dict(
+                                        val_full_frame=wandb.Image(
+                                            np.asarray(
+                                                val_results["full_frame_seq_val"][
+                                                    args.seq_len - 1
+                                                ]
+                                            )
+                                        ),
+                                        val_true_vs_full_frame=wandb.Image(
+                                            np.asarray(
+                                                val_results[
+                                                    "val_full_frame_comparison_seq"
+                                                ].astype(np.uint8)
+                                            )
+                                        ),
+                                    )
+                                )
                         wandb.log(log_images)
             # --- Checkpointing ---
             if args.save_ckpt and step % args.log_checkpoint_interval == 0:

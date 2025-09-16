@@ -240,19 +240,16 @@ def restore_checkpoint_if_needed(
         abstract_optimizer_state = nnx.state(abstract_optimizer)
         if args.val_data_dir:
             restore_args = ocp.args.Composite(
-                    model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
-                    train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
-                    val_dataloader_state=grain.checkpoint.CheckpointRestore(val_iterator),  # type: ignore
-                )
-        else: 
+                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
+                train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
+                val_dataloader_state=grain.checkpoint.CheckpointRestore(val_iterator),  # type: ignore
+            )
+        else:
             restore_args = ocp.args.Composite(
-                    model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
-                    train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
-                )
-        restored = checkpoint_manager.restore(
-            restore_step,
-            args=restore_args
-        )
+                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
+                train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
+            )
+        restored = checkpoint_manager.restore(restore_step, args=restore_args)
         restored_optimizer_state = restored["model_state"]
         nnx.update(optimizer, restored_optimizer_state)
         train_iterator = restored["train_dataloader_state"]
@@ -344,6 +341,7 @@ def main(args: Args) -> None:
         step, optimizer, train_iterator, _ = restore_checkpoint_if_needed(
             args, checkpoint_manager, optimizer, train_iterator
         )
+
     # --- Define loss and train step (close over args) ---
     def lam_loss_fn(
         model: LatentActionModel, inputs: dict, training: bool = True
@@ -412,7 +410,9 @@ def main(args: Args) -> None:
         return loss, recon, action_last_active, metrics
 
     @nnx.jit
-    def val_step(lam: LatentActionModel, inputs: dict) -> tuple[jax.Array, jax.Array, dict]:
+    def val_step(
+        lam: LatentActionModel, inputs: dict
+    ) -> tuple[jax.Array, jax.Array, dict]:
         lam.eval()
         (loss, (recon, _, metrics)) = lam_loss_fn(lam, inputs, training=False)
         return loss, recon, metrics
@@ -433,7 +433,9 @@ def main(args: Args) -> None:
                 break
 
         if step < args.val_steps:
-            print(f"Warning: Your validation dataset is too small to make val_steps many steps. Made {step} steps, expected {args.val_steps}")
+            print(
+                f"Warning: Your validation dataset is too small to make val_steps many steps. Made {step} steps, expected {args.val_steps}"
+            )
 
         val_loss = np.mean(loss_per_step)
         val_metrics = {
@@ -487,7 +489,9 @@ def main(args: Args) -> None:
             val_results = {}
             if dataloader_val and step % args.val_interval == 0:
                 print("Calculating validation metrics...")
-                val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(dataloader_val, optimizer.model)
+                val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(
+                    dataloader_val, optimizer.model
+                )
                 print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
                 val_results = {
                     "metrics": val_metrics,
@@ -498,11 +502,7 @@ def main(args: Args) -> None:
             # --- Logging ---
             if args.log:
                 if step % args.log_interval == 0 and jax.process_index() == 0:
-                    log_dict = {
-                        "loss": loss,
-                        "step": step,
-                        **metrics
-                        }
+                    log_dict = {"loss": loss, "step": step, **metrics}
                     if val_results:
                         log_dict.update(val_results["metrics"])
                     wandb.log(log_dict)
@@ -514,11 +514,20 @@ def main(args: Args) -> None:
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
                     if val_results:
-                        val_results["gt_seq_val"] = val_results["gt_batch"]["videos"][0, 1:].astype(jnp.float32) / 255.0
-                        val_results["recon_seq_val"] = val_results["recon"][0].clip(0, 1)
-                        val_results["val_comparison_seq"] = jnp.concatenate((val_results["gt_seq_val"], val_results["recon_seq_val"]), axis=1)
+                        val_results["gt_seq_val"] = (
+                            val_results["gt_batch"]["videos"][0, 1:].astype(jnp.float32)
+                            / 255.0
+                        )
+                        val_results["recon_seq_val"] = val_results["recon"][0].clip(
+                            0, 1
+                        )
+                        val_results["val_comparison_seq"] = jnp.concatenate(
+                            (val_results["gt_seq_val"], val_results["recon_seq_val"]),
+                            axis=1,
+                        )
                         val_results["val_comparison_seq"] = einops.rearrange(
-                            val_results["val_comparison_seq"] * 255, "t h w c -> h (t w) c"
+                            val_results["val_comparison_seq"] * 255,
+                            "t h w c -> h (t w) c",
                         )
                     # NOTE: Process-dependent control flow deliberately happens
                     # after indexing operation since it must not contain code
@@ -532,13 +541,23 @@ def main(args: Args) -> None:
                             ),
                         )
                         if val_results:
-                            log_images.update({
-                                "val_image": wandb.Image(np.asarray(val_results["gt_seq_val"][0])),
-                                "val_recon": wandb.Image(np.asarray(val_results["recon_seq_val"][0])),
-                                "val_true_vs_recon": wandb.Image(
-                                    np.asarray(val_results["val_comparison_seq"].astype(np.uint8))
-                                ),
-                            })
+                            log_images.update(
+                                {
+                                    "val_image": wandb.Image(
+                                        np.asarray(val_results["gt_seq_val"][0])
+                                    ),
+                                    "val_recon": wandb.Image(
+                                        np.asarray(val_results["recon_seq_val"][0])
+                                    ),
+                                    "val_true_vs_recon": wandb.Image(
+                                        np.asarray(
+                                            val_results["val_comparison_seq"].astype(
+                                                np.uint8
+                                            )
+                                        )
+                                    ),
+                                }
+                            )
                         wandb.log(log_images)
             # --- Checkpointing ---
             if args.save_ckpt and step % args.log_checkpoint_interval == 0:
@@ -551,19 +570,17 @@ def main(args: Args) -> None:
                         ),
                         val_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
                             val_iterator  # type: ignore
-                        )
+                        ),
                     )
-                else: 
+                else:
                     ckpt_manager_args = ocp.args.Composite(
                         model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
                         train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
                             train_iterator  # type: ignore
-                        )
+                        ),
                     )
-                checkpoint_manager.save(
-                    step,
-                    args=ckpt_manager_args
-                    )
+                checkpoint_manager.save(step, args=ckpt_manager_args)
+                print(f"Saved checkpoint at step {step}")
             if step >= args.num_steps:
                 break
 
