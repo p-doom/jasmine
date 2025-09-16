@@ -161,7 +161,7 @@ class Genie(nnx.Module):
             video_tokens=jax.lax.stop_gradient(token_indices_BTN),
             latent_actions=latent_actions_BTm11L,
         )
-        outputs["mask_rng"] = batch["mask_rng"]
+        outputs["mask_rng"] = batch["rng"]
         dyna_logits_BTNV, dyna_mask = self.dynamics(outputs, training)
         outputs["token_logits"] = dyna_logits_BTNV
         if dyna_mask is not None:

@@ -480,7 +480,6 @@ def main(args: Args) -> None:
             inputs["videos"] = gt[:, :-1].astype(
                 args.dtype
             )  # remove last frame for generation
-            inputs["rng"] = inputs["mask_rng"]
             recon_full_frame, logits_full_frame = genie.sample(
                 inputs,
                 args.seq_len,
@@ -518,7 +517,7 @@ def main(args: Args) -> None:
         recon_full_frame = None
         for videos in val_dataloader:
             rng, _rng_mask = jax.random.split(rng, 2)
-            inputs = dict(videos=videos, mask_rng=_rng_mask)
+            inputs = dict(videos=videos, rng=_rng_mask)
             val_outputs = val_step(genie, inputs)
             loss_per_step.append(val_outputs["loss"])
             metrics_per_step.append(val_outputs["metrics"])
@@ -563,7 +562,7 @@ def main(args: Args) -> None:
         )
     if jax.process_index() == 0:
         first_videos = next(dataloader_train)
-        sample_inputs = dict(videos=first_videos, mask_rng=rng)
+        sample_inputs = dict(videos=first_videos, rng=rng)
         compiled = train_step.lower(optimizer, sample_inputs).compile()
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
@@ -575,7 +574,7 @@ def main(args: Args) -> None:
         for videos in dataloader_train:
             # --- Train step ---
             rng, _rng_mask = jax.random.split(rng, 2)
-            inputs = dict(videos=videos, mask_rng=_rng_mask)
+            inputs = dict(videos=videos, rng=_rng_mask)
             loss, recon, metrics = train_step(optimizer, inputs)
             if step == first_step:
                 print_mem_stats("After params initialized")
