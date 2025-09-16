@@ -113,6 +113,9 @@ if __name__ == "__main__":
         rngs=rngs,
     )
 
+    # Need to delete lam decoder for checkpoint loading
+    del genie.lam.decoder
+
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add(
         "model_state", ocp.args.PyTreeSave, ocp.handlers.PyTreeCheckpointHandler
@@ -152,23 +155,18 @@ if __name__ == "__main__":
     # --- Define sampling function ---
     def _sampling_fn(model: Genie, batch: dict) -> jax.Array:
         """Runs Genie.sample with pre-defined generation hyper-parameters."""
-        if args.dyna_type == "maskgit":
-            return model.sample(
-                batch,
-                args.seq_len,
-                args.maskgit_steps,
-                args.temperature,
-                args.sample_argmax,
-            )
-        elif args.dyna_type == "causal":
-            return model.sample_causal(
-                batch,
-                args.seq_len,
-                args.temperature,
-                args.sample_argmax,
-            )
-        else:
-            raise ValueError(f"Invalid dynamics type: {args.dyna_type}")
+        assert args.dyna_type in [
+            "maskgit",
+            "causal",
+        ], f"Invalid dynamics type: {args.dyna_type}"
+        frames, _ = model.sample(
+            batch,
+            args.seq_len,
+            args.temperature,
+            args.sample_argmax,
+            args.maskgit_steps,
+        )
+        return frames
 
     # --- Define autoregressive sampling loop ---
     def _autoreg_sample(genie, rng, video_batch_BSHWC, action_batch_E):
