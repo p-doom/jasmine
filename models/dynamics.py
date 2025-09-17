@@ -3,7 +3,6 @@ from typing import Dict
 import jax
 import jax.numpy as jnp
 import flax.nnx as nnx
-import einops
 
 from utils.nn import STTransformer, Transformer
 
@@ -73,7 +72,9 @@ class DynamicsMaskGIT(nnx.Module):
         )
 
     def __call__(
-        self, batch: Dict[str, jax.Array], training: bool = True
+        self,
+        batch: Dict[str, jax.Array],
+        training: bool = True,
     ) -> tuple[jax.Array, jax.Array | None]:
         # --- Mask videos ---
         video_tokens_BTN = batch["video_tokens"]
@@ -95,7 +96,7 @@ class DynamicsMaskGIT(nnx.Module):
                 jnp.expand_dims(mask, -1), self.mask_token.value, vid_embed_BTNM
             )
         else:
-            mask = None
+            mask = jnp.ones_like(video_tokens_BTN)
 
         # --- Predict transition ---
         act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
@@ -138,6 +139,7 @@ class DynamicsCausal(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
+        self.decode = decode
 
         self.transformer = Transformer(
             self.model_dim,
@@ -150,7 +152,7 @@ class DynamicsCausal(nnx.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
-            decode=decode,
+            decode=self.decode,
             rngs=rngs,
         )
         self.patch_embed = nnx.Embed(self.num_latents, self.model_dim, rngs=rngs)
@@ -163,11 +165,12 @@ class DynamicsCausal(nnx.Module):
         )
 
     def __call__(
-        self, batch: Dict[str, jax.Array], training: bool = True
+        self,
+        batch: Dict[str, jax.Array],
+        training: bool = True,
     ) -> tuple[jax.Array, jax.Array | None]:
         video_tokens_BTN = batch["video_tokens"]
         latent_actions_BTm11L = batch["latent_actions"]
-
         vid_embed_BTNM = self.patch_embed(video_tokens_BTN)
         act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
         padded_act_embed_BT1M = jnp.pad(
@@ -176,8 +179,6 @@ class DynamicsCausal(nnx.Module):
         vid_embed_BTNp1M = jnp.concatenate(
             [padded_act_embed_BT1M, vid_embed_BTNM], axis=2
         )
-
         logits_BTNp1V = self.transformer(vid_embed_BTNp1M)
         logits_BTNV = logits_BTNp1V[:, :, :-1]
-
         return logits_BTNV, jnp.ones_like(video_tokens_BTN)

@@ -7,24 +7,17 @@ import jax.numpy as jnp
 import einops
 
 
-class SpatioTemporalPositionalEncoding(nnx.Module):
+def _get_spatiotemporal_positional_encoding(d_model: int, max_len: int = 5000):
     """
-    Applies separate sinusoidal positional encodings to the temporal and spatial dimensions.
+    Creates a function that applies separate sinusoidal positional encodings to the temporal and spatial dimensions.
     """
+    pe = jnp.zeros((max_len, d_model))
+    position = jnp.arange(0, max_len, dtype=jnp.float32)[:, None]
+    div_term = jnp.exp(jnp.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+    pe = pe.at[:, 0::2].set(jnp.sin(position * div_term))
+    pe = pe.at[:, 1::2].set(jnp.cos(position * div_term))
 
-    def __init__(self, d_model: int, max_len: int = 5000):
-        self.d_model = d_model
-        self.max_len = max_len
-
-        self.pe = jnp.zeros((self.max_len, self.d_model))
-        position = jnp.arange(0, self.max_len, dtype=jnp.float32)[:, None]
-        div_term = jnp.exp(
-            jnp.arange(0, self.d_model, 2) * (-math.log(10000.0) / self.d_model)
-        )
-        self.pe = self.pe.at[:, 0::2].set(jnp.sin(position * div_term))
-        self.pe = self.pe.at[:, 1::2].set(jnp.cos(position * div_term))
-
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def _encode(x: jax.Array) -> jax.Array:
         """
         Args:
             x: The input tensor of shape (Batch, Time, Space, Dimension).
@@ -38,14 +31,16 @@ class SpatioTemporalPositionalEncoding(nnx.Module):
         num_spatial_patches = x.shape[2]
 
         # Temporal positional encoding: (1, T, 1, D)
-        temporal_pe = self.pe[None, :num_timesteps, None, :]
+        temporal_pe = pe[None, :num_timesteps, None, :]
         x = x + temporal_pe
 
         # Spatial positional encoding: (1, 1, S, D)
-        spatial_pe = self.pe[None, None, :num_spatial_patches, :]
+        spatial_pe = pe[None, None, :num_spatial_patches, :]
         x = x + spatial_pe
 
         return x
+
+    return _encode
 
 
 class STBlock(nnx.Module):
@@ -222,7 +217,9 @@ class STTransformer(nnx.Module):
             rngs=rngs,
         )
 
-        self.pos_enc = SpatioTemporalPositionalEncoding(self.model_dim, max_len=max_len)
+        self.pos_enc = _get_spatiotemporal_positional_encoding(
+            self.model_dim, max_len=max_len
+        )
 
         self.blocks = []
         for _ in range(self.num_blocks):
@@ -444,7 +441,9 @@ class Transformer(nnx.Module):
             rngs=rngs,
         )
 
-        self.pos_enc = SpatioTemporalPositionalEncoding(self.model_dim, max_len=max_len)
+        self.pos_enc = _get_spatiotemporal_positional_encoding(
+            self.model_dim, max_len=max_len
+        )
 
         self.blocks: List[TransformerBlock] = []
         for _ in range(self.num_blocks):

@@ -78,6 +78,9 @@ class Args:
     ckpt_dir: str = ""
     log_checkpoint_interval: int = 10000
     log_checkpoint_keep_period: int = 20000
+    val_data_dir: str = ""
+    val_interval: int = 20_000
+    val_steps: int = 50
     wandb_id: str = ""
     use_flash_attention: bool = True
 
@@ -154,11 +157,11 @@ def shard_optimizer_states(
     nnx.update(optimizer, optimizer_sharded_state)
 
 
-def build_dataloader(args: Args) -> grain.DataLoaderIterator:
+def build_dataloader(args: Args, data_dir: str) -> grain.DataLoaderIterator:
     image_shape = (args.image_height, args.image_width, args.image_channels)
     array_record_files = [
-        os.path.join(args.data_dir, x)
-        for x in os.listdir(args.data_dir)
+        os.path.join(data_dir, x)
+        for x in os.listdir(data_dir)
         if x.endswith(".array_record")
     ]
     grain_dataloader = get_dataloader(
@@ -186,15 +189,26 @@ def build_checkpoint_manager(args: Args) -> ocp.CheckpointManager:
         "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
     )
     handler_registry.add(
-        "dataloader_state",
+        "train_dataloader_state",
         grain.checkpoint.CheckpointSave,
         cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
     )
     handler_registry.add(
-        "dataloader_state",
+        "train_dataloader_state",
         grain.checkpoint.CheckpointRestore,
         cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
     )
+    if args.val_data_dir:
+        handler_registry.add(
+            "val_dataloader_state",
+            grain.checkpoint.CheckpointSave,
+            cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
+        )
+        handler_registry.add(
+            "val_dataloader_state",
+            grain.checkpoint.CheckpointRestore,
+            cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
+        )
     checkpoint_options = ocp.CheckpointManagerOptions(
         save_interval_steps=args.log_checkpoint_interval,
         max_to_keep=3,
@@ -214,28 +228,36 @@ def restore_checkpoint_if_needed(
     args: Args,
     checkpoint_manager: ocp.CheckpointManager,
     optimizer: nnx.Optimizer,
-    grain_iterator: grain.DataLoaderIterator,
+    train_iterator: grain.DataLoaderIterator,
+    val_iterator: Optional[grain.DataLoaderIterator] = None,
     restore_step: Optional[int] = None,
-) -> tuple[int, nnx.Optimizer, grain.DataLoaderIterator]:
+) -> tuple[int, nnx.Optimizer, grain.DataLoaderIterator, grain.DataLoaderIterator]:
     step = 0
     if restore_step is None:
         restore_step = checkpoint_manager.latest_step()
     if args.restore_ckpt:
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
         abstract_optimizer_state = nnx.state(abstract_optimizer)
-        restored = checkpoint_manager.restore(
-            restore_step,
-            args=ocp.args.Composite(
+        if args.val_data_dir:
+            restore_args = ocp.args.Composite(
                 model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
-                dataloader_state=grain.checkpoint.CheckpointRestore(grain_iterator),  # type: ignore
-            ),
-        )
+                train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
+                val_dataloader_state=grain.checkpoint.CheckpointRestore(val_iterator),  # type: ignore
+            )
+        else:
+            restore_args = ocp.args.Composite(
+                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
+                train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
+            )
+        restored = checkpoint_manager.restore(restore_step, args=restore_args)
         restored_optimizer_state = restored["model_state"]
         nnx.update(optimizer, restored_optimizer_state)
-        grain_iterator = restored["dataloader_state"]
+        train_iterator = restored["train_dataloader_state"]
+        if args.val_data_dir:
+            val_iterator = restored["val_dataloader_state"]
         step = restore_step or 0
         print(f"Restored dataloader and model state from step {step}")
-    return step, optimizer, grain_iterator
+    return step, optimizer, train_iterator, val_iterator
 
 
 def enable_sowing(lam: LatentActionModel) -> None:
@@ -297,7 +319,7 @@ def main(args: Args) -> None:
     del lam
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
-    mesh, replicated_sharding, videos_sharding = build_mesh_and_sharding(num_devices)
+    _, replicated_sharding, videos_sharding = build_mesh_and_sharding(num_devices)
 
     shard_optimizer_states(optimizer, replicated_sharding)
 
@@ -305,21 +327,28 @@ def main(args: Args) -> None:
     checkpoint_manager = build_checkpoint_manager(args)
 
     # --- Create DataLoaderIterator from dataloader ---
-    grain_iterator = build_dataloader(args)
+    train_iterator = build_dataloader(args, args.data_dir)
+    val_iterator = None
+    if args.val_data_dir:
+        val_iterator = build_dataloader(args, args.val_data_dir)
 
     # --- Restore checkpoint ---
-    step, optimizer, grain_iterator = restore_checkpoint_if_needed(
-        args, checkpoint_manager, optimizer, grain_iterator
-    )
+    if val_iterator:
+        step, optimizer, train_iterator, val_iterator = restore_checkpoint_if_needed(
+            args, checkpoint_manager, optimizer, train_iterator, val_iterator
+        )
+    else:
+        step, optimizer, train_iterator, _ = restore_checkpoint_if_needed(
+            args, checkpoint_manager, optimizer, train_iterator
+        )
 
     # --- Define loss and train step (close over args) ---
     def lam_loss_fn(
-        model: LatentActionModel, inputs: dict
+        model: LatentActionModel, inputs: dict, training: bool = True
     ) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
-        model.train()
-        outputs = model(inputs, training=True)
+        outputs = model(inputs, training)
         outputs["recon"] = outputs["recon"].astype(jnp.float32)
         gt_future_frames = gt[:, 1:]
         mse = jnp.square(gt_future_frames - outputs["recon"]).mean()
@@ -356,7 +385,8 @@ def main(args: Args) -> None:
         def loss_fn(
             model: LatentActionModel,
         ) -> tuple[jax.Array, tuple[jax.Array, jax.Array, dict]]:
-            return lam_loss_fn(model, inputs)
+            model.train()
+            return lam_loss_fn(model, inputs, training=True)
 
         # --- Update model ---
         (loss, (recon, idx_counts, metrics)), grads = nnx.value_and_grad(
@@ -379,14 +409,56 @@ def main(args: Args) -> None:
         action_last_active = jnp.where(do_reset, 0, action_last_active)
         return loss, recon, action_last_active, metrics
 
+    @nnx.jit
+    def val_step(
+        lam: LatentActionModel, inputs: dict
+    ) -> tuple[jax.Array, jax.Array, dict]:
+        lam.eval()
+        (loss, (recon, _, metrics)) = lam_loss_fn(lam, inputs, training=False)
+        return loss, recon, metrics
+
+    def calculate_validation_metrics(val_dataloader, lam):
+        step = 0
+        loss_per_step = []
+        metrics_per_step = []
+        inputs = None
+        recon = None
+        for videos in val_dataloader:
+            inputs = dict(videos=videos)
+            loss, recon, metrics = val_step(lam, inputs)
+            loss_per_step.append(loss)
+            metrics_per_step.append(metrics)
+            step += 1
+            if step > args.val_steps:
+                break
+
+        if step < args.val_steps:
+            print(
+                f"Warning: Your validation dataset is too small to make val_steps many steps. Made {step} steps, expected {args.val_steps}"
+            )
+
+        val_loss = np.mean(loss_per_step)
+        val_metrics = {
+            f"val_{key}": np.mean([float(m[key]) for m in metrics_per_step])
+            for key in metrics_per_step[0].keys()
+        }
+        val_metrics["val_loss"] = val_loss
+        return val_metrics, inputs, recon
+
     # --- TRAIN LOOP ---
-    dataloader = (
+    dataloader_train = (
         jax.make_array_from_process_local_data(videos_sharding, elem)
-        for elem in grain_iterator
+        for elem in train_iterator
     )
+    dataloader_val = None
+    if val_iterator:
+        dataloader_val = (
+            jax.make_array_from_process_local_data(videos_sharding, elem)
+            for elem in val_iterator
+        )
     action_last_active = jnp.zeros(args.num_latents, dtype=jnp.int32)
     if jax.process_index() == 0:
-        first_videos = next(dataloader)
+        first_videos = next(dataloader_train)
         sample_inputs = dict(videos=first_videos)
         compiled = train_step.lower(
             optimizer, sample_inputs, action_last_active, rng
@@ -394,11 +466,11 @@ def main(args: Args) -> None:
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
         # Do not skip the first batch during training
-        dataloader = itertools.chain([first_videos], dataloader)
+        dataloader_train = itertools.chain([first_videos], dataloader_train)
     print(f"Starting training from step {step}...")
     first_step = step
     while step < args.num_steps:
-        for videos in dataloader:
+        for videos in dataloader_train:
             # --- Train step ---
             rng, _rng = jax.random.split(rng)
 
@@ -413,16 +485,27 @@ def main(args: Args) -> None:
             print(f"Step {step}, loss: {loss}")
             step += 1
 
+            # --- Validation loss ---
+            val_results = {}
+            if dataloader_val and step % args.val_interval == 0:
+                print("Calculating validation metrics...")
+                val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(
+                    dataloader_val, optimizer.model
+                )
+                print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
+                val_results = {
+                    "metrics": val_metrics,
+                    "gt_batch": val_gt_batch,
+                    "recon": val_recon,
+                }
+
             # --- Logging ---
             if args.log:
                 if step % args.log_interval == 0 and jax.process_index() == 0:
-                    wandb.log(
-                        {
-                            "loss": loss,
-                            "step": step,
-                            **metrics,
-                        }
-                    )
+                    log_dict = {"loss": loss, "step": step, **metrics}
+                    if val_results:
+                        log_dict.update(val_results["metrics"])
+                    wandb.log(log_dict)
                 if step % args.log_image_interval == 0:
                     gt_seq = inputs["videos"][0, 1:].astype(jnp.float32) / 255.0
                     recon_seq = recon[0].clip(0, 1)
@@ -430,6 +513,22 @@ def main(args: Args) -> None:
                     comparison_seq = einops.rearrange(
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
+                    if val_results:
+                        val_results["gt_seq_val"] = (
+                            val_results["gt_batch"]["videos"][0, 1:].astype(jnp.float32)
+                            / 255.0
+                        )
+                        val_results["recon_seq_val"] = val_results["recon"][0].clip(
+                            0, 1
+                        )
+                        val_results["val_comparison_seq"] = jnp.concatenate(
+                            (val_results["gt_seq_val"], val_results["recon_seq_val"]),
+                            axis=1,
+                        )
+                        val_results["val_comparison_seq"] = einops.rearrange(
+                            val_results["val_comparison_seq"] * 255,
+                            "t h w c -> h (t w) c",
+                        )
                     # NOTE: Process-dependent control flow deliberately happens
                     # after indexing operation since it must not contain code
                     # sections that lead to cross-accelerator communication.
@@ -441,19 +540,46 @@ def main(args: Args) -> None:
                                 np.asarray(comparison_seq.astype(np.uint8))
                             ),
                         )
+                        if val_results:
+                            log_images.update(
+                                {
+                                    "val_image": wandb.Image(
+                                        np.asarray(val_results["gt_seq_val"][0])
+                                    ),
+                                    "val_recon": wandb.Image(
+                                        np.asarray(val_results["recon_seq_val"][0])
+                                    ),
+                                    "val_true_vs_recon": wandb.Image(
+                                        np.asarray(
+                                            val_results["val_comparison_seq"].astype(
+                                                np.uint8
+                                            )
+                                        )
+                                    ),
+                                }
+                            )
                         wandb.log(log_images)
             # --- Checkpointing ---
             if args.save_ckpt and step % args.log_checkpoint_interval == 0:
                 optimizer_state = nnx.state(optimizer)
-                checkpoint_manager.save(
-                    step,
-                    args=ocp.args.Composite(
+                if val_iterator:
+                    ckpt_manager_args = ocp.args.Composite(
                         model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
-                        dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
-                            grain_iterator  # type: ignore
+                        train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
+                            train_iterator  # type: ignore
                         ),
-                    ),
-                )
+                        val_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
+                            val_iterator  # type: ignore
+                        ),
+                    )
+                else:
+                    ckpt_manager_args = ocp.args.Composite(
+                        model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
+                        train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
+                            train_iterator  # type: ignore
+                        ),
+                    )
+                checkpoint_manager.save(step, args=ckpt_manager_args)
                 print(f"Saved checkpoint at step {step}")
             if step >= args.num_steps:
                 break
