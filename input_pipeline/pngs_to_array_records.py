@@ -115,7 +115,7 @@ def main():
         episodes = directories
 
     n_total = sum([len(os.listdir(episode)) for episode in episodes])
-    n_train = int(n_total * args.train_ratio)
+    n_train = round(n_total * args.train_ratio)
     n_val = int(n_total * args.val_ratio)
 
     pool_args_train = []
