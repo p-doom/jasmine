@@ -421,11 +421,10 @@ def main(args: Args) -> None:
         step = 0
         loss_per_step = []
         metrics_per_step = []
-        inputs = None
+        batch = None
         recon = None
-        for videos in val_dataloader:
-            inputs = dict(videos=videos)
-            loss, recon, metrics = val_step(lam, inputs)
+        for batch in val_dataloader:
+            loss, recon, metrics = val_step(lam, batch)
             loss_per_step.append(loss)
             metrics_per_step.append(metrics)
             step += 1
@@ -443,41 +442,45 @@ def main(args: Args) -> None:
             for key in metrics_per_step[0].keys()
         }
         val_metrics["val_loss"] = val_loss
-        return val_metrics, inputs, recon
+        return val_metrics, batch, recon
 
     # --- TRAIN LOOP ---
     dataloader_train = (
-        jax.make_array_from_process_local_data(videos_sharding, elem)
+        {
+            "videos": jax.make_array_from_process_local_data(
+                videos_sharding, elem["videos"]
+            ),
+        }
         for elem in train_iterator
     )
     dataloader_val = None
     if val_iterator:
         dataloader_val = (
-            jax.make_array_from_process_local_data(videos_sharding, elem)
+            {
+                "videos": jax.make_array_from_process_local_data(
+                    videos_sharding, elem["videos"]
+                ),
+            }
             for elem in val_iterator
         )
     action_last_active = jnp.zeros(args.num_latents, dtype=jnp.int32)
     if jax.process_index() == 0:
-        first_videos = next(dataloader_train)
-        sample_inputs = dict(videos=first_videos)
+        first_batch = next(dataloader_train)
         compiled = train_step.lower(
-            optimizer, sample_inputs, action_last_active, rng
+            optimizer, first_batch, action_last_active, rng
         ).compile()
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
         # Do not skip the first batch during training
-        dataloader_train = itertools.chain([first_videos], dataloader_train)
+        dataloader_train = itertools.chain([first_batch], dataloader_train)
     print(f"Starting training from step {step}...")
     first_step = step
     while step < args.num_steps:
-        for videos in dataloader_train:
+        for batch in dataloader_train:
             # --- Train step ---
-            rng, _rng = jax.random.split(rng)
-
-            inputs = dict(videos=videos, rng=_rng)
-            rng, _rng = jax.random.split(rng)
+            rng, _rng = jax.random.split(rng, 2)
             loss, recon, action_last_active, metrics = train_step(
-                optimizer, inputs, action_last_active, _rng
+                optimizer, batch, action_last_active, _rng
             )
             if step == first_step:
                 print_mem_stats("After params initialized")
@@ -507,7 +510,7 @@ def main(args: Args) -> None:
                         log_dict.update(val_results["metrics"])
                     wandb.log(log_dict)
                 if step % args.log_image_interval == 0:
-                    gt_seq = inputs["videos"][0, 1:].astype(jnp.float32) / 255.0
+                    gt_seq = batch["videos"][0, 1:].astype(jnp.float32) / 255.0
                     recon_seq = recon[0].clip(0, 1)
                     comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
                     comparison_seq = einops.rearrange(

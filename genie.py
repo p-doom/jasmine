@@ -32,6 +32,7 @@ class Genie(nnx.Module):
         lam_num_blocks: int,
         lam_num_heads: int,
         lam_co_train: bool,
+        use_gt_actions: bool,
         dyna_type: str,
         dyna_dim: int,
         dyna_ffn_dim: int,
@@ -63,6 +64,7 @@ class Genie(nnx.Module):
         self.lam_num_blocks = lam_num_blocks
         self.lam_num_heads = lam_num_heads
         self.lam_co_train = lam_co_train
+        self.use_gt_actions = use_gt_actions
         # --- Dynamics ---
         self.dyna_type = dyna_type
         self.dyna_dim = dyna_dim
@@ -92,22 +94,25 @@ class Genie(nnx.Module):
             use_flash_attention=self.use_flash_attention,
             rngs=rngs,
         )
-        self.lam = LatentActionModel(
-            in_dim=self.in_dim,
-            model_dim=self.lam_dim,
-            ffn_dim=self.lam_ffn_dim,
-            latent_dim=self.latent_patch_dim,
-            num_latents=self.num_latent_actions,
-            patch_size=self.lam_patch_size,
-            num_blocks=self.lam_num_blocks,
-            num_heads=self.lam_num_heads,
-            dropout=0.0,
-            codebook_dropout=0.0,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-            use_flash_attention=self.use_flash_attention,
-            rngs=rngs,
-        )
+        if self.use_gt_actions:
+            self.lam = None
+        else:
+            self.lam = LatentActionModel(
+                in_dim=self.in_dim,
+                model_dim=self.lam_dim,
+                ffn_dim=self.lam_ffn_dim,
+                latent_dim=self.latent_patch_dim,
+                num_latents=self.num_latent_actions,
+                patch_size=self.lam_patch_size,
+                num_blocks=self.lam_num_blocks,
+                num_heads=self.lam_num_heads,
+                dropout=0.0,
+                codebook_dropout=0.0,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+                use_flash_attention=self.use_flash_attention,
+                rngs=rngs,
+            )
         if self.dyna_type == "maskgit":
             self.dynamics = DynamicsMaskGIT(
                 model_dim=self.dyna_dim,
@@ -149,14 +154,21 @@ class Genie(nnx.Module):
         videos_BTHWC = batch["videos"]
         tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
         token_indices_BTN = tokenizer_outputs["indices"]
-        lam_outputs = self.lam.vq_encode(videos_BTHWC, training=False)
-        z_q_BTm11L = lam_outputs["z_q"]
-        action_indices_E = lam_outputs["indices"]
-        latent_actions_BTm11L = jax.lax.cond(
-            self.lam_co_train,
-            lambda: z_q_BTm11L,
-            lambda: jax.lax.stop_gradient(z_q_BTm11L),
-        )
+        if self.use_gt_actions:
+            action_indices_E = None
+            latent_actions_BT1L = jax.nn.one_hot(
+                batch["actions"], num_classes=self.latent_action_dim
+            ).reshape(*batch["actions"].shape[:2], 1, self.latent_action_dim)
+            latent_actions_BTm11L = latent_actions_BT1L[:, 1:]
+        else:
+            lam_outputs = self.lam.vq_encode(videos_BTHWC, training=False)
+            z_q_BTm11L = lam_outputs["z_q"]
+            action_indices_E = lam_outputs["indices"]
+            latent_actions_BTm11L = jax.lax.cond(
+                self.lam_co_train,
+                lambda: z_q_BTm11L,
+                lambda: jax.lax.stop_gradient(z_q_BTm11L),
+            )
         outputs = dict(
             video_tokens=jax.lax.stop_gradient(token_indices_BTN),
             latent_actions=latent_actions_BTm11L,
@@ -164,12 +176,12 @@ class Genie(nnx.Module):
         outputs["mask_rng"] = batch["rng"]
         dyna_logits_BTNV, dyna_mask = self.dynamics(outputs, training)
         outputs["token_logits"] = dyna_logits_BTNV
-        if dyna_mask is not None:
-            outputs["mask"] = dyna_mask
+        outputs["mask"] = dyna_mask
         mle_indices_BTN = jnp.argmax(outputs["token_logits"], axis=-1)
         H, W = batch["videos"].shape[2:4]
         outputs["recon"] = self.tokenizer.decode(mle_indices_BTN, (H, W))
-        outputs["lam_indices"] = action_indices_E
+        if action_indices_E is not None:
+            outputs["lam_indices"] = action_indices_E
         return outputs
 
     def sample(

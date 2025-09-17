@@ -83,6 +83,7 @@ class Args:
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
     use_flash_attention: bool = True
+    use_gt_actions: bool = False
     # Logging
     log: bool = False
     entity: str = ""
@@ -127,6 +128,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
         lam_num_blocks=args.lam_num_blocks,
         lam_num_heads=args.lam_num_heads,
         lam_co_train=not args.lam_checkpoint,
+        use_gt_actions=args.use_gt_actions,
         # Dynamics
         dyna_type=args.dyna_type,
         dyna_dim=args.dyna_dim,
@@ -141,7 +143,11 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
         decode=False,
         rngs=rngs,
     )
-    del genie.lam.decoder
+    assert not (
+        args.lam_checkpoint and args.use_gt_actions
+    ), "Can not use LAM when using GT actions. Please choose either."
+    if not args.use_gt_actions:
+        del genie.lam.decoder
     return genie, rng
 
 
@@ -168,12 +174,13 @@ def build_optimizer(genie: Genie, args: Args) -> tuple[nnx.Optimizer, optax.Sche
 
 def build_mesh_and_sharding(
     num_devices: int,
-) -> tuple[Mesh, NamedSharding, NamedSharding]:
+) -> tuple[Mesh, NamedSharding, NamedSharding, NamedSharding]:
     device_mesh_arr = create_device_mesh((num_devices,))
     mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
     videos_sharding = NamedSharding(mesh, PartitionSpec("data", None, None, None, None))
-    return mesh, replicated_sharding, videos_sharding
+    actions_sharding = NamedSharding(mesh, PartitionSpec("data", None))
+    return mesh, replicated_sharding, videos_sharding, actions_sharding
 
 
 def shard_optimizer_states(
@@ -328,17 +335,11 @@ def _calculate_step_metrics(
     recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
     psnr = jnp.asarray(pix.psnr(gt_val, recon)).mean()
     ssim = jnp.asarray(pix.ssim(gt_val, recon)).mean()
-    _, index_counts_lam = jnp.unique_counts(
-        jnp.ravel(outputs["lam_indices"]),
-        size=num_latent_actions,
-        fill_value=0,
-    )
     _, index_counts_tokenizer = jnp.unique_counts(
         jnp.ravel(outputs["video_tokens"]),
         size=num_patch_latents,
         fill_value=0,
     )
-    codebook_usage_lam = (index_counts_lam != 0).mean()
     codebook_usage_tokenizer = (index_counts_tokenizer != 0).mean()
     metrics = dict(
         cross_entropy_loss=ce_loss,
@@ -348,9 +349,16 @@ def _calculate_step_metrics(
         entropy=jax.scipy.special.entr(select_probs).sum(-1).mean(),
         psnr=psnr,
         ssim=ssim,
-        codebook_usage_lam=codebook_usage_lam,
         codebook_usage_tokenizer=codebook_usage_tokenizer,
     )
+    if "lam_indices" in outputs.keys():
+        _, index_counts_lam = jnp.unique_counts(
+            jnp.ravel(outputs["lam_indices"]),
+            size=num_latent_actions,
+            fill_value=0,
+        )
+        codebook_usage_lam = (index_counts_lam != 0).mean()
+        metrics["codebook_usage_lam"] = codebook_usage_lam
     return ce_loss, metrics
 
 
@@ -403,7 +411,9 @@ def main(args: Args) -> None:
     del genie
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
-    _, replicated_sharding, videos_sharding = build_mesh_and_sharding(num_devices)
+    _, replicated_sharding, videos_sharding, actions_sharding = build_mesh_and_sharding(
+        num_devices
+    )
 
     shard_optimizer_states(optimizer, replicated_sharding)
 
@@ -512,13 +522,13 @@ def main(args: Args) -> None:
         metrics_per_step = []
         loss_full_frame_per_step = []
         metrics_full_frame_per_step = []
-        inputs = None
+        batch = None
         recon = None
         recon_full_frame = None
-        for videos in val_dataloader:
+        for batch in val_dataloader:
             rng, _rng_mask = jax.random.split(rng, 2)
-            inputs = dict(videos=videos, rng=_rng_mask)
-            val_outputs = val_step(genie, inputs)
+            batch["rng"] = _rng_mask
+            val_outputs = val_step(genie, batch)
             loss_per_step.append(val_outputs["loss"])
             metrics_per_step.append(val_outputs["metrics"])
             if args.eval_full_frame:
@@ -547,35 +557,57 @@ def main(args: Args) -> None:
             }
             val_metrics.update(val_metrics_full_frame)
             val_metrics["val_loss_full_frame"] = np.mean(loss_full_frame_per_step)
-        return val_dataloader, val_metrics, inputs, recon, recon_full_frame
+        return val_dataloader, val_metrics, batch, recon, recon_full_frame
 
     # --- TRAIN LOOP ---
     dataloader_train = (
-        jax.make_array_from_process_local_data(videos_sharding, elem)
+        {
+            "videos": jax.make_array_from_process_local_data(
+                videos_sharding, local_data=elem["videos"]
+            ),
+            "actions": (
+                jax.make_array_from_process_local_data(
+                    actions_sharding, elem["actions"]
+                )
+                if args.use_gt_actions
+                else None
+            ),
+        }
         for elem in train_iterator
     )
     dataloader_val = None
     if val_iterator:
         dataloader_val = (
-            jax.make_array_from_process_local_data(videos_sharding, elem)
+            {
+                "videos": jax.make_array_from_process_local_data(
+                    videos_sharding, elem["videos"]
+                ),
+                "actions": (
+                    jax.make_array_from_process_local_data(
+                        actions_sharding, elem["actions"]
+                    )
+                    if args.use_gt_actions
+                    else None
+                ),
+            }
             for elem in val_iterator
         )
     if jax.process_index() == 0:
-        first_videos = next(dataloader_train)
-        sample_inputs = dict(videos=first_videos, rng=rng)
-        compiled = train_step.lower(optimizer, sample_inputs).compile()
+        first_batch = next(dataloader_train)
+        first_batch["rng"] = rng  # type: ignore
+        compiled = train_step.lower(optimizer, first_batch).compile()
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
         # Do not skip the first batch during training
-        dataloader_train = itertools.chain([first_videos], dataloader_train)
+        dataloader_train = itertools.chain([first_batch], dataloader_train)
     print(f"Starting training from step {step}...")
     first_step = step
     while step < args.num_steps:
-        for videos in dataloader_train:
+        for batch in dataloader_train:
             # --- Train step ---
             rng, _rng_mask = jax.random.split(rng, 2)
-            inputs = dict(videos=videos, rng=_rng_mask)
-            loss, recon, metrics = train_step(optimizer, inputs)
+            batch["rng"] = _rng_mask
+            loss, recon, metrics = train_step(optimizer, batch)
             if step == first_step:
                 print_mem_stats("After params initialized")
             metrics["lr"] = lr_schedule(step)
@@ -612,7 +644,7 @@ def main(args: Args) -> None:
                         log_dict.update(val_results["metrics"])
                     wandb.log(log_dict)
                 if step % args.log_image_interval == 0:
-                    gt_seq = inputs["videos"][0].astype(jnp.float32) / 255.0
+                    gt_seq = batch["videos"][0].astype(jnp.float32) / 255.0
                     recon_seq = recon[0].clip(0, 1)
                     comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
                     comparison_seq = einops.rearrange(
