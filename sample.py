@@ -50,6 +50,7 @@ class Args:
     lam_patch_size: int = 16
     lam_num_blocks: int = 4
     lam_num_heads: int = 8
+    use_gt_actions: bool = False
     # Dynamics checkpoint
     dyna_type: str = "maskgit"
     dyna_dim: int = 512
@@ -99,6 +100,7 @@ if __name__ == "__main__":
         lam_num_blocks=args.lam_num_blocks,
         lam_num_heads=args.lam_num_heads,
         lam_co_train=False,
+        use_gt_actions=args.use_gt_actions,
         # Dynamics
         dyna_type=args.dyna_type,
         dyna_dim=args.dyna_dim,
@@ -113,8 +115,10 @@ if __name__ == "__main__":
         rngs=rngs,
     )
 
+    del genie.tokenizer.vq.drop
     # Need to delete lam decoder for checkpoint loading
-    del genie.lam.decoder
+    if not args.use_gt_actions:
+        del genie.lam.decoder
 
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
     handler_registry.add(
@@ -169,10 +173,9 @@ if __name__ == "__main__":
         return frames
 
     # --- Define autoregressive sampling loop ---
-    def _autoreg_sample(genie, rng, video_batch_BSHWC, action_batch_E):
-        input_video_BTHWC = video_batch_BSHWC[:, : args.start_frame]
-        rng, _rng = jax.random.split(rng)
-        batch = dict(videos=input_video_BTHWC, latent_actions=action_batch_E, rng=_rng)
+    def _autoreg_sample(genie, rng, batch):
+        batch["videos"] = batch["videos"][:, : args.start_frame]
+        batch["rng"] = rng
         generated_vid_BSHWC = _sampling_fn(genie, batch)
         return generated_vid_BSHWC
 
@@ -195,15 +198,17 @@ if __name__ == "__main__":
         seed=args.seed,
     )
     dataloader = iter(dataloader)
-    video_batch_BSHWC = next(dataloader)
-    gt_video = jnp.asarray(video_batch_BSHWC, dtype=jnp.float32) / 255.0
-    video_batch_BSHWC = gt_video.astype(args.dtype)
+    batch = next(dataloader)
+    gt_video = jnp.asarray(batch["videos"], dtype=jnp.float32) / 255.0
+    batch["videos"] = gt_video.astype(args.dtype)
     # Get latent actions for all videos in the batch
-    batch = dict(videos=video_batch_BSHWC)
-    action_batch_E = genie.vq_encode(batch, training=False)
+    action_batch_E = None
+    if not args.use_gt_actions:
+        action_batch_E = genie.vq_encode(batch, training=False)
+        batch["latent_actions"] = action_batch_E
 
     # --- Sample + evaluate video ---
-    recon_video_BSHWC = _autoreg_sample(genie, rng, video_batch_BSHWC, action_batch_E)
+    recon_video_BSHWC = _autoreg_sample(genie, rng, batch)
     recon_video_BSHWC = recon_video_BSHWC.astype(jnp.float32)
     gt = (
         gt_video[:, : recon_video_BSHWC.shape[1]]
@@ -227,13 +232,16 @@ if __name__ == "__main__":
     # --- Save video ---
     imgs = [Image.fromarray(img) for img in frames]
     # Write actions on each frame, on each row (i.e., for each video in the batch, on the GT row)
-    B, S, _, _, _ = video_batch_BSHWC.shape
-    action_batch_BSm11 = jnp.reshape(action_batch_E, (B, S - 1, 1))
+    B, S, _, _, _ = batch["videos"].shape
+    if action_batch_E is not None:
+        action_batch_BSm11 = jnp.reshape(action_batch_E, (B, S - 1, 1))
+    else:
+        action_batch_BSm11 = jnp.expand_dims(batch["actions"][:, 1:], -1)
     for t, img in enumerate(imgs[1:]):
         d = ImageDraw.Draw(img)
-        for row in range(action_batch_BSm11.shape[0]):
+        for row in range(B):
             action = action_batch_BSm11[row, t, 0]
-            y_offset = row * video_batch_BSHWC.shape[2] + 2
+            y_offset = row * batch["videos"].shape[2] + 2
             d.text((2, y_offset), f"{action}", fill=255)
     imgs[0].save(
         f"generation_{time.time()}.gif",

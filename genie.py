@@ -237,7 +237,6 @@ class Genie(nnx.Module):
         assert isinstance(self.dynamics, DynamicsMaskGIT)
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
-        latent_actions_E = batch["latent_actions"]
         tokenizer_out = self.tokenizer.vq_encode(videos_BTHWC, training=False)
         token_idxs_BTN = tokenizer_out["indices"]
         B, T, N = token_idxs_BTN.shape
@@ -247,7 +246,15 @@ class Genie(nnx.Module):
         init_logits_BSNV = jnp.zeros(
             shape=(*token_idxs_BSN.shape, self.num_patch_latents)
         )
-        action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
+        if self.use_gt_actions:
+            latent_actions_BT1L = jax.nn.one_hot(
+                batch["actions"], num_classes=self.latent_action_dim
+            ).reshape(*batch["actions"].shape[:2], 1, self.latent_action_dim)
+            latent_actions_BTm11L = latent_actions_BT1L[:, 1:]
+            action_tokens_EL = latent_actions_BTm11L.reshape(-1, self.latent_action_dim)
+        else:
+            latent_actions_E = batch["latent_actions"]
+            action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
 
         # --- Extract submodule state ---
         dynamics_state = nnx.state(self.dynamics)
@@ -417,7 +424,6 @@ class Genie(nnx.Module):
         assert isinstance(self.dynamics, DynamicsCausal)
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
-        latent_actions_E = batch["latent_actions"]
         tokenizer_out = self.tokenizer.vq_encode(videos_BTHWC, training=False)
         token_idxs_BTN = tokenizer_out["indices"]
         B, T, N = token_idxs_BTN.shape
@@ -425,8 +431,17 @@ class Genie(nnx.Module):
         pad = jnp.zeros(pad_shape, dtype=token_idxs_BTN.dtype)
         token_idxs_BSN = jnp.concatenate([token_idxs_BTN, pad], axis=1)
         logits_BSNV = jnp.zeros((*token_idxs_BSN.shape, self.num_patch_latents))
-        action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
         dynamics_state = nnx.state(self.dynamics)
+
+        if self.use_gt_actions:
+            latent_actions_BT1L = jax.nn.one_hot(
+                batch["actions"], num_classes=self.latent_action_dim
+            ).reshape(*batch["actions"].shape[:2], 1, self.latent_action_dim)
+            latent_actions_BTm11L = latent_actions_BT1L[:, 1:]
+            action_tokens_EL = latent_actions_BTm11L.reshape(-1, self.latent_action_dim)
+        else:
+            latent_actions_E = batch["latent_actions"]
+            action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
         def causal_step_fn(
