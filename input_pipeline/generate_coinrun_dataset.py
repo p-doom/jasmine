@@ -28,50 +28,74 @@ class Args:
 
 
 args = tyro.cli(Args)
-assert args.max_episode_length >= args.min_episode_length, "Maximum episode length must be greater than or equal to minimum episode length."
+assert (
+    args.max_episode_length >= args.min_episode_length
+), "Maximum episode length must be greater than or equal to minimum episode length."
 
 if args.min_episode_length < args.chunk_size:
-    print("Warning: Minimum episode length is smaller than chunk size. Note that episodes shorter than the chunk size will be discarded.")
+    print(
+        "Warning: Minimum episode length is smaller than chunk size. Note that episodes shorter than the chunk size will be discarded."
+    )
+
 
 # --- Generate episodes ---
 def generate_episodes(num_episodes, split):
     episode_idx = 0
     episode_metadata = []
-    chunks = []
+    obs_chunks = []
+    act_chunks = []
     file_idx = 0
     output_dir_split = os.path.join(args.output_dir, split)
     while episode_idx < num_episodes:
         seed = np.random.randint(0, 10000)
         env = ProcgenGym3Env(num=1, env_name="coinrun", start_level=seed)
-    
+
         observations_seq = []
-        episode_chunks = []
+        actions_seq = []
+        episode_obs_chunks = []
+        episode_act_chunks = []
 
         # --- Run episode ---
+        step_t = 0
         for step_t in range(args.max_episode_length):
-            env.act(types_np.sample(env.ac_space, bshape=(env.num,)))
+            action = types_np.sample(env.ac_space, bshape=(env.num,))
+            env.act(action)
             _, obs, first = env.observe()
             observations_seq.append(obs["rgb"])
+            actions_seq.append(action)
             if len(observations_seq) == args.chunk_size:
-                episode_chunks.append(observations_seq)
+                episode_obs_chunks.append(observations_seq)
+                episode_act_chunks.append(actions_seq)
                 observations_seq = []
+                actions_seq = []
             if first:
                 break
 
         # --- Save episode ---
-        if step_t + 1  >= args.min_episode_length:
-            if len(observations_seq) < args.chunk_size:
-                print(
-                    f"Warning: Inconsistent chunk_sizes. Episode has {len(observations_seq)} frames, "
-                    f"which is smaller than the requested chunk_size: {args.chunk_size}. "
-                    "This might lead to performance degradation during training."
-                )
-            episode_chunks.append(observations_seq)
-            chunks_data = [np.concatenate(seq, axis=0).astype(np.uint8) for seq in episode_chunks]
-            chunks.extend(chunks_data)
+        if step_t + 1 >= args.min_episode_length:
+            if observations_seq:
+                if len(observations_seq) < args.chunk_size:
+                    print(
+                        f"Warning: Inconsistent chunk_sizes. Episode has {len(observations_seq)} frames, "
+                        f"which is smaller than the requested chunk_size: {args.chunk_size}. "
+                        "This might lead to performance degradation during training."
+                    )
+                episode_obs_chunks.append(observations_seq)
+                episode_act_chunks.append(actions_seq)
 
+            obs_chunks_data = [
+                np.concatenate(seq, axis=0).astype(np.uint8)
+                for seq in episode_obs_chunks
+            ]
+            act_chunks_data = [
+                np.concatenate(act, axis=0) for act in episode_act_chunks
+            ]
+            obs_chunks.extend(obs_chunks_data)
+            act_chunks.extend(act_chunks_data)
 
-            ep_metadata, chunks, file_idx = save_chunks(chunks, file_idx, args.chunks_per_file, output_dir_split)
+            ep_metadata, obs_chunks, file_idx, act_chunks = save_chunks(
+                obs_chunks, file_idx, args.chunks_per_file, output_dir_split, act_chunks
+            )
             episode_metadata.extend(ep_metadata)
 
             print(f"Episode {episode_idx} completed, length: {step_t + 1}.")
@@ -79,12 +103,19 @@ def generate_episodes(num_episodes, split):
         else:
             print(f"Episode too short ({step_t + 1}), resampling...")
 
-    if len(chunks) > 0:
-        print(f"Warning: Dropping {len(chunks)} chunks for consistent number of chunks per file.",
-        "Consider changing the chunk_size and chunks_per_file parameters to prevent data-loss.")
+    if len(obs_chunks) > 0:
+        print(
+            f"Warning: Dropping {len(obs_chunks)} chunks for consistent number of chunks per file.",
+            "Consider changing the chunk_size and chunks_per_file parameters to prevent data-loss.",
+        )
 
     print(f"Done generating {split} split")
     return episode_metadata
+
+
+def get_action_space():
+    env = ProcgenGym3Env(num=1, env_name="coinrun", start_level=0)
+    return env.ac_space.eltype.n
 
 
 def main():
@@ -98,22 +129,28 @@ def main():
     # --- Save metadata ---
     metadata = {
         "env": "coinrun",
+        "num_actions": get_action_space(),
         "num_episodes_train": args.num_episodes_train,
         "num_episodes_val": args.num_episodes_val,
         "num_episodes_test": args.num_episodes_test,
-        "avg_episode_len_train": np.mean([ep["avg_seq_len"] for ep in train_episode_metadata]),
-        "avg_episode_len_val": np.mean([ep["avg_seq_len"] for ep in val_episode_metadata]),
-        "avg_episode_len_test": np.mean([ep["avg_seq_len"] for ep in test_episode_metadata]),
+        "avg_episode_len_train": np.mean(
+            [ep["avg_seq_len"] for ep in train_episode_metadata]
+        ),
+        "avg_episode_len_val": np.mean(
+            [ep["avg_seq_len"] for ep in val_episode_metadata]
+        ),
+        "avg_episode_len_test": np.mean(
+            [ep["avg_seq_len"] for ep in test_episode_metadata]
+        ),
         "episode_metadata_train": train_episode_metadata,
         "episode_metadata_val": val_episode_metadata,
         "episode_metadata_test": test_episode_metadata,
-
     }
     with open(os.path.join(args.output_dir, "metadata.json"), "w") as f:
         json.dump(metadata, f)
 
     print(f"Done generating dataset.")
 
+
 if __name__ == "__main__":
     main()
-
