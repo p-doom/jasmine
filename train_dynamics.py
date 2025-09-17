@@ -708,7 +708,7 @@ def main(args: Args) -> None:
             # --- Checkpointing ---
             if args.save_ckpt and step % args.log_checkpoint_interval == 0:
                 optimizer_state = nnx.state(optimizer)
-                if args.val_data_dir:
+                if val_iterator:
                     ckpt_manager_args = ocp.args.Composite(
                         model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
                         train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
