@@ -547,7 +547,7 @@ def main(args: Args) -> None:
             }
             val_metrics.update(val_metrics_full_frame)
             val_metrics["val_loss_full_frame"] = np.mean(loss_full_frame_per_step)
-        return val_dataloader, val_metrics, inputs, recon, recon_full_frame
+        return val_metrics, inputs, recon, recon_full_frame
 
     # --- TRAIN LOOP ---
     dataloader_train = (
@@ -587,14 +587,10 @@ def main(args: Args) -> None:
             if dataloader_val and step % args.val_interval == 0:
                 rng, _rng_mask_val = jax.random.split(rng, 2)
                 print("Calculating validation metrics...")
-                (
-                    dataloader_val,
-                    val_metrics,
-                    val_gt_batch,
-                    val_recon,
-                    val_recon_full_frame,
-                ) = calculate_validation_metrics(
-                    dataloader_val, optimizer.model, _rng_mask_val
+                val_metrics, val_gt_batch, val_recon, val_recon_full_frame = (
+                    calculate_validation_metrics(
+                        dataloader_val, optimizer.model, _rng_mask_val
+                    )
                 )
                 print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
                 val_results = {
