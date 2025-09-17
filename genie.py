@@ -187,7 +187,7 @@ class Genie(nnx.Module):
         elif self.dyna_type == "causal":
             return self.sample_causal(batch, seq_len, temperature, sample_argmax)
         else:
-            assert False, "Dynamics model type unknown."
+            raise ValueError(f"Dynamics model type unknown: {self.dyna_type}")
 
     def sample_maskgit(
         self,
