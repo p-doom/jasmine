@@ -11,7 +11,6 @@ from procgen import ProcgenGym3Env
 import tyro
 import json
 import os
-import os
 from utils import save_chunks
 
 
