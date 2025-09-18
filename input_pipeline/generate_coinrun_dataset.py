@@ -22,7 +22,7 @@ class Args:
     output_dir: str = "data/coinrun_episodes"
     min_episode_length: int = 1000
     max_episode_length: int = 1000
-    chunk_size: int = 100
+    chunk_size: int = 160
     chunks_per_file: int = 100
     seed: int = 0
 
