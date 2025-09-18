@@ -42,7 +42,7 @@ def _chunk_and_save_video(
     Reprocess a single ArrayRecord file by splitting videos into chunks.
 
     Args:
-        video_file_name: Name of the video file 
+        video_file_name: Name of the video file
         output_folder: Output folder for the chunked files
         chunk_size: Number of frames per video chunk
         chunks_per_file: Number of video chunks per output file
@@ -85,7 +85,13 @@ def _chunk_and_save_video(
             writer.write(pickle.dumps(chunk))
         writer.close()
 
-        output_files.append({"path": output_file, "length": chunk_size, "video_file_name": video_file_name})
+        output_files.append(
+            {
+                "path": output_file,
+                "length": chunk_size,
+                "video_file_name": video_file_name,
+            }
+        )
         print(f"Created {output_filename} with {len(batch_chunks)} video chunks")
 
     print(
@@ -94,12 +100,18 @@ def _chunk_and_save_video(
     return output_files
 
 
-
 def preprocess_video(
-    idx, in_filename, output_path, target_width, target_height, target_fps, chunk_size, chunks_per_file
+    idx,
+    in_filename,
+    output_path,
+    target_width,
+    target_height,
+    target_fps,
+    chunk_size,
+    chunks_per_file,
 ):
     """
-    Preprocess a video file by reading it, resizing, changing its frame rate, 
+    Preprocess a video file by reading it, resizing, changing its frame rate,
     and then chunking it into smaller segments to be saved as ArrayRecord files.
 
     Args:
@@ -132,16 +144,19 @@ def preprocess_video(
             n_frames, target_height, target_width, 3
         )
 
-        result = _chunk_and_save_video(video_tensor=frames,
-                                        video_file_name=in_filename, 
-                                        output_folder=output_path, 
-                                        chunk_size=chunk_size, 
-                                        chunks_per_file=chunks_per_file, 
-                                        file_index=idx)
+        result = _chunk_and_save_video(
+            video_tensor=frames,
+            video_file_name=in_filename,
+            output_folder=output_path,
+            chunk_size=chunk_size,
+            chunks_per_file=chunks_per_file,
+            file_index=idx,
+        )
         return result
     except Exception as e:
         print(f"Error processing video {idx} ({in_filename}): {e}")
         return [{"path": "", "length": 0, "video_file_name": in_filename}]
+
 
 def save_split(pool_args):
     num_processes = mp.cpu_count()
@@ -152,6 +167,7 @@ def save_split(pool_args):
             results.extend(result)
     return results
 
+
 def main():
     args = tyro.cli(Args)
 
@@ -160,12 +176,12 @@ def main():
     total_ratio = args.train_ratio + args.val_ratio + args.test_ratio
     assert np.isclose(total_ratio, 1.0), "Ratios must sum to 1.0"
 
-
     print("Converting video to array_record files...")
-    input_files = [os.path.join(args.input_path, in_filename) 
-                    for in_filename in os.listdir(args.input_path)
-                    if in_filename.endswith(".mp4") or in_filename.endswith(".webm") 
-                    ]
+    input_files = [
+        os.path.join(args.input_path, in_filename)
+        for in_filename in os.listdir(args.input_path)
+        if in_filename.endswith(".mp4") or in_filename.endswith(".webm")
+    ]
     n_total = len(input_files)
     n_train = int(n_total * args.train_ratio)
     n_val = int(n_total * args.val_ratio)
@@ -173,8 +189,8 @@ def main():
     np.random.shuffle(input_files)
     file_splits = {
         "train": input_files[:n_train],
-        "val": input_files[n_train:n_train + n_val],
-        "test": input_files[n_train + n_val :]
+        "val": input_files[n_train : n_train + n_val],
+        "test": input_files[n_train + n_val :],
     }
 
     pool_args = dict()
@@ -182,17 +198,19 @@ def main():
         pool_args[split] = []
         os.makedirs(os.path.join(args.output_path, split), exist_ok=True)
         for idx, in_filename in enumerate(file_splits[split]):
-            pool_args[split].append((
-                idx,
-                in_filename,
-                os.path.join(args.output_path, split),
-                args.target_width,
-                args.target_height,
-                args.target_fps,
-                args.chunk_size,
-                args.chunks_per_file
-            ))
-        
+            pool_args[split].append(
+                (
+                    idx,
+                    in_filename,
+                    os.path.join(args.output_path, split),
+                    args.target_width,
+                    args.target_height,
+                    args.target_fps,
+                    args.chunk_size,
+                    args.chunks_per_file,
+                )
+            )
+
     train_episode_metadata = save_split(pool_args["train"])
     val_episode_metadata = save_split(pool_args["val"])
     test_episode_metadata = save_split(pool_args["test"])
@@ -214,7 +232,9 @@ def main():
         "total_videos": len(input_files),
         "num_successful_videos": len(input_files) - len(failed_videos),
         "num_failed_videos": len(failed_videos),
-        "avg_episode_len_train": np.mean([ep["length"] for ep in train_episode_metadata]),
+        "avg_episode_len_train": np.mean(
+            [ep["length"] for ep in train_episode_metadata]
+        ),
         "avg_episode_len_val": np.mean([ep["length"] for ep in val_episode_metadata]),
         "avg_episode_len_test": np.mean([ep["length"] for ep in test_episode_metadata]),
         "episode_metadata_train": train_episode_metadata,

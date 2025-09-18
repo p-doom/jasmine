@@ -229,7 +229,7 @@ def restore_checkpoint_if_needed(
     checkpoint_manager: ocp.CheckpointManager,
     optimizer: nnx.Optimizer,
     train_iterator: grain.DataLoaderIterator,
-    val_iterator: Optional[grain.DataLoaderIterator] = None,
+    val_iterator: Optional[grain.DataLoaderIterator],
     restore_step: Optional[int] = None,
 ) -> tuple[int, nnx.Optimizer, grain.DataLoaderIterator, grain.DataLoaderIterator]:
     step = 0
@@ -324,14 +324,9 @@ def main(args: Args) -> None:
         val_iterator = build_dataloader(args, args.val_data_dir)
 
     # --- Restore checkpoint ---
-    if val_iterator:
-        step, optimizer, train_iterator, val_iterator = restore_checkpoint_if_needed(
-            args, checkpoint_manager, optimizer, train_iterator, val_iterator
-        )
-    else:
-        step, optimizer, train_iterator, _ = restore_checkpoint_if_needed(
-            args, checkpoint_manager, optimizer, train_iterator
-        )
+    step, optimizer, train_iterator, val_iterator = restore_checkpoint_if_needed(
+        args, checkpoint_manager, optimizer, train_iterator, val_iterator
+    )
 
     # --- Define loss and train step (close over args) ---
     def tokenizer_loss_fn(
