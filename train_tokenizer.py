@@ -391,7 +391,7 @@ def main(args: Args) -> None:
             )
         return loss, recon, metrics
 
-    @nnx.jit(donate_argnums=0)
+    @nnx.jit
     def val_step(
         tokenizer: TokenizerVQVAE, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:

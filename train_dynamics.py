@@ -471,7 +471,7 @@ def main(args: Args) -> None:
             )
         return loss, recon, metrics
 
-    @nnx.jit()
+    @nnx.jit
     def val_step(genie: Genie, inputs: dict) -> dict:
         """Evaluate model and compute metrics"""
         genie.eval()
