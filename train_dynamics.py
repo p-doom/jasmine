@@ -531,9 +531,11 @@ def main(args: Args) -> None:
             val_outputs = val_step(genie, batch)
             loss_per_step.append(val_outputs["loss"])
             metrics_per_step.append(val_outputs["metrics"])
+            recon = val_outputs["recon"]
             if args.eval_full_frame:
                 loss_full_frame_per_step.append(val_outputs["loss_full_frame"])
                 metrics_full_frame_per_step.append(val_outputs["metrics_full_frame"])
+                recon_full_frame = val_outputs["recon_full_frame"]
             step += 1
             if step > args.val_steps:
                 break
@@ -651,7 +653,9 @@ def main(args: Args) -> None:
                             val_results["gt_batch"]["videos"][0].astype(jnp.float32)
                             / 255.0
                         )
-                        val_results["recon_seq_val"] = val_results["recon"].clip(0, 1)
+                        val_results["recon_seq_val"] = val_results["recon"][0].clip(
+                            0, 1
+                        )
                         val_comparison_seq = jnp.concatenate(
                             (val_results["gt_seq_val"], val_results["recon_seq_val"]),
                             axis=1,
