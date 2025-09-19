@@ -546,7 +546,7 @@ def main(args: Args) -> None:
                 for key in metrics_full_frame_per_step[0].keys()
             }
             val_metrics.update(val_metrics_full_frame)
-            val_metrics["val_loss_full_frame"] = np.mean(loss_full_frame_per_step)
+            val_metrics["val_full_frame_loss"] = np.mean(loss_full_frame_per_step)
         return val_metrics, inputs, recon, recon_full_frame
 
     # --- TRAIN LOOP ---
