@@ -75,7 +75,7 @@ class DynamicsMaskGIT(nnx.Module):
         self,
         batch: Dict[str, jax.Array],
         training: bool = True,
-    ) -> tuple[jax.Array, jax.Array | None]:
+    ) -> tuple[jax.Array, jax.Array]:
         # --- Mask videos ---
         video_tokens_BTN = batch["video_tokens"]
         latent_actions_BTm11L = batch["latent_actions"]
@@ -168,7 +168,7 @@ class DynamicsCausal(nnx.Module):
         self,
         batch: Dict[str, jax.Array],
         training: bool = True,
-    ) -> tuple[jax.Array, jax.Array | None]:
+    ) -> tuple[jax.Array, jax.Array]:
         video_tokens_BTN = batch["video_tokens"]
         latent_actions_BTm11L = batch["latent_actions"]
         vid_embed_BTNM = self.patch_embed(video_tokens_BTN)
