@@ -183,8 +183,8 @@ def main():
         if in_filename.endswith(".mp4") or in_filename.endswith(".webm")
     ]
     n_total = len(input_files)
-    n_train = int(n_total * args.train_ratio)
-    n_val = int(n_total * args.val_ratio)
+    n_train = round(n_total * args.train_ratio)
+    n_val = round(n_total * args.val_ratio)
 
     np.random.shuffle(input_files)
     file_splits = {
