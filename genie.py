@@ -95,6 +95,9 @@ class Genie(nnx.Module):
             rngs=rngs,
         )
         if self.use_gt_actions:
+            self.action_embed = nnx.Embed(
+                self.latent_action_dim, self.latent_action_dim, rngs=rngs
+            )
             self.lam = None
         else:
             self.lam = LatentActionModel(
@@ -113,6 +116,7 @@ class Genie(nnx.Module):
                 use_flash_attention=self.use_flash_attention,
                 rngs=rngs,
             )
+            self.action_embed = None
         if self.dyna_type == "maskgit":
             self.dynamics = DynamicsMaskGIT(
                 model_dim=self.dyna_dim,
@@ -156,9 +160,9 @@ class Genie(nnx.Module):
         token_indices_BTN = tokenizer_outputs["indices"]
         if self.use_gt_actions:
             action_indices_E = None
-            latent_actions_BT1L = jax.nn.one_hot(
-                batch["actions"], num_classes=self.latent_action_dim
-            ).reshape(*batch["actions"].shape[:2], 1, self.latent_action_dim)
+            latent_actions_BT1L = self.action_embed(batch["actions"]).reshape(
+                *batch["actions"].shape[:2], 1, self.latent_action_dim
+            )
             latent_actions_BTm11L = latent_actions_BT1L[:, 1:]
         else:
             lam_outputs = self.lam.vq_encode(videos_BTHWC, training=False)
@@ -247,9 +251,9 @@ class Genie(nnx.Module):
             shape=(*token_idxs_BSN.shape, self.num_patch_latents)
         )
         if self.use_gt_actions:
-            latent_actions_BT1L = jax.nn.one_hot(
-                batch["actions"], num_classes=self.latent_action_dim
-            ).reshape(*batch["actions"].shape[:2], 1, self.latent_action_dim)
+            latent_actions_BT1L = self.action_embed(batch["actions"]).reshape(
+                *batch["actions"].shape[:2], 1, self.latent_action_dim
+            )
             latent_actions_BTm11L = latent_actions_BT1L[:, 1:]
             action_tokens_EL = latent_actions_BTm11L.reshape(-1, self.latent_action_dim)
         else:
@@ -434,9 +438,9 @@ class Genie(nnx.Module):
         dynamics_state = nnx.state(self.dynamics)
 
         if self.use_gt_actions:
-            latent_actions_BT1L = jax.nn.one_hot(
-                batch["actions"], num_classes=self.latent_action_dim
-            ).reshape(*batch["actions"].shape[:2], 1, self.latent_action_dim)
+            latent_actions_BT1L = self.action_embed(batch["actions"]).reshape(
+                *batch["actions"].shape[:2], 1, self.latent_action_dim
+            )
             latent_actions_BTm11L = latent_actions_BT1L[:, 1:]
             action_tokens_EL = latent_actions_BTm11L.reshape(-1, self.latent_action_dim)
         else:
