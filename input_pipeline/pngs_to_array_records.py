@@ -89,8 +89,8 @@ def save_split(pool_args, chunks_per_file, output_path):
         with mp.Pool(processes=num_processes) as pool:
             for episode_chunks in pool.starmap(preprocess_pngs, args_batch):
                 chunks.extend(episode_chunks)
-        results_batch, chunks, file_idx, _ = save_chunks(
-            chunks, file_idx, chunks_per_file, output_path
+        results_batch, file_idx, chunks, _ = save_chunks(
+            file_idx, chunks_per_file, output_path, chunks
         )
         results.extend(results_batch)
 
