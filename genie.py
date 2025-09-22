@@ -159,12 +159,14 @@ class Genie(nnx.Module):
         tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
         token_indices_BTN = tokenizer_outputs["indices"]
         if self.use_gt_actions:
+            assert self.action_embed is not None
             action_indices_E = None
             latent_actions_BT1L = self.action_embed(batch["actions"]).reshape(
                 *batch["actions"].shape[:2], 1, self.latent_action_dim
             )
             latent_actions_BTm11L = latent_actions_BT1L[:, 1:]
         else:
+            assert self.lam is not None
             lam_outputs = self.lam.vq_encode(videos_BTHWC, training=False)
             z_q_BTm11L = lam_outputs["z_q"]
             action_indices_E = lam_outputs["indices"]
@@ -251,12 +253,14 @@ class Genie(nnx.Module):
             shape=(*token_idxs_BSN.shape, self.num_patch_latents)
         )
         if self.use_gt_actions:
+            assert self.action_embed is not None
             latent_actions_BT1L = self.action_embed(batch["actions"]).reshape(
                 *batch["actions"].shape[:2], 1, self.latent_action_dim
             )
             latent_actions_BTm11L = latent_actions_BT1L[:, 1:]
             action_tokens_EL = latent_actions_BTm11L.reshape(-1, self.latent_action_dim)
         else:
+            assert self.lam is not None
             latent_actions_E = batch["latent_actions"]
             action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
 
@@ -438,12 +442,14 @@ class Genie(nnx.Module):
         dynamics_state = nnx.state(self.dynamics)
 
         if self.use_gt_actions:
+            assert self.action_embed is not None
             latent_actions_BT1L = self.action_embed(batch["actions"]).reshape(
                 *batch["actions"].shape[:2], 1, self.latent_action_dim
             )
             latent_actions_BTm11L = latent_actions_BT1L[:, 1:]
             action_tokens_EL = latent_actions_BTm11L.reshape(-1, self.latent_action_dim)
         else:
+            assert self.lam is not None
             latent_actions_E = batch["latent_actions"]
             action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
 
@@ -543,6 +549,7 @@ class Genie(nnx.Module):
 
     def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
         # --- Preprocess videos ---
+        assert self.lam is not None
         video_BTHWC = batch["videos"]
         lam_output: Dict[str, jax.Array] = self.lam.vq_encode(
             video_BTHWC, training=training
