@@ -158,13 +158,15 @@ class Genie(nnx.Module):
         videos_BTHWC = batch["videos"]
         tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
         token_indices_BTN = tokenizer_outputs["indices"]
+        latent_actions_BTm11L = None
+        action_embeddings_BTm11L = None
         if self.use_gt_actions:
             assert self.action_embed is not None
             action_indices_E = None
-            latent_actions_BT1L = self.action_embed(batch["actions"]).reshape(
+            action_embeddings_BT1L = self.action_embed(batch["actions"]).reshape(
                 *batch["actions"].shape[:2], 1, self.latent_action_dim
             )
-            latent_actions_BTm11L = latent_actions_BT1L[:, 1:]
+            action_embeddings_BTm11L = action_embeddings_BT1L[:, 1:]
         else:
             assert self.lam is not None
             lam_outputs = self.lam.vq_encode(videos_BTHWC, training=False)
@@ -177,7 +179,11 @@ class Genie(nnx.Module):
             )
         outputs = dict(
             video_tokens=jax.lax.stop_gradient(token_indices_BTN),
-            latent_actions=latent_actions_BTm11L,
+            latent_actions=(
+                action_embeddings_BTm11L
+                if self.use_gt_actions
+                else latent_actions_BTm11L
+            ),
         )
         outputs["mask_rng"] = batch["rng"]
         dyna_logits_BTNV, dyna_mask = self.dynamics(outputs, training)
