@@ -143,10 +143,12 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
         decode=False,
         rngs=rngs,
     )
-    assert not (
-        args.lam_checkpoint and args.use_gt_actions
-    ), "Can not use LAM when using GT actions. Please choose either."
-    if not args.use_gt_actions:
+    if args.use_gt_actions:
+        assert (
+            not args.lam_checkpoint
+        ), "Cannot use LAM when using ground-truth actions."
+    else:
+        assert genie.lam is not None
         del genie.lam.decoder
     return genie, rng
 

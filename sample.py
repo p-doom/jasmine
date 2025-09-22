@@ -118,6 +118,7 @@ if __name__ == "__main__":
     del genie.tokenizer.vq.drop
     # Need to delete lam decoder for checkpoint loading
     if not args.use_gt_actions:
+        assert genie.lam is not None
         del genie.lam.decoder
 
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
