@@ -15,11 +15,11 @@ from utils import save_chunks
 
 @dataclass
 class Args:
-    num_episodes_train: int = 500000
+    num_episodes_train: int = 5000000
     num_episodes_val: int = 25000
     num_episodes_test: int = 25000
     output_dir: str = "data/breakout_episodes"
-    min_episode_length: int = 20  # Breakout episodes are shorter than CoinRun
+    min_episode_length: int = 20
     max_episode_length: int = 500
     chunk_size: int = 50
     chunks_per_file: int = 100
@@ -80,7 +80,7 @@ def generate_episodes(num_episodes: int, split: str):
     os.makedirs(output_dir_split, exist_ok=True)
 
     while episode_idx < num_episodes:
-        env = Environment("breakout", sticky_action_prob=0.1)  # typical MinAtar setup
+        env = Environment("breakout", sticky_action_prob=0.0)  # typical MinAtar setup
         env.reset()
         obs_seq, act_seq = [], []
         episode_obs_chunks, episode_act_chunks = [], []
