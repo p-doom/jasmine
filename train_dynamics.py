@@ -67,7 +67,7 @@ class Args:
     lam_dim: int = 512
     lam_ffn_dim: int = 2048
     latent_action_dim: int = 32
-    num_latent_actions: int = 6
+    num_actions: int = 6
     lam_patch_size: int = 16
     lam_num_blocks: int = 4
     lam_num_heads: int = 8
@@ -123,7 +123,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
         lam_dim=args.lam_dim,
         lam_ffn_dim=args.lam_ffn_dim,
         latent_action_dim=args.latent_action_dim,
-        num_latent_actions=args.num_latent_actions,
+        num_actions=args.num_actions,
         lam_patch_size=args.lam_patch_size,
         lam_num_blocks=args.lam_num_blocks,
         lam_num_heads=args.lam_num_heads,
@@ -143,10 +143,12 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
         decode=False,
         rngs=rngs,
     )
-    assert not (
-        args.lam_checkpoint and args.use_gt_actions
-    ), "Can not use LAM when using GT actions. Please choose either."
-    if not args.use_gt_actions:
+    if args.use_gt_actions:
+        assert (
+            not args.lam_checkpoint
+        ), "Cannot use LAM when using ground-truth actions."
+    else:
+        assert genie.lam is not None
         del genie.lam.decoder
     return genie, rng
 
@@ -319,7 +321,7 @@ def restore_or_initialize_components(
 def _calculate_step_metrics(
     outputs: dict[str, jax.Array],
     gt: jax.Array,
-    num_latent_actions: int,
+    num_actions: int,
     num_patch_latents: int,
 ) -> tuple[jax.Array, dict]:
     mask = outputs["mask"]
@@ -354,7 +356,7 @@ def _calculate_step_metrics(
     if "lam_indices" in outputs.keys():
         _, index_counts_lam = jnp.unique_counts(
             jnp.ravel(outputs["lam_indices"]),
-            size=num_latent_actions,
+            size=num_actions,
             fill_value=0,
         )
         codebook_usage_lam = (index_counts_lam != 0).mean()
@@ -449,7 +451,7 @@ def main(args: Args) -> None:
         inputs["videos"] = gt.astype(args.dtype)
         outputs = model(inputs, training=training)
         ce_loss, metrics = _calculate_step_metrics(
-            outputs, gt, args.num_latent_actions, args.num_patch_latents
+            outputs, gt, args.num_actions, args.num_patch_latents
         )
         return ce_loss, (outputs["recon"], metrics)
 
@@ -505,7 +507,7 @@ def main(args: Args) -> None:
                 "lam_indices": lam_indices,
             }
             loss_full_frame, metrics_full_frame = _calculate_step_metrics(
-                step_outputs, gt, args.num_latent_actions, args.num_patch_latents
+                step_outputs, gt, args.num_actions, args.num_patch_latents
             )
             val_output.update(
                 {
@@ -531,9 +533,11 @@ def main(args: Args) -> None:
             val_outputs = val_step(genie, batch)
             loss_per_step.append(val_outputs["loss"])
             metrics_per_step.append(val_outputs["metrics"])
+            recon = val_outputs["recon"]
             if args.eval_full_frame:
                 loss_full_frame_per_step.append(val_outputs["loss_full_frame"])
                 metrics_full_frame_per_step.append(val_outputs["metrics_full_frame"])
+                recon_full_frame = val_outputs["recon_full_frame"]
             step += 1
             if step > args.val_steps:
                 break
@@ -610,8 +614,8 @@ def main(args: Args) -> None:
             loss, recon, metrics = train_step(optimizer, batch)
             if step == first_step:
                 print_mem_stats("After params initialized")
-            metrics["lr"] = lr_schedule(step)
-            print(f"Step {step}, loss: {loss}")
+            # metrics["lr"] = lr_schedule(step)
+            # print(f"Step {step}, loss: {loss}")
             step += 1
 
             # --- Validation loss ---
@@ -651,7 +655,9 @@ def main(args: Args) -> None:
                             val_results["gt_batch"]["videos"][0].astype(jnp.float32)
                             / 255.0
                         )
-                        val_results["recon_seq_val"] = val_results["recon"].clip(0, 1)
+                        val_results["recon_seq_val"] = val_results["recon"][0].clip(
+                            0, 1
+                        )
                         val_comparison_seq = jnp.concatenate(
                             (val_results["gt_seq_val"], val_results["recon_seq_val"]),
                             axis=1,
@@ -736,7 +742,7 @@ def main(args: Args) -> None:
             # --- Checkpointing ---
             if args.save_ckpt and step % args.log_checkpoint_interval == 0:
                 optimizer_state = nnx.state(optimizer)
-                if args.val_data_dir:
+                if val_iterator:
                     ckpt_manager_args = ocp.args.Composite(
                         model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
                         train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore

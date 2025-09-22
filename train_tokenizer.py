@@ -238,7 +238,7 @@ def restore_checkpoint_if_needed(
     if args.restore_ckpt:
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
         abstract_optimizer_state = nnx.state(abstract_optimizer)
-        if args.val_data_dir:
+        if val_iterator:
             restore_args = ocp.args.Composite(
                 model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
                 train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
@@ -253,7 +253,7 @@ def restore_checkpoint_if_needed(
         restored_optimizer_state = restored["model_state"]
         nnx.update(optimizer, restored_optimizer_state)
         train_iterator = restored["train_dataloader_state"]
-        if args.val_data_dir:
+        if val_iterator:
             val_iterator = restored["val_dataloader_state"]
         step = restore_step or 0
         print(f"Restored dataloader and model state from step {step}")
@@ -487,7 +487,7 @@ def main(args: Args) -> None:
                     comparison_seq = einops.rearrange(
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
-                    if args.val_data_dir and step % args.val_interval == 0:
+                    if val_results and step % args.val_interval == 0:
                         val_results["gt_seq_val"] = (
                             val_results["gt_batch"]["videos"][0].astype(jnp.float32)
                             / 255.0
@@ -514,7 +514,7 @@ def main(args: Args) -> None:
                                 np.asarray(comparison_seq.astype(np.uint8))
                             ),
                         )
-                        if args.val_data_dir and step % args.val_interval == 0:
+                        if val_results and step % args.val_interval == 0:
                             log_images.update(
                                 dict(
                                     val_image=wandb.Image(
@@ -536,7 +536,7 @@ def main(args: Args) -> None:
             # --- Checkpointing ---
             if args.save_ckpt and step % args.log_checkpoint_interval == 0:
                 optimizer_state = nnx.state(optimizer)
-                if args.val_data_dir:
+                if val_iterator:
                     ckpt_manager_args = ocp.args.Composite(
                         model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
                         train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore

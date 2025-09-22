@@ -4,7 +4,7 @@ import numpy as np
 from array_record.python.array_record_module import ArrayRecordWriter
 
 
-def save_chunks(obs_chunks, file_idx, chunks_per_file, output_dir, act_chunks=None):
+def save_chunks(file_idx, chunks_per_file, output_dir, obs_chunks, act_chunks=None):
     os.makedirs(output_dir, exist_ok=True)
 
     metadata = []
@@ -42,4 +42,4 @@ def save_chunks(obs_chunks, file_idx, chunks_per_file, output_dir, act_chunks=No
         )
         print(f"Created {episode_path} with {len(chunk_batch)} video chunks")
 
-    return metadata, obs_chunks, file_idx, act_chunks
+    return metadata, file_idx, obs_chunks, act_chunks

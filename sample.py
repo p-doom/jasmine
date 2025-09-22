@@ -46,7 +46,7 @@ class Args:
     lam_dim: int = 512
     lam_ffn_dim: int = 2048
     latent_action_dim: int = 32
-    num_latent_actions: int = 6
+    num_actions: int = 6
     lam_patch_size: int = 16
     lam_num_blocks: int = 4
     lam_num_heads: int = 8
@@ -95,7 +95,7 @@ if __name__ == "__main__":
         lam_dim=args.lam_dim,
         lam_ffn_dim=args.lam_ffn_dim,
         latent_action_dim=args.latent_action_dim,
-        num_latent_actions=args.num_latent_actions,
+        num_actions=args.num_actions,
         lam_patch_size=args.lam_patch_size,
         lam_num_blocks=args.lam_num_blocks,
         lam_num_heads=args.lam_num_heads,
@@ -118,6 +118,7 @@ if __name__ == "__main__":
     del genie.tokenizer.vq.drop
     # Need to delete lam decoder for checkpoint loading
     if not args.use_gt_actions:
+        assert genie.lam is not None
         del genie.lam.decoder
 
     handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()

@@ -22,7 +22,7 @@ class Args:
     output_dir: str = "data/coinrun_episodes"
     min_episode_length: int = 1000
     max_episode_length: int = 1000
-    chunk_size: int = 100
+    chunk_size: int = 160
     chunks_per_file: int = 100
     seed: int = 0
 
@@ -57,10 +57,11 @@ def generate_episodes(num_episodes, split):
 
         # --- Run episode ---
         step_t = 0
+        first_obs = True
         for step_t in range(args.max_episode_length):
+            _, obs, first = env.observe()
             action = types_np.sample(env.ac_space, bshape=(env.num,))
             env.act(action)
-            _, obs, first = env.observe()
             observations_seq.append(obs["rgb"])
             actions_seq.append(action)
             if len(observations_seq) == args.chunk_size:
@@ -68,8 +69,9 @@ def generate_episodes(num_episodes, split):
                 episode_act_chunks.append(actions_seq)
                 observations_seq = []
                 actions_seq = []
-            if first:
+            if first and not first_obs:
                 break
+            first_obs = False
 
         # --- Save episode ---
         if step_t + 1 >= args.min_episode_length:
@@ -93,8 +95,8 @@ def generate_episodes(num_episodes, split):
             obs_chunks.extend(obs_chunks_data)
             act_chunks.extend(act_chunks_data)
 
-            ep_metadata, obs_chunks, file_idx, act_chunks = save_chunks(
-                obs_chunks, file_idx, args.chunks_per_file, output_dir_split, act_chunks
+            ep_metadata, file_idx, obs_chunks, act_chunks = save_chunks(
+                file_idx, args.chunks_per_file, output_dir_split, obs_chunks, act_chunks
             )
             episode_metadata.extend(ep_metadata)
 
