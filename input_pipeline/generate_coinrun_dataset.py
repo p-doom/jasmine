@@ -57,10 +57,11 @@ def generate_episodes(num_episodes, split):
 
         # --- Run episode ---
         step_t = 0
+        first_obs = True
         for step_t in range(args.max_episode_length):
+            _, obs, first = env.observe()
             action = types_np.sample(env.ac_space, bshape=(env.num,))
             env.act(action)
-            _, obs, first = env.observe()
             observations_seq.append(obs["rgb"])
             actions_seq.append(action)
             if len(observations_seq) == args.chunk_size:
@@ -68,8 +69,9 @@ def generate_episodes(num_episodes, split):
                 episode_act_chunks.append(actions_seq)
                 observations_seq = []
                 actions_seq = []
-            if first:
+            if first and not first_obs:
                 break
+            first_obs = False
 
         # --- Save episode ---
         if step_t + 1 >= args.min_episode_length:

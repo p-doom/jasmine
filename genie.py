@@ -27,7 +27,7 @@ class Genie(nnx.Module):
         lam_dim: int,
         lam_ffn_dim: int,
         latent_action_dim: int,
-        num_latent_actions: int,
+        num_actions: int,
         lam_patch_size: int,
         lam_num_blocks: int,
         lam_num_heads: int,
@@ -59,7 +59,7 @@ class Genie(nnx.Module):
         self.lam_dim = lam_dim
         self.lam_ffn_dim = lam_ffn_dim
         self.latent_action_dim = latent_action_dim
-        self.num_latent_actions = num_latent_actions
+        self.num_actions = num_actions
         self.lam_patch_size = lam_patch_size
         self.lam_num_blocks = lam_num_blocks
         self.lam_num_heads = lam_num_heads
@@ -96,7 +96,7 @@ class Genie(nnx.Module):
         )
         if self.use_gt_actions:
             self.action_embed = nnx.Embed(
-                self.num_latent_actions, self.latent_action_dim, rngs=rngs
+                self.num_actions, self.latent_action_dim, rngs=rngs
             )
             self.lam = None
         else:
@@ -105,7 +105,7 @@ class Genie(nnx.Module):
                 model_dim=self.lam_dim,
                 ffn_dim=self.lam_ffn_dim,
                 latent_dim=self.latent_patch_dim,
-                num_latents=self.num_latent_actions,
+                num_latents=self.num_actions,
                 patch_size=self.lam_patch_size,
                 num_blocks=self.lam_num_blocks,
                 num_heads=self.lam_num_heads,
@@ -166,7 +166,7 @@ class Genie(nnx.Module):
             action_embeddings_BT1L = self.action_embed(batch["actions"]).reshape(
                 *batch["actions"].shape[:2], 1, self.latent_action_dim
             )
-            action_embeddings_BTm11L = action_embeddings_BT1L[:, 1:]
+            action_embeddings_BTm11L = action_embeddings_BT1L[:, :-1]
         else:
             assert self.lam is not None
             lam_outputs = self.lam.vq_encode(videos_BTHWC, training=False)
@@ -635,7 +635,7 @@ def restore_genie_components(
             model_dim=args.lam_dim,
             ffn_dim=args.lam_ffn_dim,
             latent_dim=args.latent_patch_dim,
-            num_latents=args.num_latent_actions,
+            num_latents=args.num_actions,
             patch_size=args.lam_patch_size,
             num_blocks=args.lam_num_blocks,
             num_heads=args.lam_num_heads,
