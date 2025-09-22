@@ -96,7 +96,7 @@ class Genie(nnx.Module):
         )
         if self.use_gt_actions:
             self.action_embed = nnx.Embed(
-                self.latent_action_dim, self.latent_action_dim, rngs=rngs
+                self.num_latent_actions, self.latent_action_dim, rngs=rngs
             )
             self.lam = None
         else:
