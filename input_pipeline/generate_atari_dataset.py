@@ -526,7 +526,7 @@ if __name__ == "__main__":
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
         if args.capture_dataset:
-            observations_seq.append(next_obs.astype(np.uint8))
+            observations_seq.append(obs.astype(np.uint8))
             actions_seq.append(actions.astype(np.int64))
 
         if "final_info" in infos:
@@ -577,16 +577,18 @@ if __name__ == "__main__":
                             act_chunks.extend(act_chunks_data)
 
                             # Save to the active split
-                            ep_metadata, obs_chunks, next_file_idx, act_chunks = (
-                                save_chunks(
-                                    obs_chunks,
-                                    file_idx_by_split[current_split],
-                                    args.chunks_per_file,
-                                    split_dir,
-                                    act_chunks,
-                                )
+                            (
+                                ep_metadata,
+                                file_idx_by_split[current_split],
+                                obs_chunks,
+                                act_chunks,
+                            ) = save_chunks(
+                                file_idx_by_split[current_split],
+                                args.chunks_per_file,
+                                split_dir,
+                                obs_chunks,
+                                act_chunks,
                             )
-                            file_idx_by_split[current_split] = next_file_idx
                             episode_metadata_by_split[current_split].extend(ep_metadata)
 
                             episodes_captured_per_split[current_split] += 1
