@@ -87,10 +87,10 @@ def generate_episodes(num_episodes: int, split: str):
 
         step_t = 0
         for step_t in range(args.max_episode_length):
-            action = np.random.randint(env.num_actions())
-            _, done = env.act(action)
             obs = env.state()  # shape: (10,10,num_channels)
             obs = _obs_to_rgb(obs)
+            action = np.random.randint(env.num_actions())
+            _, done = env.act(action)
             obs_seq.append(obs.astype(np.uint8))
             act_seq.append(action)
 
