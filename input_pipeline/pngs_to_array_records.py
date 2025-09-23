@@ -7,6 +7,7 @@ import json
 import multiprocessing as mp
 from utils import save_chunks
 
+
 @dataclass
 class Args:
     input_path: str
@@ -22,17 +23,18 @@ class Args:
     chunk_size: int = 160
     chunks_per_file: int = 100
 
+
 def preprocess_pngs(input_dir, original_fps, target_fps, chunk_size, target_width):
     print(f"Processing PNGs in {input_dir}")
     try:
-        png_files = sorted([
-            f for f in os.listdir(input_dir)
-            if f.lower().endswith('.png')
-        ], key=lambda x: int(os.path.splitext(x)[0]))
+        png_files = sorted(
+            [f for f in os.listdir(input_dir) if f.lower().endswith(".png")],
+            key=lambda x: int(os.path.splitext(x)[0]),
+        )
 
         if not png_files:
             print(f"No PNG files found in {input_dir}")
-            return [] 
+            return []
 
         # Downsample indices
         n_total = len(png_files)
@@ -40,7 +42,7 @@ def preprocess_pngs(input_dir, original_fps, target_fps, chunk_size, target_widt
             selected_indices = np.arange(n_total)
         else:
             n_target = int(np.floor(n_total * target_fps / original_fps))
-            selected_indices = np.linspace(0, n_total-1, n_target, dtype=int)
+            selected_indices = np.linspace(0, n_total - 1, n_target, dtype=int)
 
         selected_files = [png_files[i] for i in selected_indices]
 
@@ -53,12 +55,14 @@ def preprocess_pngs(input_dir, original_fps, target_fps, chunk_size, target_widt
             if w != target_width:
                 target_height = int(round(h * (target_width / float(w))))
                 resample_filter = Image.LANCZOS
-                img = img.resize((target_width, target_height), resample=resample_filter)
+                img = img.resize(
+                    (target_width, target_height), resample=resample_filter
+                )
             frames.append(np.array(img))
             if len(frames) == chunk_size:
                 chunks.append(frames)
                 frames = []
-        
+
         if len(frames) < chunk_size:
             print(
                 f"Warning: Inconsistent chunk_sizes. Episode has {len(frames)} frames, "
@@ -73,6 +77,7 @@ def preprocess_pngs(input_dir, original_fps, target_fps, chunk_size, target_widt
         print(f"Error processing {input_dir}: {e}")
         return []
 
+
 def save_split(pool_args, chunks_per_file, output_path):
     num_processes = mp.cpu_count()
     print(f"Number of processes: {num_processes}")
@@ -84,15 +89,20 @@ def save_split(pool_args, chunks_per_file, output_path):
         with mp.Pool(processes=num_processes) as pool:
             for episode_chunks in pool.starmap(preprocess_pngs, args_batch):
                 chunks.extend(episode_chunks)
-        results_batch, chunks, file_idx = save_chunks(chunks, file_idx, chunks_per_file, output_path) 
+        results_batch, file_idx, chunks, _ = save_chunks(
+            file_idx, chunks_per_file, output_path, chunks
+        )
         results.extend(results_batch)
 
     if len(chunks) > 0:
-        print(f"Warning: Dropping {len(chunks)} chunks for consistent number of chunks per file.",
-        "Consider changing the chunk_size and chunks_per_file parameters to prevent data-loss.")
+        print(
+            f"Warning: Dropping {len(chunks)} chunks for consistent number of chunks per file.",
+            "Consider changing the chunk_size and chunks_per_file parameters to prevent data-loss.",
+        )
 
     print(f"Done processing files. Saved to {output_path}")
     return results
+
 
 def main():
     args = tyro.cli(Args)
@@ -107,11 +117,9 @@ def main():
     ]
     if args.multigame:
         episodes = [
-            os.path.join(game, d)
-            for game in directories 
-            for d in os.listdir(game)
+            os.path.join(game, d) for game in directories for d in os.listdir(game)
         ]
-    else: 
+    else:
         episodes = directories
 
     n_total = sum([len(os.listdir(episode)) for episode in episodes])
@@ -127,14 +135,14 @@ def main():
     np.random.shuffle(episodes)
     for episode in episodes:
         pool_arg = (
-            episode, 
-            args.original_fps, 
-            args.target_fps, 
-            args.chunk_size, 
-            args.target_width, 
+            episode,
+            args.original_fps,
+            args.target_fps,
+            args.chunk_size,
+            args.target_width,
         )
         n_frames = len(os.listdir(episode))
-        if train_counter < n_train:            
+        if train_counter < n_train:
             pool_args_train.append(pool_arg)
             train_counter += n_frames
         elif val_counter < n_val:
@@ -143,12 +151,21 @@ def main():
         else:
             pool_args_test.append(pool_arg)
 
-    train_episode_metadata = save_split(pool_args_train, args.chunks_per_file, os.path.join(args.output_path, "train"))
-    val_episode_metadata = save_split(pool_args_val, args.chunks_per_file, os.path.join(args.output_path, "val"))
-    test_episode_metadata = save_split(pool_args_test, args.chunks_per_file, os.path.join(args.output_path, "test"))
+    train_episode_metadata = save_split(
+        pool_args_train, args.chunks_per_file, os.path.join(args.output_path, "train")
+    )
+    val_episode_metadata = save_split(
+        pool_args_val, args.chunks_per_file, os.path.join(args.output_path, "val")
+    )
+    test_episode_metadata = save_split(
+        pool_args_test, args.chunks_per_file, os.path.join(args.output_path, "test")
+    )
 
     # Calculate total number of chunks
-    total_chunks = sum(ep["num_chunks"] for ep in train_episode_metadata + val_episode_metadata + test_episode_metadata)
+    total_chunks = sum(
+        ep["num_chunks"]
+        for ep in train_episode_metadata + val_episode_metadata + test_episode_metadata
+    )
 
     print("Done converting png to array_record files")
 
@@ -157,9 +174,15 @@ def main():
     metadata = {
         "env": args.env_name,
         "total_chunks": total_chunks,
-        "avg_episode_len_train": np.mean([ep["avg_seq_len"] for ep in train_episode_metadata]),
-        "avg_episode_len_val": np.mean([ep["avg_seq_len"] for ep in val_episode_metadata]),
-        "avg_episode_len_test": np.mean([ep["avg_seq_len"] for ep in test_episode_metadata]),
+        "avg_episode_len_train": np.mean(
+            [ep["avg_seq_len"] for ep in train_episode_metadata]
+        ),
+        "avg_episode_len_val": np.mean(
+            [ep["avg_seq_len"] for ep in val_episode_metadata]
+        ),
+        "avg_episode_len_test": np.mean(
+            [ep["avg_seq_len"] for ep in test_episode_metadata]
+        ),
         "episode_metadata_train": train_episode_metadata,
         "episode_metadata_val": val_episode_metadata,
         "episode_metadata_test": test_episode_metadata,
@@ -169,6 +192,7 @@ def main():
         json.dump(metadata, f)
 
     print("Done.")
+
 
 if __name__ == "__main__":
     main()

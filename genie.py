@@ -27,11 +27,12 @@ class Genie(nnx.Module):
         lam_dim: int,
         lam_ffn_dim: int,
         latent_action_dim: int,
-        num_latent_actions: int,
+        num_actions: int,
         lam_patch_size: int,
         lam_num_blocks: int,
         lam_num_heads: int,
         lam_co_train: bool,
+        use_gt_actions: bool,
         dyna_type: str,
         dyna_dim: int,
         dyna_ffn_dim: int,
@@ -58,11 +59,12 @@ class Genie(nnx.Module):
         self.lam_dim = lam_dim
         self.lam_ffn_dim = lam_ffn_dim
         self.latent_action_dim = latent_action_dim
-        self.num_latent_actions = num_latent_actions
+        self.num_actions = num_actions
         self.lam_patch_size = lam_patch_size
         self.lam_num_blocks = lam_num_blocks
         self.lam_num_heads = lam_num_heads
         self.lam_co_train = lam_co_train
+        self.use_gt_actions = use_gt_actions
         # --- Dynamics ---
         self.dyna_type = dyna_type
         self.dyna_dim = dyna_dim
@@ -92,22 +94,29 @@ class Genie(nnx.Module):
             use_flash_attention=self.use_flash_attention,
             rngs=rngs,
         )
-        self.lam = LatentActionModel(
-            in_dim=self.in_dim,
-            model_dim=self.lam_dim,
-            ffn_dim=self.lam_ffn_dim,
-            latent_dim=self.latent_patch_dim,
-            num_latents=self.num_latent_actions,
-            patch_size=self.lam_patch_size,
-            num_blocks=self.lam_num_blocks,
-            num_heads=self.lam_num_heads,
-            dropout=0.0,
-            codebook_dropout=0.0,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-            use_flash_attention=self.use_flash_attention,
-            rngs=rngs,
-        )
+        if self.use_gt_actions:
+            self.action_embed = nnx.Embed(
+                self.num_actions, self.latent_action_dim, rngs=rngs
+            )
+            self.lam = None
+        else:
+            self.lam = LatentActionModel(
+                in_dim=self.in_dim,
+                model_dim=self.lam_dim,
+                ffn_dim=self.lam_ffn_dim,
+                latent_dim=self.latent_patch_dim,
+                num_latents=self.num_actions,
+                patch_size=self.lam_patch_size,
+                num_blocks=self.lam_num_blocks,
+                num_heads=self.lam_num_heads,
+                dropout=0.0,
+                codebook_dropout=0.0,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+                use_flash_attention=self.use_flash_attention,
+                rngs=rngs,
+            )
+            self.action_embed = None
         if self.dyna_type == "maskgit":
             self.dynamics = DynamicsMaskGIT(
                 model_dim=self.dyna_dim,
@@ -149,27 +158,42 @@ class Genie(nnx.Module):
         videos_BTHWC = batch["videos"]
         tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
         token_indices_BTN = tokenizer_outputs["indices"]
-        lam_outputs = self.lam.vq_encode(videos_BTHWC, training=False)
-        z_q_BTm11L = lam_outputs["z_q"]
-        action_indices_E = lam_outputs["indices"]
-        latent_actions_BTm11L = jax.lax.cond(
-            self.lam_co_train,
-            lambda: z_q_BTm11L,
-            lambda: jax.lax.stop_gradient(z_q_BTm11L),
-        )
+        latent_actions_BTm11L = None
+        action_embeddings_BTm11L = None
+        if self.use_gt_actions:
+            assert self.action_embed is not None
+            action_indices_E = None
+            action_embeddings_BT1L = self.action_embed(batch["actions"]).reshape(
+                *batch["actions"].shape[:2], 1, self.latent_action_dim
+            )
+            action_embeddings_BTm11L = action_embeddings_BT1L[:, :-1]
+        else:
+            assert self.lam is not None
+            lam_outputs = self.lam.vq_encode(videos_BTHWC, training=False)
+            z_q_BTm11L = lam_outputs["z_q"]
+            action_indices_E = lam_outputs["indices"]
+            latent_actions_BTm11L = jax.lax.cond(
+                self.lam_co_train,
+                lambda: z_q_BTm11L,
+                lambda: jax.lax.stop_gradient(z_q_BTm11L),
+            )
         outputs = dict(
             video_tokens=jax.lax.stop_gradient(token_indices_BTN),
-            latent_actions=latent_actions_BTm11L,
+            latent_actions=(
+                action_embeddings_BTm11L
+                if self.use_gt_actions
+                else latent_actions_BTm11L
+            ),
         )
         outputs["mask_rng"] = batch["rng"]
         dyna_logits_BTNV, dyna_mask = self.dynamics(outputs, training)
         outputs["token_logits"] = dyna_logits_BTNV
-        if dyna_mask is not None:
-            outputs["mask"] = dyna_mask
+        outputs["mask"] = dyna_mask
         mle_indices_BTN = jnp.argmax(outputs["token_logits"], axis=-1)
         H, W = batch["videos"].shape[2:4]
         outputs["recon"] = self.tokenizer.decode(mle_indices_BTN, (H, W))
-        outputs["lam_indices"] = action_indices_E
+        if action_indices_E is not None:
+            outputs["lam_indices"] = action_indices_E
         return outputs
 
     def sample(
@@ -225,7 +249,6 @@ class Genie(nnx.Module):
         assert isinstance(self.dynamics, DynamicsMaskGIT)
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
-        latent_actions_E = batch["latent_actions"]
         tokenizer_out = self.tokenizer.vq_encode(videos_BTHWC, training=False)
         token_idxs_BTN = tokenizer_out["indices"]
         B, T, N = token_idxs_BTN.shape
@@ -235,7 +258,17 @@ class Genie(nnx.Module):
         init_logits_BSNV = jnp.zeros(
             shape=(*token_idxs_BSN.shape, self.num_patch_latents)
         )
-        action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
+        if self.use_gt_actions:
+            assert self.action_embed is not None
+            latent_actions_BT1L = self.action_embed(batch["actions"]).reshape(
+                *batch["actions"].shape[:2], 1, self.latent_action_dim
+            )
+            latent_actions_BTm11L = latent_actions_BT1L[:, :-1]
+            action_tokens_EL = latent_actions_BTm11L.reshape(-1, self.latent_action_dim)
+        else:
+            assert self.lam is not None
+            latent_actions_E = batch["latent_actions"]
+            action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
 
         # --- Extract submodule state ---
         dynamics_state = nnx.state(self.dynamics)
@@ -405,7 +438,6 @@ class Genie(nnx.Module):
         assert isinstance(self.dynamics, DynamicsCausal)
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
-        latent_actions_E = batch["latent_actions"]
         tokenizer_out = self.tokenizer.vq_encode(videos_BTHWC, training=False)
         token_idxs_BTN = tokenizer_out["indices"]
         B, T, N = token_idxs_BTN.shape
@@ -413,8 +445,19 @@ class Genie(nnx.Module):
         pad = jnp.zeros(pad_shape, dtype=token_idxs_BTN.dtype)
         token_idxs_BSN = jnp.concatenate([token_idxs_BTN, pad], axis=1)
         logits_BSNV = jnp.zeros((*token_idxs_BSN.shape, self.num_patch_latents))
-        action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
         dynamics_state = nnx.state(self.dynamics)
+
+        if self.use_gt_actions:
+            assert self.action_embed is not None
+            latent_actions_BT1L = self.action_embed(batch["actions"]).reshape(
+                *batch["actions"].shape[:2], 1, self.latent_action_dim
+            )
+            latent_actions_BTm11L = latent_actions_BT1L[:, :-1]
+            action_tokens_EL = latent_actions_BTm11L.reshape(-1, self.latent_action_dim)
+        else:
+            assert self.lam is not None
+            latent_actions_E = batch["latent_actions"]
+            action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
         def causal_step_fn(
@@ -512,6 +555,7 @@ class Genie(nnx.Module):
 
     def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
         # --- Preprocess videos ---
+        assert self.lam is not None
         video_BTHWC = batch["videos"]
         lam_output: Dict[str, jax.Array] = self.lam.vq_encode(
             video_BTHWC, training=training
@@ -591,7 +635,7 @@ def restore_genie_components(
             model_dim=args.lam_dim,
             ffn_dim=args.lam_ffn_dim,
             latent_dim=args.latent_patch_dim,
-            num_latents=args.num_latent_actions,
+            num_latents=args.num_actions,
             patch_size=args.lam_patch_size,
             num_blocks=args.lam_num_blocks,
             num_heads=args.lam_num_heads,

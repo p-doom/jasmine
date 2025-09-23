@@ -229,7 +229,7 @@ def restore_checkpoint_if_needed(
     checkpoint_manager: ocp.CheckpointManager,
     optimizer: nnx.Optimizer,
     train_iterator: grain.DataLoaderIterator,
-    val_iterator: Optional[grain.DataLoaderIterator] = None,
+    val_iterator: Optional[grain.DataLoaderIterator],
     restore_step: Optional[int] = None,
 ) -> tuple[int, nnx.Optimizer, grain.DataLoaderIterator, grain.DataLoaderIterator]:
     step = 0
@@ -238,7 +238,7 @@ def restore_checkpoint_if_needed(
     if args.restore_ckpt:
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
         abstract_optimizer_state = nnx.state(abstract_optimizer)
-        if args.val_data_dir:
+        if val_iterator:
             restore_args = ocp.args.Composite(
                 model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
                 train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
@@ -253,7 +253,7 @@ def restore_checkpoint_if_needed(
         restored_optimizer_state = restored["model_state"]
         nnx.update(optimizer, restored_optimizer_state)
         train_iterator = restored["train_dataloader_state"]
-        if args.val_data_dir:
+        if val_iterator:
             val_iterator = restored["val_dataloader_state"]
         step = restore_step or 0
         print(f"Restored dataloader and model state from step {step}")
@@ -324,14 +324,9 @@ def main(args: Args) -> None:
         val_iterator = build_dataloader(args, args.val_data_dir)
 
     # --- Restore checkpoint ---
-    if val_iterator:
-        step, optimizer, train_iterator, val_iterator = restore_checkpoint_if_needed(
-            args, checkpoint_manager, optimizer, train_iterator, val_iterator
-        )
-    else:
-        step, optimizer, train_iterator, _ = restore_checkpoint_if_needed(
-            args, checkpoint_manager, optimizer, train_iterator
-        )
+    step, optimizer, train_iterator, val_iterator = restore_checkpoint_if_needed(
+        args, checkpoint_manager, optimizer, train_iterator, val_iterator
+    )
 
     # --- Define loss and train step (close over args) ---
     def tokenizer_loss_fn(
@@ -391,7 +386,7 @@ def main(args: Args) -> None:
             )
         return loss, recon, metrics
 
-    @nnx.jit(donate_argnums=0)
+    @nnx.jit
     def val_step(
         tokenizer: TokenizerVQVAE, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
@@ -403,11 +398,10 @@ def main(args: Args) -> None:
         step = 0
         loss_per_step = []
         metrics_per_step = []
-        inputs = None
+        batch = None
         recon = None
-        for videos in val_dataloader:
-            inputs = dict(videos=videos)
-            loss, recon, metrics = val_step(tokenizer, inputs)
+        for batch in val_dataloader:
+            loss, recon, metrics = val_step(tokenizer, batch)
             loss_per_step.append(loss)
             metrics_per_step.append(metrics)
             step += 1
@@ -425,34 +419,40 @@ def main(args: Args) -> None:
             for key in metrics_per_step[0].keys()
         }
         val_metrics["val_loss"] = val_loss
-        return val_metrics, inputs, recon
+        return val_metrics, batch, recon
 
     # --- TRAIN LOOP ---
     dataloader_train = (
-        jax.make_array_from_process_local_data(videos_sharding, elem)
+        {
+            "videos": jax.make_array_from_process_local_data(
+                videos_sharding, elem["videos"]
+            ),
+        }
         for elem in train_iterator
     )
     dataloader_val = None
     if val_iterator:
         dataloader_val = (
-            jax.make_array_from_process_local_data(videos_sharding, elem)
+            {
+                "videos": jax.make_array_from_process_local_data(
+                    videos_sharding, elem["videos"]
+                ),
+            }
             for elem in val_iterator
         )
     if jax.process_index() == 0:
-        first_videos = next(dataloader_train)
-        sample_inputs = dict(videos=first_videos)
-        compiled = train_step.lower(optimizer, sample_inputs).compile()
+        first_batch = next(dataloader_train)
+        compiled = train_step.lower(optimizer, first_batch).compile()
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
         # Do not skip the first batch during training
-        dataloader_train = itertools.chain([first_videos], dataloader_train)
+        dataloader_train = itertools.chain([first_batch], dataloader_train)
     print(f"Starting training from step {step}...")
     first_step = step
     while step < args.num_steps:
-        for videos in dataloader_train:
+        for batch in dataloader_train:
             # --- Train step ---
-            inputs = dict(videos=videos)
-            loss, recon, metrics = train_step(optimizer, inputs)
+            loss, recon, metrics = train_step(optimizer, batch)
             if step == first_step:
                 print_mem_stats("After params initialized")
             step += 1
@@ -479,7 +479,7 @@ def main(args: Args) -> None:
                         log_dict.update(val_results["metrics"])
                     wandb.log(log_dict)
                 if step % args.log_image_interval == 0:
-                    gt_seq = inputs["videos"][0].astype(jnp.float32) / 255.0
+                    gt_seq = batch["videos"][0].astype(jnp.float32) / 255.0
                     recon_seq = recon[0].clip(0, 1)
                     comparison_seq = jnp.concatenate((gt_seq, recon_seq), axis=1)
                     comparison_seq = einops.rearrange(
