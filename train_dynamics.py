@@ -492,7 +492,9 @@ def main(args: Args) -> None:
             if not args.use_gt_actions:
                 lam_indices = genie.vq_encode(inputs, training=False)
                 inputs["latent_actions"] = lam_indices
-            inputs["videos"] = gt[:, :-1]  # remove last frame for generation
+            inputs["videos"] = inputs["videos"][
+                :, :-1
+            ]  # remove last frame for generation
             recon_full_frame, logits_full_frame = genie.sample(
                 inputs,
                 args.seq_len,
