@@ -74,29 +74,26 @@ class DynamicsMaskGIT(nnx.Module):
     def __call__(
         self,
         batch: Dict[str, jax.Array],
-        training: bool = True,
     ) -> tuple[jax.Array, jax.Array]:
         # --- Mask videos ---
         video_tokens_BTN = batch["video_tokens"]
         latent_actions_BTm11L = batch["latent_actions"]
         vid_embed_BTNM = self.patch_embed(video_tokens_BTN)
-        if training:
-            batch_size = vid_embed_BTNM.shape[0]
-            _rng_prob, *_rngs_mask = jax.random.split(batch["mask_rng"], batch_size + 1)
-            mask_prob = jax.random.uniform(
-                _rng_prob, shape=(batch_size,), minval=self.mask_limit
-            )
-            per_sample_shape = vid_embed_BTNM.shape[1:-1]
-            mask = jax.vmap(
-                lambda rng, prob: jax.random.bernoulli(rng, prob, per_sample_shape),
-                in_axes=(0, 0),
-            )(jnp.asarray(_rngs_mask), mask_prob)
-            mask = mask.at[:, 0].set(False)
-            vid_embed_BTNM = jnp.where(
-                jnp.expand_dims(mask, -1), self.mask_token.value, vid_embed_BTNM
-            )
-        else:
-            mask = jnp.ones_like(video_tokens_BTN)
+
+        batch_size = vid_embed_BTNM.shape[0]
+        _rng_prob, *_rngs_mask = jax.random.split(batch["mask_rng"], batch_size + 1)
+        mask_prob = jax.random.uniform(
+            _rng_prob, shape=(batch_size,), minval=self.mask_limit
+        )
+        per_sample_shape = vid_embed_BTNM.shape[1:-1]
+        mask = jax.vmap(
+            lambda rng, prob: jax.random.bernoulli(rng, prob, per_sample_shape),
+            in_axes=(0, 0),
+        )(jnp.asarray(_rngs_mask), mask_prob)
+        mask = mask.at[:, 0].set(False)
+        vid_embed_BTNM = jnp.where(
+            jnp.expand_dims(mask, -1), self.mask_token.value, vid_embed_BTNM
+        )
 
         # --- Predict transition ---
         act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
@@ -167,7 +164,6 @@ class DynamicsCausal(nnx.Module):
     def __call__(
         self,
         batch: Dict[str, jax.Array],
-        training: bool = True,
     ) -> tuple[jax.Array, jax.Array]:
         video_tokens_BTN = batch["video_tokens"]
         latent_actions_BTm11L = batch["latent_actions"]
