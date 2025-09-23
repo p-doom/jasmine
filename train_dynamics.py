@@ -477,11 +477,13 @@ def main(args: Args) -> None:
     def val_step(genie: Genie, inputs: dict) -> dict:
         """Evaluate model and compute metrics"""
         genie.eval()
+        gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         (loss, (recon, metrics)) = dynamics_loss_fn(genie, inputs, training=False)
         val_output = {"loss": loss, "recon": recon, "metrics": metrics}
 
         # --- Evaluate full frame prediction (sampling) ---
         if args.eval_full_frame:
+            inputs["videos"] = gt.astype(args.dtype)
             tokenizer_outputs = genie.tokenizer.vq_encode(
                 inputs["videos"], training=False
             )
@@ -490,10 +492,7 @@ def main(args: Args) -> None:
             if not args.use_gt_actions:
                 lam_indices = genie.vq_encode(inputs, training=False)
                 inputs["latent_actions"] = lam_indices
-            gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
-            inputs["videos"] = gt[:, :-1].astype(
-                args.dtype
-            )  # remove last frame for generation
+            inputs["videos"] = gt[:, :-1]  # remove last frame for generation
             recon_full_frame, logits_full_frame = genie.sample(
                 inputs,
                 args.seq_len,
