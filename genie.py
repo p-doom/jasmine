@@ -263,7 +263,7 @@ class Genie(nnx.Module):
             latent_actions_BT1L = self.action_embed(batch["actions"]).reshape(
                 *batch["actions"].shape[:2], 1, self.latent_action_dim
             )
-            latent_actions_BTm11L = latent_actions_BT1L[:, 1:]
+            latent_actions_BTm11L = latent_actions_BT1L[:, :-1]
             action_tokens_EL = latent_actions_BTm11L.reshape(-1, self.latent_action_dim)
         else:
             assert self.lam is not None
@@ -452,7 +452,7 @@ class Genie(nnx.Module):
             latent_actions_BT1L = self.action_embed(batch["actions"]).reshape(
                 *batch["actions"].shape[:2], 1, self.latent_action_dim
             )
-            latent_actions_BTm11L = latent_actions_BT1L[:, 1:]
+            latent_actions_BTm11L = latent_actions_BT1L[:, :-1]
             action_tokens_EL = latent_actions_BTm11L.reshape(-1, self.latent_action_dim)
         else:
             assert self.lam is not None
