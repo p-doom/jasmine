@@ -233,11 +233,13 @@ if __name__ == "__main__":
     # --- Save video ---
     imgs = [Image.fromarray(img) for img in frames]
     # Write actions on each frame, on each row (i.e., for each video in the batch, on the GT row)
-    B, S, _, _, _ = batch["videos"].shape
+    B = batch["videos"].shape[0]
     if action_batch_E is not None:
-        action_batch_BSm11 = jnp.reshape(action_batch_E, (B, S - 1, 1))
+        action_batch_BSm11 = jnp.reshape(action_batch_E, (B, args.seq_len - 1, 1))
     else:
-        action_batch_BSm11 = jnp.reshape(batch["actions"][:, :-1], (B, S - 1, 1))
+        action_batch_BSm11 = jnp.reshape(
+            batch["actions"][:, :-1], (B, args.seq_len - 1, 1)
+        )
     for t, img in enumerate(imgs[1:]):
         d = ImageDraw.Draw(img)
         for row in range(B):
