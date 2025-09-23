@@ -566,11 +566,11 @@ class Genie(nnx.Module):
 
 # FIXME (f.srambical): add conversion script for old checkpoints
 def restore_genie_components(
-    optimizer: nnx.Optimizer,
+    optimizer: nnx.ModelAndOptimizer,
     sharding: jax.sharding.NamedSharding,
     rng: jax.Array,
     args,
-) -> nnx.Optimizer:
+) -> nnx.ModelAndOptimizer:
     """Restore pre-trained Genie components"""
     rng_tokenizer, rng_lam = jax.random.split(rng)
     rngs_tokenizer = nnx.Rngs(rng_tokenizer)
@@ -607,7 +607,7 @@ def restore_genie_components(
         use_flash_attention=args.use_flash_attention,
         rngs=rngs_tokenizer,
     )
-    dummy_tokenizer_optimizer = nnx.Optimizer(dummy_tokenizer, tx)
+    dummy_tokenizer_optimizer = nnx.ModelAndOptimizer(dummy_tokenizer, tx)
     dummy_tokenizer_optimizer_state = nnx.state(dummy_tokenizer_optimizer)
     abstract_sharded_tokenizer_optimizer_state = _create_abstract_sharded_pytree(
         dummy_tokenizer_optimizer_state, sharding
@@ -646,7 +646,7 @@ def restore_genie_components(
             use_flash_attention=args.use_flash_attention,
             rngs=rngs_lam,
         )
-        dummy_lam_optimizer = nnx.Optimizer(dummy_lam, tx)
+        dummy_lam_optimizer = nnx.ModelAndOptimizer(dummy_lam, tx)
         dummy_lam_optimizer_state = nnx.state(dummy_lam_optimizer)
         abstract_sharded_lam_optimizer_state = _create_abstract_sharded_pytree(
             dummy_lam_optimizer_state, sharding
@@ -666,7 +666,7 @@ def restore_genie_components(
         lam_checkpoint_manager.close()
 
     # Reinitialize the optimizer states
-    optimizer = nnx.Optimizer(model, tx)
+    optimizer = nnx.ModelAndOptimizer(model, tx)
     return optimizer
 
 
