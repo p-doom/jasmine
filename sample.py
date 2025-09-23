@@ -237,7 +237,7 @@ if __name__ == "__main__":
     if action_batch_E is not None:
         action_batch_BSm11 = jnp.reshape(action_batch_E, (B, S - 1, 1))
     else:
-        action_batch_BSm11 = jnp.expand_dims(batch["actions"][:, :-1], -1)
+        action_batch_BSm11 = jnp.reshape(batch["actions"][:, :-1], (B, S - 1, 1))
     for t, img in enumerate(imgs[1:]):
         d = ImageDraw.Draw(img)
         for row in range(B):
