@@ -109,9 +109,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[TokenizerVQVAE, jax.Array]:
     )
 
 
-def build_optimizer(
-    model: TokenizerVQVAE, args: Args
-) -> tuple[nnx.Optimizer, optax.Schedule]:
+def build_optimizer(model: TokenizerVQVAE, args: Args) -> nnx.ModelAndOptimizer:
     lr_schedule = get_lr_schedule(
         args.lr_schedule,
         args.init_lr,
@@ -128,8 +126,8 @@ def build_optimizer(
         weight_decay=1e-4,
         mu_dtype=args.param_dtype,  # moments in full precision
     )
-    optimizer = nnx.Optimizer(model, tx)
-    return optimizer, lr_schedule
+    optimizer = nnx.ModelAndOptimizer(model, tx)
+    return optimizer
 
 
 def build_mesh_and_sharding(
@@ -143,7 +141,7 @@ def build_mesh_and_sharding(
 
 
 def shard_optimizer_states(
-    optimizer: nnx.Optimizer, replicated_sharding: NamedSharding
+    optimizer: nnx.ModelAndOptimizer, replicated_sharding: NamedSharding
 ) -> None:
     model_state = nnx.state(optimizer.model)
     model_sharded_state = jax.lax.with_sharding_constraint(
@@ -180,62 +178,72 @@ def build_dataloader(args: Args, data_dir: str) -> grain.DataLoaderIterator:
     return grain_iterator
 
 
-def build_checkpoint_manager(args: Args) -> ocp.CheckpointManager:
-    handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
-    handler_registry.add(
-        "model_state", ocp.args.PyTreeSave, ocp.handlers.PyTreeCheckpointHandler
-    )
-    handler_registry.add(
-        "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
-    )
-    handler_registry.add(
-        "train_dataloader_state",
-        grain.checkpoint.CheckpointSave,
-        cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
-    )
-    handler_registry.add(
-        "train_dataloader_state",
-        grain.checkpoint.CheckpointRestore,
-        cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
-    )
-    if args.val_data_dir:
+def build_checkpoint_manager(args: Args) -> Optional[ocp.CheckpointManager]:
+    if args.restore_ckpt or args.save_ckpt:
+        handler_registry = ocp.handlers.DefaultCheckpointHandlerRegistry()
         handler_registry.add(
-            "val_dataloader_state",
+            "model_state", ocp.args.PyTreeSave, ocp.handlers.PyTreeCheckpointHandler
+        )
+        handler_registry.add(
+            "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
+        )
+        handler_registry.add(
+            "train_dataloader_state",
             grain.checkpoint.CheckpointSave,
             cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
         )
         handler_registry.add(
-            "val_dataloader_state",
+            "train_dataloader_state",
             grain.checkpoint.CheckpointRestore,
             cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
         )
-    checkpoint_options = ocp.CheckpointManagerOptions(
-        save_interval_steps=args.log_checkpoint_interval,
-        max_to_keep=3,
-        keep_period=args.log_checkpoint_keep_period,
-        step_format_fixed_length=6,
-        cleanup_tmp_directories=True,
-    )
-    checkpoint_manager = ocp.CheckpointManager(
-        args.ckpt_dir,
-        options=checkpoint_options,
-        handler_registry=handler_registry,
-    )
-    return checkpoint_manager
+        if args.val_data_dir:
+            handler_registry.add(
+                "val_dataloader_state",
+                grain.checkpoint.CheckpointSave,
+                cast(
+                    ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler
+                ),
+            )
+            handler_registry.add(
+                "val_dataloader_state",
+                grain.checkpoint.CheckpointRestore,
+                cast(
+                    ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler
+                ),
+            )
+        checkpoint_options = ocp.CheckpointManagerOptions(
+            save_interval_steps=args.log_checkpoint_interval,
+            max_to_keep=3,
+            keep_period=args.log_checkpoint_keep_period,
+            step_format_fixed_length=6,
+            cleanup_tmp_directories=True,
+        )
+        checkpoint_manager = ocp.CheckpointManager(
+            args.ckpt_dir,
+            options=checkpoint_options,
+            handler_registry=handler_registry,
+        )
+        return checkpoint_manager
+    else:
+        return None
 
 
 def restore_checkpoint_if_needed(
     args: Args,
-    checkpoint_manager: ocp.CheckpointManager,
-    optimizer: nnx.Optimizer,
+    checkpoint_manager: Optional[ocp.CheckpointManager],
+    optimizer: nnx.ModelAndOptimizer,
     train_iterator: grain.DataLoaderIterator,
     val_iterator: Optional[grain.DataLoaderIterator],
     restore_step: Optional[int] = None,
-) -> tuple[int, nnx.Optimizer, grain.DataLoaderIterator, grain.DataLoaderIterator]:
+) -> tuple[
+    int, nnx.ModelAndOptimizer, grain.DataLoaderIterator, grain.DataLoaderIterator
+]:
     step = 0
-    if restore_step is None:
+    if checkpoint_manager and restore_step is None:
         restore_step = checkpoint_manager.latest_step()
     if args.restore_ckpt:
+        assert checkpoint_manager is not None
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
         abstract_optimizer_state = nnx.state(abstract_optimizer)
         if val_iterator:
@@ -306,7 +314,7 @@ def main(args: Args) -> None:
     print(param_counts)
 
     # --- Initialize optimizer ---
-    optimizer, lr_schedule = build_optimizer(tokenizer, args)
+    optimizer = build_optimizer(tokenizer, args)
     del tokenizer
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
@@ -364,7 +372,7 @@ def main(args: Args) -> None:
 
     @nnx.jit(donate_argnums=0)
     def train_step(
-        optimizer: nnx.Optimizer, inputs: dict
+        optimizer: nnx.ModelAndOptimizer, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
         def loss_fn(model: TokenizerVQVAE) -> tuple[jax.Array, tuple[jax.Array, dict]]:
             model.train()
@@ -533,6 +541,7 @@ def main(args: Args) -> None:
                         wandb.log(log_images)
             # --- Checkpointing ---
             if args.save_ckpt and step % args.log_checkpoint_interval == 0:
+                assert checkpoint_manager is not None
                 optimizer_state = nnx.state(optimizer)
                 if val_iterator:
                     ckpt_manager_args = ocp.args.Composite(
@@ -556,7 +565,8 @@ def main(args: Args) -> None:
             if step >= args.num_steps:
                 break
 
-    checkpoint_manager.close()
+    if checkpoint_manager:
+        checkpoint_manager.close()
 
 
 if __name__ == "__main__":
