@@ -482,12 +482,14 @@ def main(args: Args) -> None:
 
         # --- Evaluate full frame prediction (sampling) ---
         if args.eval_full_frame:
-            lam_indices = genie.vq_encode(inputs, training=False)
             tokenizer_outputs = genie.tokenizer.vq_encode(
                 inputs["videos"], training=False
             )
             tokens_full_frame = tokenizer_outputs["indices"]
-            inputs["latent_actions"] = lam_indices
+            lam_indices = None
+            if not args.use_gt_actions:
+                lam_indices = genie.vq_encode(inputs, training=False)
+                inputs["latent_actions"] = lam_indices
             gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
             inputs["videos"] = gt[:, :-1].astype(
                 args.dtype
@@ -504,8 +506,9 @@ def main(args: Args) -> None:
                 "token_logits": logits_full_frame,
                 "video_tokens": tokens_full_frame,
                 "mask": jnp.zeros_like(tokens_full_frame).at[:, -1].set(True),
-                "lam_indices": lam_indices,
             }
+            if lam_indices is not None:
+                step_outputs["lam_indices"] = lam_indices
             loss_full_frame, metrics_full_frame = _calculate_step_metrics(
                 step_outputs, gt, args.num_actions, args.num_patch_latents
             )
