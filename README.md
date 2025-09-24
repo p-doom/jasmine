@@ -41,10 +41,10 @@ Jasmine scales from single hosts to hundreds of xPUs thanks to XLA and strives t
 
 <h2 name="start" id="start">Setup 🧗</h2>
 
-Jasmine requires `python 3.10`, `jax 0.6.2`, and `flax 0.10.7`. To install the requirements, run:
+Jasmine requires `python 3.11`, `jax 0.7.2`, and `flax 0.11.2`. To install the requirements, run:
 
 ```bash
-pip install -r requirements.txt
+uv sync
 pre-commit install
 ```
 
@@ -79,17 +79,19 @@ If you prefer to use the raw VPT dataset from OpenAI and preprocess it yourself,
    This may take a long time depending on your bandwidth:
 
    ```bash
-   python data/minecraft/openai/download_videos.py --index_file_path data/open_ai_index_files/all_7xx_Apr_6.json
-   python data/minecraft/openai/download_videos.py --index_file_path data/open_ai_index_files/all_8xx_Jun_29.json
-   python data/minecraft/openai/download_videos.py --index_file_path data/open_ai_index_files/all_9xx_Jun_29.json
-   python data/minecraft/openai/download_videos.py --index_file_path data/open_ai_index_files/all_10xx_Jun_29.json
+   cd data/
+   uv run python jasmine_data/minecraft/openai/download_videos.py --index_file_path data/open_ai_index_files/all_7xx_Apr_6.json
+   uv run python jasmine_data/minecraft/openai/download_videos.py --index_file_path data/open_ai_index_files/all_8xx_Jun_29.json
+   uv run python jasmine_data/minecraft/openai/download_videos.py --index_file_path data/open_ai_index_files/all_9xx_Jun_29.json
+   uv run python jasmine_data/minecraft/openai/download_videos.py --index_file_path data/open_ai_index_files/all_10xx_Jun_29.json
    ```
 
 3. **Preprocess videos into ArrayRecords:**
    For efficient distributed training, convert the raw videos into the arrayrecord format (make sure to have [ffmpeg](https://github.com/FFmpeg/FFmpeg) installed on your machine):
 
    ```bash
-   python data/video_to_array_records.py
+   cd data/
+   uv run python jasmine_data/video_to_array_records.py
    ```
 
 > **Note:** This is a large dataset and may take considerable time and storage to download and process.
@@ -102,19 +104,19 @@ Genie has three components: a [video tokenizer](models/tokenizer.py), a [latent 
 To train the video tokenizer, run:
 
 ```bash
-python jasmine/train_tokenizer.py --ckpt_dir <path>
+uv run python jasmine/train_tokenizer.py --ckpt_dir <path>
 ```
 
 To train the latent action model, run:
 
 ```bash
-python jasmine/train_lam.py --ckpt_dir <path>
+uv run python jasmine/train_lam.py --ckpt_dir <path>
 ```
 
 Once the tokenizer and LAM are trained, the dynamics model can be trained with:
 
 ```bash
-python jasmine/train_dynamics.py --tokenizer_checkpoint <path> --lam_checkpoint <path>
+uv run python jasmine/train_dynamics.py --tokenizer_checkpoint <path> --lam_checkpoint <path>
 ```
 
 Logging with `wandb` is supported. To enable logging, set the `WANDB_API_KEY` environment variable or run:
@@ -126,7 +128,7 @@ wandb login
 Training can then be logged by setting the `--log` flag:
 
 ```bash
-python jasmine/train_tokenizer.py --log --entity <wandb-entity> --project <wandb-project>
+uv run python jasmine/train_tokenizer.py --log --entity <wandb-entity> --project <wandb-project>
 ```
 
 <h2 name="cite" id="cite">Citing 📜 </h2>
