@@ -1,0 +1,17 @@
+[project]
+name = "jasmine"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "dm-pix>=0.4.3",
+  "einops>=0.8.0",
+  "flax>=0.10.7",
+  "jax[cuda12]>=0.6.2",
+  "optax>=0.2.3",
+  "tyro>=0.8.5",
+  "wandb>=0.17.4",
+  "grain>=0.2.10",
+  "array-record>=0.7.2",
+  "pre-commit>=4.2.0",
+  "pillow>=11.3.0",
+]
