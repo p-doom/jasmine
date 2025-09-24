@@ -495,10 +495,10 @@ def main(args: Args) -> None:
                 inputs["videos"], training=False
             )
             tokens_full_frame = tokenizer_outputs["indices"]
-            lam_indices = None
+            lam_indices_E = None
             if not args.use_gt_actions:
-                lam_indices = genie.vq_encode(inputs, training=False)
-                inputs["latent_actions"] = lam_indices
+                lam_indices_E = genie.vq_encode(inputs, training=False)
+                inputs["latent_actions"] = lam_indices_E
             inputs["videos"] = inputs["videos"][
                 :, :-1
             ]  # remove last frame for generation
@@ -509,16 +509,19 @@ def main(args: Args) -> None:
                 args.val_sample_argmax,
                 args.val_maskgit_steps,
             )
+            # Calculate metrics for the last frame only
             step_outputs = {
-                "recon": recon_full_frame,
-                "token_logits": logits_full_frame,
-                "video_tokens": tokens_full_frame,
-                "mask": jnp.zeros_like(tokens_full_frame).at[:, -1].set(True),
+                "recon": recon_full_frame[:, -1],
+                "token_logits": logits_full_frame[:, -1],
+                "video_tokens": tokens_full_frame[:, -1],
+                "mask": jnp.ones_like(tokens_full_frame[:, -1]),
             }
-            if lam_indices is not None:
-                step_outputs["lam_indices"] = lam_indices
+            if lam_indices_E is not None:
+                lam_indices_B = lam_indices_E.reshape((-1, args.seq_len - 1))[:, -1]
+                step_outputs["lam_indices"] = lam_indices_B
+
             loss_full_frame, metrics_full_frame = _calculate_step_metrics(
-                step_outputs, gt, args.num_actions, args.num_patch_latents
+                step_outputs, gt[:, -1], args.num_actions, args.num_patch_latents
             )
             val_output.update(
                 {
