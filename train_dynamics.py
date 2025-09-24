@@ -522,8 +522,8 @@ def main(args: Args) -> None:
                 "mask": jnp.ones_like(tokens_full_frame[:, -1]),
             }
             if lam_indices_E is not None:
-                lam_indices_F = lam_indices_E.reshape((-1, args.seq_len - 1))[:, -1]
-                step_outputs["lam_indices"] = lam_indices_F
+                lam_indices_B = lam_indices_E.reshape((-1, args.seq_len - 1))[:, -1]
+                step_outputs["lam_indices"] = lam_indices_B
 
             loss_full_frame, metrics_full_frame = _calculate_step_metrics(
                 step_outputs, gt[:, -1], args.num_actions, args.num_patch_latents
