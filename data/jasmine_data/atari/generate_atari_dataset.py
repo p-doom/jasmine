@@ -1,4 +1,5 @@
 # adapted from https://github.com/vwxyzjn/cleanrl/blob/master/cleanrl/rainbow_atari.py
+import einops
 import collections
 import math
 import os
@@ -525,8 +526,20 @@ if __name__ == "__main__":
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
         if args.capture_dataset:
-            observations_seq.append(obs.astype(np.uint8))
-            actions_seq.append(actions.astype(np.int64))
+            assert (
+                obs.shape[0] == 1 and actions.shape[0] == 1
+            ), "Vectorized envs are currently not supported during data capture."
+            obs_to_save = obs  # (1, F, H, W)
+            actions_to_save = actions  # (1,)
+
+            # remove frame-stacking
+            obs_to_save = obs_to_save[:, -1, :, :]  # (1, H, W)
+
+            # remove asserted singleton vectorization dimension
+            obs_to_save = einops.rearrange(obs_to_save, "1 H W -> H W")  # (H, W)
+            actions_to_save = einops.rearrange(actions_to_save, "1 ->")  # ()
+            observations_seq.append(obs_to_save.astype(np.uint8))
+            actions_seq.append(actions_to_save.astype(np.int8))
 
         if "final_info" in infos:
             for info in infos["final_info"]:
@@ -548,10 +561,8 @@ if __name__ == "__main__":
                     if args.capture_dataset and continue_capturing_multi:
                         current_len = len(observations_seq)
                         if current_len >= args.min_episode_length:
-                            frames = np.concatenate(observations_seq, axis=0).astype(
-                                np.uint8
-                            )
-                            acts = np.concatenate(actions_seq, axis=0).astype(np.int64)
+                            frames = np.stack(observations_seq, axis=0).astype(np.uint8)
+                            acts = np.stack(actions_seq, axis=0).astype(np.int8)
 
                             episode_obs_chunks = []
                             episode_act_chunks = []
