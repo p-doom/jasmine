@@ -322,11 +322,6 @@ def restore_or_initialize_components(
         # Restore from pre-trained tokenizer (and LAM)
         rng, _rng = jax.random.split(rng)
         optimizer = restore_genie_components(optimizer, replicated_sharding, _rng, args)
-        # NOTE: We have to remove the (unused) tokenizer vq dropout due flax.nnx lazily initializing modules.
-        # Specifically, the first dynamics model checkpoint will contain the vq dropout module,
-        # but the first full restore will fail due to nnx not initializing the module when
-        # dropout is set to 0.0.
-        del optimizer.model.tokenizer.vq.drop
     return step, optimizer, train_iterator, val_iterator, rng
 
 
