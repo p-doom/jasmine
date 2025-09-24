@@ -18,6 +18,10 @@ dependencies = [
   "pillow>=11.3.0",
   "tqdm>=4.67.1",
   "tyro>=0.8.5",
+  "gymnasium[atari, accept-rom-license]==0.29.1",
+  "torch>=2.8.0",
+  "tensorboard>=2.20.0",
+  "opencv-python>=4.6.0.66,<5",
 ]
 
 [build-system]
