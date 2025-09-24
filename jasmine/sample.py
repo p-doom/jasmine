@@ -28,6 +28,8 @@ class Args:
     image_width: int = 160
     data_dir: str = "data/coinrun_episodes"
     checkpoint: str = ""
+    print_action_indices: bool = True
+    output_dir: str = "gifs/"
     # Sampling
     batch_size: int = 1
     maskgit_steps: int = 25
@@ -115,7 +117,6 @@ if __name__ == "__main__":
         rngs=rngs,
     )
 
-    del genie.tokenizer.vq.drop
     # Need to delete lam decoder for checkpoint loading
     if not args.use_gt_actions:
         assert genie.lam is not None
@@ -144,7 +145,7 @@ if __name__ == "__main__":
         weight_decay=1e-4,
         mu_dtype=args.dtype,
     )
-    dummy_optimizer = nnx.Optimizer(genie, dummy_tx)
+    dummy_optimizer = nnx.ModelAndOptimizer(genie, dummy_tx)
 
     abstract_optimizer = nnx.eval_shape(lambda: dummy_optimizer)
     abstract_optimizer_state = nnx.state(abstract_optimizer)
@@ -211,16 +212,24 @@ if __name__ == "__main__":
     # --- Sample + evaluate video ---
     recon_video_BSHWC = _autoreg_sample(genie, rng, batch)
     recon_video_BSHWC = recon_video_BSHWC.astype(jnp.float32)
-    gt = (
-        gt_video[:, : recon_video_BSHWC.shape[1]]
-        .clip(0, 1)
-        .reshape(-1, *gt_video.shape[2:])
-    )
-    recon = recon_video_BSHWC.clip(0, 1).reshape(-1, *recon_video_BSHWC.shape[2:])
-    ssim = jnp.asarray(
-        pix.ssim(gt[:, args.start_frame :], recon[:, args.start_frame :])
-    ).mean()
-    print(f"SSIM: {ssim}")
+
+    gt = gt_video.clip(0, 1)[:, args.start_frame :]
+    recon = recon_video_BSHWC.clip(0, 1)[:, args.start_frame :]
+
+    ssim_vmap = jax.vmap(pix.ssim, in_axes=(0, 0))
+    psnr_vmap = jax.vmap(pix.psnr, in_axes=(0, 0))
+    ssim = ssim_vmap(gt, recon)
+    psnr = psnr_vmap(gt, recon)
+    per_frame_ssim = ssim.mean(0)
+    per_frame_psnr = psnr.mean(0)
+    avg_ssim = ssim.mean()
+    avg_psnr = psnr.mean()
+
+    print("Per-frame SSIM:\n", per_frame_ssim)
+    print("Per-frame PSNR:\n", per_frame_psnr)
+
+    print(f"SSIM: {avg_ssim}")
+    print(f"PSNR: {avg_psnr}")
 
     # --- Construct video ---
     true_videos = (gt_video * 255).astype(np.uint8)
@@ -243,11 +252,14 @@ if __name__ == "__main__":
     for t, img in enumerate(imgs[1:]):
         d = ImageDraw.Draw(img)
         for row in range(B):
-            action = action_batch_BSm11[row, t, 0]
-            y_offset = row * batch["videos"].shape[2] + 2
-            d.text((2, y_offset), f"{action}", fill=255)
+            if args.print_action_indices:
+                action = action_batch_BSm11[row, t, 0]
+                y_offset = row * batch["videos"].shape[2] + 2
+                d.text((2, y_offset), f"{action}", fill=255)
+
+    os.makedirs(args.output_dir, exist_ok=True)
     imgs[0].save(
-        f"generation_{time.time()}.gif",
+        os.path.join(args.output_dir, f"generation_{time.time()}.gif"),
         save_all=True,
         append_images=imgs[1:],
         duration=250,
