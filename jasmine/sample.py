@@ -252,9 +252,9 @@ if __name__ == "__main__":
     for t, img in enumerate(imgs[1:]):
         d = ImageDraw.Draw(img)
         for row in range(B):
-            action = action_batch_BSm11[row, t, 0]
-            y_offset = row * batch["videos"].shape[2] + 2
             if args.print_action_indices:
+                action = action_batch_BSm11[row, t, 0]
+                y_offset = row * batch["videos"].shape[2] + 2
                 d.text((2, y_offset), f"{action}", fill=255)
 
     os.makedirs(args.output_dir, exist_ok=True)
