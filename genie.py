@@ -153,7 +153,6 @@ class Genie(nnx.Module):
     def __call__(
         self,
         batch: Dict[str, jax.Array],
-        training: bool = True,
     ) -> Dict[str, jax.Array]:
         videos_BTHWC = batch["videos"]
         tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
@@ -186,7 +185,7 @@ class Genie(nnx.Module):
             ),
         )
         outputs["mask_rng"] = batch["rng"]
-        dyna_logits_BTNV, dyna_mask = self.dynamics(outputs, training)
+        dyna_logits_BTNV, dyna_mask = self.dynamics(outputs)
         outputs["token_logits"] = dyna_logits_BTNV
         outputs["mask"] = dyna_mask
         mle_indices_BTN = jnp.argmax(outputs["token_logits"], axis=-1)

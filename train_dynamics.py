@@ -452,11 +452,10 @@ def main(args: Args) -> None:
     def dynamics_loss_fn(
         model: Genie,
         inputs: dict,
-        training: bool = False,
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
-        outputs = model(inputs, training=training)
+        outputs = model(inputs)
         ce_loss, metrics = _calculate_step_metrics(
             outputs, gt, args.num_actions, args.num_patch_latents
         )
@@ -468,7 +467,7 @@ def main(args: Args) -> None:
     ) -> tuple[jax.Array, jax.Array, dict]:
         def loss_fn(model: Genie) -> tuple[jax.Array, tuple[jax.Array, dict]]:
             model.train()
-            return dynamics_loss_fn(model, inputs, training=True)
+            return dynamics_loss_fn(model, inputs)
 
         (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
             optimizer.model
@@ -485,7 +484,7 @@ def main(args: Args) -> None:
         """Evaluate model and compute metrics"""
         genie.eval()
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
-        (loss, (recon, metrics)) = dynamics_loss_fn(genie, inputs, training=False)
+        (loss, (recon, metrics)) = dynamics_loss_fn(genie, inputs)
         val_output = {"loss": loss, "recon": recon, "metrics": metrics}
 
         # --- Evaluate full frame prediction (sampling) ---
