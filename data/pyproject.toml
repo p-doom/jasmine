@@ -1,0 +1,28 @@
+[project]
+name = "jasmine-data"
+version = "0.1.0"
+authors = [
+  {name = "Alfred Nguyen", email = "alfrednguyen02@gmail.com"},
+  {name = "Mihir Mahajan", email = "mihir@pdoom.org"},
+  {name = "Franz Srambical", email = "franz@pdoom.org"},
+]
+requires-python = "==3.10.*"
+dependencies = [
+  "procgen>=0.10.7",
+  "gym3>=0.3.3",
+  "array-record>=0.7.2",
+  "numpy",
+  "hf-transfer==0.1.9",
+  "huggingface-hub[cli]>=0.34.3",
+  "ffmpeg-python==0.2.0",
+  "pillow>=11.3.0",
+  "tqdm>=4.67.1",
+  "tyro>=0.8.5",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.22,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
