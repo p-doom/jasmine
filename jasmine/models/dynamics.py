@@ -28,6 +28,8 @@ class DynamicsMaskGIT(nnx.Module):
         num_blocks: int,
         num_heads: int,
         dropout: float,
+        max_noise_level: float,
+        noise_buckets: int,
         mask_limit: float,
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
@@ -41,6 +43,8 @@ class DynamicsMaskGIT(nnx.Module):
         self.num_blocks = num_blocks
         self.num_heads = num_heads
         self.dropout = dropout
+        self.max_noise_level = max_noise_level
+        self.noise_buckets = noise_buckets
         self.mask_limit = mask_limit
         self.param_dtype = param_dtype
         self.dtype = dtype
@@ -70,6 +74,9 @@ class DynamicsMaskGIT(nnx.Module):
             dtype=self.dtype,
             rngs=rngs,
         )
+        self.noise_level_embed = nnx.Embed(
+            self.noise_buckets, self.model_dim, rngs=rngs
+        )
 
     def __call__(
         self,
@@ -80,11 +87,9 @@ class DynamicsMaskGIT(nnx.Module):
         latent_actions_BTm11L = batch["latent_actions"]
         vid_embed_BTNM = self.patch_embed(video_tokens_BTN)
 
-        batch_size = vid_embed_BTNM.shape[0]
-        _rng_prob, *_rngs_mask = jax.random.split(batch["mask_rng"], batch_size + 1)
-        mask_prob = jax.random.uniform(
-            _rng_prob, shape=(batch_size,), minval=self.mask_limit
-        )
+        B, T, N, M = vid_embed_BTNM.shape
+        rng, _rng_prob, *_rngs_mask = jax.random.split(batch["mask_rng"], B + 2)
+        mask_prob = jax.random.uniform(_rng_prob, shape=(B,), minval=self.mask_limit)
         per_sample_shape = vid_embed_BTNM.shape[1:-1]
         mask = jax.vmap(
             lambda rng, prob: jax.random.bernoulli(rng, prob, per_sample_shape),
@@ -95,16 +100,28 @@ class DynamicsMaskGIT(nnx.Module):
             jnp.expand_dims(mask, -1), self.mask_token.value, vid_embed_BTNM
         )
 
+        # --- Sample noise ---
+        rng, _rng_noise = jax.random.split(rng)
+        noise_level_B11 = jax.random.uniform(
+            _rng_noise, shape=(B,), minval=0.0, maxval=self.max_noise_level
+        ).reshape(B, 1, 1)
+        noise_bucket_idx_B11 = jnp.floor(
+            (noise_level_B11 / self.max_noise_level) * self.noise_buckets
+        ).astype(jnp.int32)
+        noise_level_embed_B11M = self.noise_level_embed(noise_bucket_idx_B11)
+        noise_level_embed_BT1M = jnp.tile(noise_level_embed_B11M, (1, T, 1, 1))
+        vid_embed_BTNM += jnp.expand_dims(noise_level_B11, -1)
+
         # --- Predict transition ---
         act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
         padded_act_embed_BT1M = jnp.pad(
             act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0))
         )
-        padded_act_embed_BTNM = jnp.broadcast_to(
-            padded_act_embed_BT1M, vid_embed_BTNM.shape
+        vid_embed_BTNp2M = jnp.concatenate(
+            [padded_act_embed_BT1M, noise_level_embed_BT1M, vid_embed_BTNM], axis=2
         )
-        vid_embed_BTNM += padded_act_embed_BTNM
-        logits_BTNV = self.transformer(vid_embed_BTNM)
+        logits_BTNp2V = self.transformer(vid_embed_BTNp2M)
+        logits_BTNV = logits_BTNp2V[:, :, 2:]
         return logits_BTNV, mask
 
 
