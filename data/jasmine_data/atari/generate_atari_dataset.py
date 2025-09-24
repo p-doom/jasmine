@@ -561,8 +561,14 @@ if __name__ == "__main__":
                     if args.capture_dataset and continue_capturing_multi:
                         current_len = len(observations_seq)
                         if current_len >= args.min_episode_length:
-                            frames = np.stack(observations_seq, axis=0).astype(np.uint8)
+                            frames = np.stack(observations_seq, axis=0).astype(
+                                np.uint8
+                            )  # (T, H, W)
                             acts = np.stack(actions_seq, axis=0).astype(np.int8)
+                            # Convert frames to three-channel RGB by repeating grayscale values
+                            frames = np.stack(
+                                [frames, frames, frames], axis=-1
+                            )  # (T, H, W, 3)
 
                             episode_obs_chunks = []
                             episode_act_chunks = []
