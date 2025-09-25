@@ -101,9 +101,9 @@ class Args:
 
     # Dataset capture
     capture_dataset: bool = True
-    num_episodes_train: int = 10000
-    num_episodes_val: int = 500
-    num_episodes_test: int = 500
+    num_transitions_train: int = 10000000
+    num_transitions_val: int = 500000
+    num_transitions_test: int = 500000
     output_dir: str = "data/atari_episodes"
     min_episode_length: int = 1
     chunk_size: int = 160
@@ -477,15 +477,15 @@ if __name__ == "__main__":
     )
 
     # dataset capture state
-    split_targets = {
-        "train": args.num_episodes_train,
-        "val": args.num_episodes_val,
-        "test": args.num_episodes_test,
+    split_targets: dict[str, int] = {
+        "train": args.num_transitions_train,
+        "val": args.num_transitions_val,
+        "test": args.num_transitions_test,
     }
     # Determine splits to run (order: train -> val -> test)
     splits_in_order = [s for s in ["train", "val", "test"] if split_targets[s] > 0]
 
-    episodes_captured_per_split: dict[str, int] = {
+    transitions_captured_per_split: dict[str, int] = {
         s: 0 for s in ["train", "val", "test"]
     }
     file_idx_by_split: dict[str, int] = {s: 0 for s in ["train", "val", "test"]}
@@ -555,7 +555,7 @@ if __name__ == "__main__":
                     )
 
                     continue_capturing_multi = any(
-                        episodes_captured_per_split[s] < split_targets[s]
+                        transitions_captured_per_split[s] < split_targets[s]
                         for s in splits_in_order
                     )
                     if args.capture_dataset and continue_capturing_multi:
@@ -607,10 +607,10 @@ if __name__ == "__main__":
                             )
                             episode_metadata_by_split[current_split].extend(ep_metadata)
 
-                            episodes_captured_per_split[current_split] += 1
+                            transitions_captured_per_split[current_split] += current_len
 
                             if (
-                                episodes_captured_per_split[current_split]
+                                transitions_captured_per_split[current_split]
                                 >= split_targets[current_split]
                             ):
                                 if len(obs_chunks) > 0:
@@ -743,7 +743,7 @@ if __name__ == "__main__":
         if args.capture_dataset and args.stop_on_complete:
             all_done = (
                 all(
-                    episodes_captured_per_split[s] >= split_targets[s]
+                    transitions_captured_per_split[s] >= split_targets[s]
                     for s in splits_in_order
                 )
                 and len(splits_in_order) > 0
@@ -776,7 +776,7 @@ if __name__ == "__main__":
         metadata.setdefault("env", args.env_id)
         metadata.setdefault("num_actions", int(envs.single_action_space.n))
         for split in ["train", "val", "test"]:
-            metadata.setdefault(f"num_episodes_{split}", 0)
+            metadata.setdefault(f"num_transitions_{split}", 0)
             metadata.setdefault(f"avg_episode_len_{split}", 0.0)
             metadata.setdefault(f"episode_metadata_{split}", [])
 
@@ -784,8 +784,13 @@ if __name__ == "__main__":
             ep_meta_list = episode_metadata_by_split[split_key]
             if ep_meta_list:
                 metadata[f"episode_metadata_{split_key}"].extend(ep_meta_list)
-                metadata[f"num_episodes_{split_key}"] = len(
-                    metadata[f"episode_metadata_{split_key}"]
+                metadata[f"num_transitions_{split_key}"] = int(
+                    np.sum(
+                        [
+                            ep["avg_seq_len"]
+                            for ep in metadata[f"episode_metadata_{split_key}"]
+                        ]
+                    )
                 )
                 metadata[f"avg_episode_len_{split_key}"] = float(
                     np.mean(
