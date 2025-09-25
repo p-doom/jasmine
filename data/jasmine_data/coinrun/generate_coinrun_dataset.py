@@ -11,11 +11,12 @@ from procgen import ProcgenGym3Env
 import tyro
 import json
 import os
-from jasmine_data.utils import save_chunks
+from data.jasmine_data.utils import save_chunks
 
 
 @dataclass
 class Args:
+    env_name: str = "coinrun"
     num_episodes_train: int = 10000
     num_episodes_val: int = 500
     num_episodes_test: int = 500
@@ -39,7 +40,7 @@ if args.min_episode_length < args.chunk_size:
 
 
 # --- Generate episodes ---
-def generate_episodes(num_episodes, split):
+def generate_episodes(num_episodes, split, start_seed, env_name):
     episode_idx = 0
     episode_metadata = []
     obs_chunks = []
@@ -47,8 +48,9 @@ def generate_episodes(num_episodes, split):
     file_idx = 0
     output_dir_split = os.path.join(args.output_dir, split)
     while episode_idx < num_episodes:
-        seed = np.random.randint(0, 10000)
-        env = ProcgenGym3Env(num=1, env_name="coinrun", start_level=seed)
+        env = ProcgenGym3Env(
+            num=1, env_name=env_name, start_level=start_seed + episode_idx
+        )
 
         observations_seq = []
         actions_seq = []
@@ -116,21 +118,30 @@ def generate_episodes(num_episodes, split):
 
 
 def get_action_space():
-    env = ProcgenGym3Env(num=1, env_name="coinrun", start_level=0)
+    env = ProcgenGym3Env(num=1, env_name=args.env_name, start_level=0)
     return env.ac_space.eltype.n
 
 
 def main():
-    # Set random seed and create dataset directories
-    np.random.seed(args.seed)
     # --- Generate episodes ---
-    train_episode_metadata = generate_episodes(args.num_episodes_train, "train")
-    val_episode_metadata = generate_episodes(args.num_episodes_val, "val")
-    test_episode_metadata = generate_episodes(args.num_episodes_test, "test")
+
+    train_start_seed = 0
+    val_start_seed = args.num_episodes_train
+    test_start_seed = args.num_episodes_train + args.num_episodes_val
+
+    train_episode_metadata = generate_episodes(
+        args.num_episodes_train, "train", train_start_seed, args.env_name
+    )
+    val_episode_metadata = generate_episodes(
+        args.num_episodes_val, "val", val_start_seed, args.env_name
+    )
+    test_episode_metadata = generate_episodes(
+        args.num_episodes_test, "test", test_start_seed, args.env_name
+    )
 
     # --- Save metadata ---
     metadata = {
-        "env": "coinrun",
+        "env": args.env_name,
         "num_actions": get_action_space(),
         "num_episodes_train": args.num_episodes_train,
         "num_episodes_val": args.num_episodes_val,
