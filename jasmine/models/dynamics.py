@@ -102,15 +102,21 @@ class DynamicsMaskGIT(nnx.Module):
 
         # --- Sample noise ---
         rng, _rng_noise = jax.random.split(rng)
-        noise_level_B11 = jax.random.uniform(
+        noise_level_B = jax.random.uniform(
             _rng_noise, shape=(B,), minval=0.0, maxval=self.max_noise_level
-        ).reshape(B, 1, 1)
-        noise_bucket_idx_B11 = jnp.floor(
-            (noise_level_B11 / self.max_noise_level) * self.noise_buckets
+        )
+        noise_BTNM = jax.random.normal(_rng_noise, shape=(B, T, N, M))
+        noise_bucket_idx_B = jnp.floor(
+            (noise_level_B / self.max_noise_level) * self.noise_buckets
         ).astype(jnp.int32)
+        noise_bucket_idx_B11 = noise_bucket_idx_B.reshape(B, 1, 1)
         noise_level_embed_B11M = self.noise_level_embed(noise_bucket_idx_B11)
         noise_level_embed_BT1M = jnp.tile(noise_level_embed_B11M, (1, T, 1, 1))
-        vid_embed_BTNM += jnp.expand_dims(noise_level_B11, -1)
+        noise_level_B111 = noise_level_B.reshape(B, 1, 1, 1)
+        vid_embed_BTNM = (
+            jnp.sqrt(1 - noise_level_B111) * vid_embed_BTNM
+            + jnp.sqrt(noise_level_B111) * noise_BTNM
+        )
 
         # --- Predict transition ---
         act_embed_BTm11M = self.action_up(latent_actions_BTm11L)

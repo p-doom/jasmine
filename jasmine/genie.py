@@ -255,6 +255,9 @@ class Genie(nnx.Module):
             P: S * N
         """
         assert isinstance(self.dynamics, DynamicsMaskGIT)
+        assert (
+            noise_level < self.max_noise_level
+        ), "Noise level must me smaller than max_noise_level."
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
         tokenizer_out = self.tokenizer.vq_encode(videos_BTHWC, training=False)
