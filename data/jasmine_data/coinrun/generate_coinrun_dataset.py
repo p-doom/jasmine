@@ -123,11 +123,13 @@ def get_action_space():
 
 
 def main():
-    # --- Generate episodes ---
-    train_start_seed = 0
-    val_start_seed = args.num_episodes_train
-    test_start_seed = args.num_episodes_train + args.num_episodes_val
+    # Set random seed and create dataset directories
+    np.random.seed(args.seed)
+    train_start_seed = np.random.randint(0, 1000)
+    val_start_seed = train_start_seed + args.num_episodes_train
+    test_start_seed = val_start_seed + args.num_episodes_val
 
+    # --- Generate episodes ---
     train_episode_metadata = generate_episodes(
         args.num_episodes_train, "train", train_start_seed, args.env_name
     )
