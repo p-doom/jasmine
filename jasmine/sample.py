@@ -36,6 +36,8 @@ class Args:
     temperature: float = 1.0
     sample_argmax: bool = True
     start_frame: int = 1
+    noise_level: float = 0.0
+    noise_buckets: int = 10
     # Tokenizer checkpoint
     tokenizer_dim: int = 512
     tokenizer_ffn_dim: int = 2048
@@ -102,6 +104,8 @@ if __name__ == "__main__":
         lam_num_blocks=args.lam_num_blocks,
         lam_num_heads=args.lam_num_heads,
         lam_co_train=False,
+        max_noise_level=0.0,
+        noise_buckets=args.noise_buckets,
         use_gt_actions=args.use_gt_actions,
         # Dynamics
         dyna_type=args.dyna_type,
