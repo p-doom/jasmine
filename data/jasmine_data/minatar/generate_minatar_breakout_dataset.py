@@ -156,11 +156,9 @@ def main():
         "num_episodes_train": args.num_episodes_train,
         "num_episodes_val": args.num_episodes_val,
         "num_episodes_test": args.num_episodes_test,
-        "avg_episode_len_train": float(
-            np.mean([ep["avg_seq_len"] for ep in train_meta])
-        ),
-        "avg_episode_len_val": float(np.mean([ep["avg_seq_len"] for ep in val_meta])),
-        "avg_episode_len_test": float(np.mean([ep["avg_seq_len"] for ep in test_meta])),
+        "avg_episode_len_train": np.mean([ep["avg_seq_len"] for ep in train_meta]),
+        "avg_episode_len_val": np.mean([ep["avg_seq_len"] for ep in val_meta]),
+        "avg_episode_len_test": np.mean([ep["avg_seq_len"] for ep in test_meta]),
         "episode_metadata_train": train_meta,
         "episode_metadata_val": val_meta,
         "episode_metadata_test": test_meta,
