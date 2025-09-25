@@ -10,7 +10,7 @@ import json
 import tyro
 
 from minatar import Environment
-from utils import save_chunks
+from jasmine_data.utils import save_chunks
 
 
 @dataclass
