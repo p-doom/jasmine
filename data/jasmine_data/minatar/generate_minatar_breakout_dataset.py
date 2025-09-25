@@ -27,10 +27,10 @@ class Args:
 
 
 args = tyro.cli(Args)
-
 assert (
     args.max_episode_length >= args.min_episode_length
-), "Maximum episode length must be >= minimum episode length."
+), "Maximum episode length must be greater than or equal to minimum episode length."
+
 if args.min_episode_length < args.chunk_size:
     print(
         "Warning: Minimum episode length is smaller than chunk size. "
@@ -70,7 +70,7 @@ def _obs_to_rgb(obs):
     return obs
 
 
-def generate_episodes(num_episodes: int, split: str):
+def generate_episodes(num_episodes: int, split: str, seed: int):
     episode_idx = 0
     episode_metadata = []
     obs_chunks = []
@@ -80,7 +80,8 @@ def generate_episodes(num_episodes: int, split: str):
     os.makedirs(output_dir_split, exist_ok=True)
 
     while episode_idx < num_episodes:
-        env = Environment("breakout", sticky_action_prob=0.0)  # typical MinAtar setup
+        env = Environment("breakout", sticky_action_prob=0.0)
+        env.seed(seed)
         env.reset()
         obs_seq, act_seq = [], []
         episode_obs_chunks, episode_act_chunks = [], []
@@ -126,6 +127,7 @@ def generate_episodes(num_episodes: int, split: str):
             episode_idx += 1
         else:
             print(f"Episode too short ({step_t + 1}), resampling...")
+        seed += 1
 
     if len(obs_chunks) > 0:
         print(
@@ -134,7 +136,7 @@ def generate_episodes(num_episodes: int, split: str):
         )
 
     print(f"Done generating {split} split.")
-    return episode_metadata
+    return episode_metadata, seed
 
 
 def get_action_space() -> int:
@@ -143,12 +145,11 @@ def get_action_space() -> int:
 
 
 def main():
-    np.random.seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
-
-    train_meta = generate_episodes(args.num_episodes_train, "train")
-    val_meta = generate_episodes(args.num_episodes_val, "val")
-    test_meta = generate_episodes(args.num_episodes_test, "test")
+    seed = args.seed
+    train_meta, seed = generate_episodes(args.num_episodes_train, "train", seed)
+    val_meta, seed = generate_episodes(args.num_episodes_val, "val", seed)
+    test_meta, seed = generate_episodes(args.num_episodes_test, "test", seed)
 
     metadata = {
         "env": "MinAtar-Breakout",
