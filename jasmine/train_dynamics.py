@@ -325,7 +325,7 @@ def restore_or_initialize_components(
     return step, optimizer, train_iterator, val_iterator, rng
 
 
-def calculate_topk_accuracy(
+def _calculate_top_k_accuracy(
     token_logits: jax.Array,
     video_tokens: jax.Array,
     mask: jax.Array,
@@ -350,16 +350,16 @@ def _calculate_step_metrics(
     )
     ce_loss = (mask * ce_loss).sum() / mask.sum()
 
-    top_1_acc = calculate_topk_accuracy(
+    masked_token_top_1_acc = _calculate_top_k_accuracy(
         outputs["token_logits"], outputs["video_tokens"], mask, 1
     )
-    top_2_acc = calculate_topk_accuracy(
+    masked_token_top_2_acc = _calculate_top_k_accuracy(
         outputs["token_logits"], outputs["video_tokens"], mask, 2
     )
-    top_5_acc = calculate_topk_accuracy(
+    masked_token_top_5_acc = _calculate_top_k_accuracy(
         outputs["token_logits"], outputs["video_tokens"], mask, 5
     )
-    top_16_acc = calculate_topk_accuracy(
+    masked_token_top_16_acc = _calculate_top_k_accuracy(
         outputs["token_logits"], outputs["video_tokens"], mask, 16
     )
 
@@ -376,10 +376,10 @@ def _calculate_step_metrics(
     codebook_usage_tokenizer = (index_counts_tokenizer != 0).mean()
     metrics = dict(
         cross_entropy_loss=ce_loss,
-        masked_token_top1_accuracy=top_1_acc,
-        masked_token_top2_accuracy=top_2_acc,
-        masked_token_top5_accuracy=top_5_acc,
-        masked_token_top16_accuracy=top_16_acc,
+        masked_token_top1_accuracy=masked_token_top_1_acc,
+        masked_token_top2_accuracy=masked_token_top_2_acc,
+        masked_token_top5_accuracy=masked_token_top_5_acc,
+        masked_token_top16_accuracy=masked_token_top_16_acc,
         select_logit=outputs["token_logits"].max(-1).mean(),
         select_p=select_probs.max(-1).mean(),
         entropy=jax.scipy.special.entr(select_probs).sum(-1).mean(),
