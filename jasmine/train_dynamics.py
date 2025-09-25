@@ -331,7 +331,7 @@ def _calculate_top_k_accuracy(
     mask: jax.Array,
     k: int,
 ) -> jax.Array:
-    topk_indices = jnp.argsort(token_logits, axis=-1)[..., -k:]
+    topk_indices = jax.lax.top_k(token_logits, k)[1]
     topk_correct = jnp.any(topk_indices == video_tokens[..., None], axis=-1)
     topk_acc = (mask * topk_correct).sum() / mask.sum()
     return topk_acc
