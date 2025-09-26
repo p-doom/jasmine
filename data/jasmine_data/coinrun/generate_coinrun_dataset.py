@@ -40,7 +40,7 @@ if args.min_episode_length < args.chunk_size:
 
 
 # --- Generate episodes ---
-def generate_episodes(num_episodes, split, start_seed, env_name):
+def generate_episodes(num_episodes, split, start_level, env_name):
     episode_idx = 0
     episode_metadata = []
     obs_chunks = []
@@ -49,7 +49,7 @@ def generate_episodes(num_episodes, split, start_seed, env_name):
     output_dir_split = os.path.join(args.output_dir, split)
     while episode_idx < num_episodes:
         env = ProcgenGym3Env(
-            num=1, env_name=env_name, start_level=start_seed + episode_idx
+            num=1, env_name=env_name, start_level=start_level + episode_idx
         )
 
         observations_seq = []
@@ -125,19 +125,19 @@ def get_action_space():
 def main():
     # Set random seed and create dataset directories
     np.random.seed(args.seed)
-    train_start_seed = np.random.randint(0, 1000)
-    val_start_seed = train_start_seed + args.num_episodes_train
-    test_start_seed = val_start_seed + args.num_episodes_val
+    train_start_level = np.random.randint(0, 1000)
+    val_start_level = train_start_level + args.num_episodes_train
+    test_start_level = val_start_level + args.num_episodes_val
 
     # --- Generate episodes ---
     train_episode_metadata = generate_episodes(
-        args.num_episodes_train, "train", train_start_seed, args.env_name
+        args.num_episodes_train, "train", train_start_level, args.env_name
     )
     val_episode_metadata = generate_episodes(
-        args.num_episodes_val, "val", val_start_seed, args.env_name
+        args.num_episodes_val, "val", val_start_level, args.env_name
     )
     test_episode_metadata = generate_episodes(
-        args.num_episodes_test, "test", test_start_seed, args.env_name
+        args.num_episodes_test, "test", test_start_level, args.env_name
     )
 
     # --- Save metadata ---
