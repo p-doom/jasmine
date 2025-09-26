@@ -325,20 +325,46 @@ def restore_or_initialize_components(
     return step, optimizer, train_iterator, val_iterator, rng
 
 
+def _calculate_top_k_accuracy(
+    token_logits_BTNV: jax.Array,
+    video_tokens_BTN: jax.Array,
+    mask_BTN: jax.Array,
+    k: int,
+) -> jax.Array:
+    _, topk_indices_BTNK = jax.lax.top_k(token_logits_BTNV, k)
+    topk_correct = jnp.any(
+        topk_indices_BTNK == video_tokens_BTN[..., jnp.newaxis], axis=-1
+    )
+    topk_acc = (mask_BTN * topk_correct).sum() / mask_BTN.sum()
+    return topk_acc
+
+
 def _calculate_step_metrics(
     outputs: dict[str, jax.Array],
     gt: jax.Array,
     num_actions: int,
     num_patch_latents: int,
 ) -> tuple[jax.Array, dict]:
-    mask = outputs["mask"]
+    mask_BTN = outputs["mask"]
     outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
     ce_loss = optax.softmax_cross_entropy_with_integer_labels(
         outputs["token_logits"], outputs["video_tokens"]
     )
-    ce_loss = (mask * ce_loss).sum() / mask.sum()
-    acc = outputs["token_logits"].argmax(-1) == outputs["video_tokens"]
-    acc = (mask * acc).sum() / mask.sum()
+    ce_loss = (mask_BTN * ce_loss).sum() / mask_BTN.sum()
+
+    masked_token_top_1_acc = _calculate_top_k_accuracy(
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 1
+    )
+    masked_token_top_2_acc = _calculate_top_k_accuracy(
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 2
+    )
+    masked_token_top_5_acc = _calculate_top_k_accuracy(
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 5
+    )
+    masked_token_top_16_acc = _calculate_top_k_accuracy(
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 16
+    )
+
     select_probs = jax.nn.softmax(outputs["token_logits"])
     gt_val = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
     recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
@@ -352,7 +378,10 @@ def _calculate_step_metrics(
     codebook_usage_tokenizer = (index_counts_tokenizer != 0).mean()
     metrics = dict(
         cross_entropy_loss=ce_loss,
-        masked_token_accuracy=acc,
+        masked_token_top1_accuracy=masked_token_top_1_acc,
+        masked_token_top2_accuracy=masked_token_top_2_acc,
+        masked_token_top5_accuracy=masked_token_top_5_acc,
+        masked_token_top16_accuracy=masked_token_top_16_acc,
         select_logit=outputs["token_logits"].max(-1).mean(),
         select_p=select_probs.max(-1).mean(),
         entropy=jax.scipy.special.entr(select_probs).sum(-1).mean(),
