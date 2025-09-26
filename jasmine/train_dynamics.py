@@ -328,14 +328,14 @@ def restore_or_initialize_components(
 def _calculate_top_k_accuracy(
     token_logits_BTNV: jax.Array,
     video_tokens_BTN: jax.Array,
-    mask: jax.Array,
+    mask_BTN: jax.Array,
     k: int,
 ) -> jax.Array:
     _, topk_indices_BTNK = jax.lax.top_k(token_logits_BTNV, k)
     topk_correct = jnp.any(
         topk_indices_BTNK == video_tokens_BTN[..., jnp.newaxis], axis=-1
     )
-    topk_acc = (mask * topk_correct).sum() / mask.sum()
+    topk_acc = (mask_BTN * topk_correct).sum() / mask_BTN.sum()
     return topk_acc
 
 
@@ -345,24 +345,24 @@ def _calculate_step_metrics(
     num_actions: int,
     num_patch_latents: int,
 ) -> tuple[jax.Array, dict]:
-    mask = outputs["mask"]
+    mask_BTN = outputs["mask"]
     outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
     ce_loss = optax.softmax_cross_entropy_with_integer_labels(
         outputs["token_logits"], outputs["video_tokens"]
     )
-    ce_loss = (mask * ce_loss).sum() / mask.sum()
+    ce_loss = (mask_BTN * ce_loss).sum() / mask_BTN.sum()
 
     masked_token_top_1_acc = _calculate_top_k_accuracy(
-        outputs["token_logits"], outputs["video_tokens"], mask, 1
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 1
     )
     masked_token_top_2_acc = _calculate_top_k_accuracy(
-        outputs["token_logits"], outputs["video_tokens"], mask, 2
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 2
     )
     masked_token_top_5_acc = _calculate_top_k_accuracy(
-        outputs["token_logits"], outputs["video_tokens"], mask, 5
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 5
     )
     masked_token_top_16_acc = _calculate_top_k_accuracy(
-        outputs["token_logits"], outputs["video_tokens"], mask, 16
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 16
     )
 
     select_probs = jax.nn.softmax(outputs["token_logits"])
