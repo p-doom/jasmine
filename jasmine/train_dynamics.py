@@ -326,13 +326,15 @@ def restore_or_initialize_components(
 
 
 def _calculate_top_k_accuracy(
-    token_logits: jax.Array,
-    video_tokens: jax.Array,
+    token_logits_BTNV: jax.Array,
+    video_tokens_BTN: jax.Array,
     mask: jax.Array,
     k: int,
 ) -> jax.Array:
-    _, topk_indices = jax.lax.top_k(token_logits, k)
-    topk_correct = jnp.any(topk_indices == video_tokens[..., None], axis=-1)
+    _, topk_indices_BTNK = jax.lax.top_k(token_logits_BTNV, k)
+    topk_correct = jnp.any(
+        topk_indices_BTNK == video_tokens_BTN[..., jnp.newaxis], axis=-1
+    )
     topk_acc = (mask * topk_correct).sum() / mask.sum()
     return topk_acc
 
