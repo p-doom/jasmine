@@ -80,6 +80,7 @@ class Args:
     dyna_num_heads: int = 8
     dropout: float = 0.0
     mask_limit: float = 0.5
+    z_loss_weight: float = 0.0
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
     use_flash_attention: bool = True
@@ -351,6 +352,8 @@ def _calculate_step_metrics(
         outputs["token_logits"], outputs["video_tokens"]
     )
     ce_loss = (mask_BTN * ce_loss).sum() / mask_BTN.sum()
+    z_val = jax.nn.logsumexp(outputs["token_logits"], axis=-1)
+    z_loss_metric = (mask_BTN * (z_val**2)).sum() / mask_BTN.sum()
 
     masked_token_top_1_acc = _calculate_top_k_accuracy(
         outputs["token_logits"], outputs["video_tokens"], mask_BTN, 1
@@ -385,6 +388,7 @@ def _calculate_step_metrics(
         select_logit=outputs["token_logits"].max(-1).mean(),
         select_p=select_probs.max(-1).mean(),
         entropy=jax.scipy.special.entr(select_probs).sum(-1).mean(),
+        z_loss=z_loss_metric,
         psnr=psnr,
         ssim=ssim,
         codebook_usage_tokenizer=codebook_usage_tokenizer,
@@ -488,7 +492,10 @@ def main(args: Args) -> None:
         ce_loss, metrics = _calculate_step_metrics(
             outputs, gt, args.num_actions, args.num_patch_latents
         )
-        return ce_loss, (outputs["recon"], metrics)
+        z_loss = metrics["z_loss"]
+        total_loss = ce_loss + args.z_loss_weight * z_loss
+        metrics["total_loss"] = total_loss
+        return total_loss, (outputs["recon"], metrics)
 
     @nnx.jit(donate_argnums=0)
     def train_step(
