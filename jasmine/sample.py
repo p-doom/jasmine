@@ -104,7 +104,7 @@ if __name__ == "__main__":
         lam_num_blocks=args.lam_num_blocks,
         lam_num_heads=args.lam_num_heads,
         lam_co_train=False,
-        max_noise_level=0.0,
+        max_noise_level=1.0,
         noise_buckets=args.noise_buckets,
         use_gt_actions=args.use_gt_actions,
         # Dynamics
