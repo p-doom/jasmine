@@ -207,16 +207,22 @@ class Genie(nnx.Module):
         self,
         batch: Dict[str, jax.Array],
         seq_len: int,
+        noise_level: float = 0.0,
         temperature: float = 1,
         sample_argmax: bool = False,
         maskgit_steps: int = 25,
     ) -> tuple[jax.Array, jax.Array]:
+        assert (
+            noise_level < self.max_noise_level
+        ), "Noise level must me smaller than max_noise_level."
         if self.dyna_type == "maskgit":
             return self.sample_maskgit(
-                batch, seq_len, 0.0, maskgit_steps, temperature, sample_argmax
+                batch, seq_len, noise_level, maskgit_steps, temperature, sample_argmax
             )
         elif self.dyna_type == "causal":
-            return self.sample_causal(batch, seq_len, temperature, sample_argmax)
+            return self.sample_causal(
+                batch, seq_len, noise_level, temperature, sample_argmax
+            )
         else:
             raise ValueError(f"Dynamics model type unknown: {self.dyna_type}")
 
@@ -255,9 +261,6 @@ class Genie(nnx.Module):
             P: S * N
         """
         assert isinstance(self.dynamics, DynamicsMaskGIT)
-        assert (
-            noise_level < self.max_noise_level
-        ), "Noise level must me smaller than max_noise_level."
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
         tokenizer_out = self.tokenizer.vq_encode(videos_BTHWC, training=False)
@@ -328,19 +331,18 @@ class Genie(nnx.Module):
             act_embed_BS1M = jnp.reshape(
                 act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1])
             )
-            # TODO mihir
 
+            # TODO mihir
             rng, _rng_noise = jax.random.split(rng)
             noise_level_111 = noise_level.reshape(1, 1, 1)
             noise_level_B11 = jnp.tile(noise_level_111, (B, 1, 1))
             noise_bucket_idx_B11 = jnp.floor(
-                (noise_level_B11 / self.max_noise_level) * self.noise_buckets
+                (noise_level_B11 * self.noise_buckets) / self.max_noise_level
             ).astype(jnp.int32)
             noise_level_embed_B11M = dynamics_maskgit.noise_level_embed(
                 noise_bucket_idx_B11
             )
             noise_level_embed_BS1M = jnp.tile(noise_level_embed_B11M, (1, S, 1, 1))
-            vid_embed_BSNM += jnp.expand_dims(noise_level_B11, -1)
 
             vid_embed_BSNp2M = jnp.concatenate(
                 [act_embed_BS1M, noise_level_embed_BS1M, vid_embed_BSNM], axis=2
@@ -441,6 +443,7 @@ class Genie(nnx.Module):
         self,
         batch: Dict[str, jax.Array],
         seq_len: int,
+        noise_level: float,
         temperature: float = 1,
         sample_argmax: bool = False,
     ) -> tuple[jax.Array, jax.Array]:
@@ -528,12 +531,28 @@ class Genie(nnx.Module):
             act_embed_BS1M = jnp.reshape(
                 act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1])
             )
-            vid_embed_BSNp1M = jnp.concatenate([act_embed_BS1M, vid_embed_BSNM], axis=2)
-            final_logits_BTNp1V = (
-                dynamics_causal.transformer(vid_embed_BSNp1M, (step_t, step_n))
+
+            # TODO mihir
+
+            rng, _rng_noise = jax.random.split(rng)
+            noise_level_111 = noise_level.reshape(1, 1, 1)
+            noise_level_B11 = jnp.tile(noise_level_111, (B, 1, 1))
+            noise_bucket_idx_B11 = jnp.floor(
+                (noise_level_B11 * self.noise_buckets) / self.max_noise_level
+            ).astype(jnp.int32)
+            noise_level_embed_B11M = dynamics_causal.noise_level_embed(
+                noise_bucket_idx_B11
+            )
+            noise_level_embed_BS1M = jnp.tile(noise_level_embed_B11M, (1, S, 1, 1))
+
+            vid_embed_BSNp2M = jnp.concatenate(
+                [act_embed_BS1M, noise_level_embed_BS1M, vid_embed_BSNM], axis=2
+            )
+            final_logits_BTNp2V = (
+                dynamics_causal.transformer(vid_embed_BSNp2M, (step_t, step_n))
                 / temperature
             )
-            final_logits_BV = final_logits_BTNp1V[:, step_t, step_n, :]
+            final_logits_BV = final_logits_BTNp2V[:, step_t, step_n + 1, :]
 
             # --- Sample new tokens for final frame ---
             if sample_argmax:
