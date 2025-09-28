@@ -103,7 +103,7 @@ class DynamicsMaskGIT(nnx.Module):
 
         noise_augmented_vid_embed_BTNM = (
             jnp.sqrt(1 - noise_level_B111) * vid_embed_BTNM
-            + noise_level_B111 * noise_BTNM
+            + jnp.sqrt(noise_level_B111) * noise_BTNM
         )
 
         return noise_augmented_vid_embed_BTNM, noise_level_embed_BT1M
@@ -233,7 +233,7 @@ class DynamicsCausal(nnx.Module):
 
         noise_augmented_vid_embed_BTNM = (
             jnp.sqrt(1 - noise_level_B111) * vid_embed_BTNM
-            + noise_level_B111 * noise_BTNM
+            + jnp.sqrt(noise_level_B111) * noise_BTNM
         )
 
         return noise_augmented_vid_embed_BTNM, noise_level_embed_BT1M

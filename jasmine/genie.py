@@ -339,6 +339,12 @@ class Genie(nnx.Module):
             noise_bucket_idx_B11 = jnp.floor(
                 (noise_level_B11 * self.noise_buckets) / self.max_noise_level
             ).astype(jnp.int32)
+
+            # Clip noise_bucket_idx to ensure it stays within valid range to prevent NaNs
+            noise_bucket_idx_B11 = jnp.clip(
+                noise_bucket_idx_B11, 0, self.noise_buckets - 1
+            )
+
             noise_level_embed_B11M = dynamics_maskgit.noise_level_embed(
                 noise_bucket_idx_B11
             )
@@ -540,6 +546,12 @@ class Genie(nnx.Module):
             noise_bucket_idx_B11 = jnp.floor(
                 (noise_level_B11 * self.noise_buckets) / self.max_noise_level
             ).astype(jnp.int32)
+
+            # Clip noise_bucket_idx to ensure it stays within valid range to prevent NaNs
+            noise_bucket_idx_B11 = jnp.clip(
+                noise_bucket_idx_B11, 0, self.noise_buckets - 1
+            )
+
             noise_level_embed_B11M = dynamics_causal.noise_level_embed(
                 noise_bucket_idx_B11
             )
