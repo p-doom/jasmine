@@ -101,23 +101,27 @@ class DynamicsMaskGIT(nnx.Module):
         )
 
         # --- Sample noise ---
-        rng, _rng_noise = jax.random.split(rng)
+        rng, _rng_noise_lvl, _rng_noise = jax.random.split(rng, 3)
         noise_level_B = jax.random.uniform(
-            _rng_noise, shape=(B,), minval=0.0, maxval=self.max_noise_level
+            _rng_noise_lvl, shape=(B,), minval=0.0, maxval=self.max_noise_level
         )
         noise_BTNM = jax.random.normal(_rng_noise, shape=(B, T, N, M))
+        # We calculate `(noise_level * noise_buckets) / max_noise_level` instead of
+        # `(noise_level_B / max_noise_level) * noise_buckets` for numerical stability.
         noise_bucket_idx_B = jnp.floor(
-            (noise_level_B / self.max_noise_level) * self.noise_buckets
+            (noise_level_B * self.noise_buckets) / self.max_noise_level
         ).astype(jnp.int32)
         noise_bucket_idx_B11 = noise_bucket_idx_B.reshape(B, 1, 1)
         noise_level_embed_B11M = self.noise_level_embed(noise_bucket_idx_B11)
         noise_level_embed_BT1M = jnp.tile(noise_level_embed_B11M, (1, T, 1, 1))
         noise_level_B111 = noise_level_B.reshape(B, 1, 1, 1)
-        vid_embed_BTNM = (
-            jnp.sqrt(1 - noise_level_B111) * vid_embed_BTNM
-            + jnp.sqrt(noise_level_B111) * noise_BTNM
-        )
 
+        # safe sqrt: clip argument to >= 0
+        one_minus_noise = jnp.clip(1.0 - noise_level_B111, a_min=0.0)
+        sqrt_one_minus = jnp.sqrt(one_minus_noise)
+        sqrt_noise = jnp.sqrt(jnp.clip(noise_level_B111, a_min=0.0))
+
+        vid_embed_BTNM = sqrt_one_minus * vid_embed_BTNM + sqrt_noise * noise_BTNM
         # --- Predict transition ---
         act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
         padded_act_embed_BT1M = jnp.pad(
