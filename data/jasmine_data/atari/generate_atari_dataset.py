@@ -58,8 +58,6 @@ class Args:
 
     env_id: str = "ALE/Breakout-v5"
     """the id of the environment"""
-    total_timesteps: int = 10000000
-    """total timesteps of the experiments"""
     learning_rate: float = 0.0000625
     """the learning rate of the optimizer"""
     num_envs: int = 1
@@ -508,12 +506,17 @@ if __name__ == "__main__":
     obs, _ = envs.reset(seed=args.seed)
     observations_seq: list[np.ndarray] = []
     actions_seq: list[np.ndarray] = []
-    for global_step in range(args.total_timesteps):
+    total_timesteps = (
+        args.num_transitions_train
+        + args.num_transitions_val
+        + args.num_transitions_test
+    )
+    for global_step in range(total_timesteps):
         # anneal PER beta to 1
         rb.beta = min(
             1.0,
             args.prioritized_replay_beta
-            + global_step * (1.0 - args.prioritized_replay_beta) / args.total_timesteps,
+            + global_step * (1.0 - args.prioritized_replay_beta) / total_timesteps,
         )
 
         # ALGO LOGIC: put action logic here
