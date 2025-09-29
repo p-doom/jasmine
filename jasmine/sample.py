@@ -37,6 +37,7 @@ class Args:
     sample_argmax: bool = True
     start_frame: int = 1
     noise_level: float = 0.0
+    max_noise_level: float = 0.7
     noise_buckets: int = 10
     # Tokenizer checkpoint
     tokenizer_dim: int = 512
@@ -104,7 +105,7 @@ if __name__ == "__main__":
         lam_num_blocks=args.lam_num_blocks,
         lam_num_heads=args.lam_num_heads,
         lam_co_train=False,
-        max_noise_level=1.0,
+        max_noise_level=args.max_noise_level,
         noise_buckets=args.noise_buckets,
         use_gt_actions=args.use_gt_actions,
         # Dynamics
@@ -170,11 +171,12 @@ if __name__ == "__main__":
             "causal",
         ], f"Invalid dynamics type: {args.dyna_type}"
         frames, _ = model.sample(
-            batch,
-            args.seq_len,
-            args.temperature,
-            args.sample_argmax,
-            args.maskgit_steps,
+            batch=batch,
+            seq_len=args.seq_len,
+            noise_level=args.noise_level,
+            temperature=args.temperature,
+            sample_argmax=args.sample_argmax,
+            maskgit_steps=args.maskgit_steps,
         )
         return frames
 

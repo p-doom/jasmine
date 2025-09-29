@@ -192,7 +192,7 @@ class Genie(nnx.Module):
                 else latent_actions_BTm11L
             ),
         )
-        outputs["mask_rng"] = batch["rng"]
+        outputs["rng"] = batch["rng"]
         dyna_logits_BTNV, dyna_mask = self.dynamics(outputs)
         outputs["token_logits"] = dyna_logits_BTNV
         outputs["mask"] = dyna_mask
@@ -213,8 +213,8 @@ class Genie(nnx.Module):
         maskgit_steps: int = 25,
     ) -> tuple[jax.Array, jax.Array]:
         assert (
-            noise_level < self.max_noise_level
-        ), "Noise level must me smaller than max_noise_level."
+            noise_level <= self.max_noise_level
+        ), "Noise level must not be greater than max_noise_level."
         if self.dyna_type == "maskgit":
             return self.sample_maskgit(
                 batch, seq_len, noise_level, maskgit_steps, temperature, sample_argmax
@@ -332,23 +332,11 @@ class Genie(nnx.Module):
                 act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1])
             )
 
-            # TODO mihir
-            rng, _rng_noise = jax.random.split(rng)
-            noise_level_111 = noise_level.reshape(1, 1, 1)
-            noise_level_B11 = jnp.tile(noise_level_111, (B, 1, 1))
-            noise_bucket_idx_B11 = jnp.floor(
-                (noise_level_B11 * self.noise_buckets) / self.max_noise_level
-            ).astype(jnp.int32)
-
-            # Clip noise_bucket_idx to ensure it stays within valid range to prevent NaNs
-            noise_bucket_idx_B11 = jnp.clip(
-                noise_bucket_idx_B11, 0, self.noise_buckets - 1
+            rng, _rng_noise_augmentation = jax.random.split(rng)
+            noise_level_B = jnp.tile(noise_level, B)
+            _, noise_level_embed_BS1M = dynamics_maskgit.apply_noise_augmentation(
+                vid_embed_BSNM, _rng_noise_augmentation, noise_level_B
             )
-
-            noise_level_embed_B11M = dynamics_maskgit.noise_level_embed(
-                noise_bucket_idx_B11
-            )
-            noise_level_embed_BS1M = jnp.tile(noise_level_embed_B11M, (1, S, 1, 1))
 
             vid_embed_BSNp2M = jnp.concatenate(
                 [act_embed_BS1M, noise_level_embed_BS1M, vid_embed_BSNM], axis=2
@@ -488,6 +476,7 @@ class Genie(nnx.Module):
         token_idxs_BSN = jnp.concatenate([token_idxs_BTN, pad], axis=1)
         logits_BSNV = jnp.zeros((*token_idxs_BSN.shape, self.num_patch_latents))
         dynamics_state = nnx.state(self.dynamics)
+        noise_level = jnp.array(noise_level)
 
         if self.use_gt_actions:
             assert self.action_embed is not None
@@ -519,6 +508,8 @@ class Genie(nnx.Module):
                 num_blocks=self.dyna_num_blocks,
                 num_heads=self.dyna_num_heads,
                 dropout=self.dropout,
+                max_noise_level=self.max_noise_level,
+                noise_buckets=self.noise_buckets,
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
                 use_flash_attention=self.use_flash_attention,
@@ -538,24 +529,11 @@ class Genie(nnx.Module):
                 act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1])
             )
 
-            # TODO mihir
-
-            rng, _rng_noise = jax.random.split(rng)
-            noise_level_111 = noise_level.reshape(1, 1, 1)
-            noise_level_B11 = jnp.tile(noise_level_111, (B, 1, 1))
-            noise_bucket_idx_B11 = jnp.floor(
-                (noise_level_B11 * self.noise_buckets) / self.max_noise_level
-            ).astype(jnp.int32)
-
-            # Clip noise_bucket_idx to ensure it stays within valid range to prevent NaNs
-            noise_bucket_idx_B11 = jnp.clip(
-                noise_bucket_idx_B11, 0, self.noise_buckets - 1
+            rng, _rng_noise_augmentation = jax.random.split(rng)
+            noise_level_B = jnp.tile(noise_level, B)
+            _, noise_level_embed_BS1M = dynamics_causal.apply_noise_augmentation(
+                vid_embed_BSNM, _rng_noise_augmentation, noise_level_B
             )
-
-            noise_level_embed_B11M = dynamics_causal.noise_level_embed(
-                noise_bucket_idx_B11
-            )
-            noise_level_embed_BS1M = jnp.tile(noise_level_embed_B11M, (1, S, 1, 1))
 
             vid_embed_BSNp2M = jnp.concatenate(
                 [act_embed_BS1M, noise_level_embed_BS1M, vid_embed_BSNM], axis=2

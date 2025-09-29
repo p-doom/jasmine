@@ -78,16 +78,17 @@ class DynamicsMaskGIT(nnx.Module):
             self.noise_buckets, self.model_dim, rngs=rngs
         )
 
-    def _apply_noise_augmentation(self, vid_embed_BTNM, rng):
+    def apply_noise_augmentation(self, vid_embed_BTNM, rng, noise_level_B=None):
         B, T, N, M = vid_embed_BTNM.shape
         rng, _rng_noise_lvl, _rng_noise = jax.random.split(rng, 3)
-        noise_level_B = jax.random.uniform(
-            _rng_noise_lvl,
-            shape=(B,),
-            minval=0.0,
-            maxval=self.max_noise_level,
-            dtype=self.dtype,
-        )
+        if noise_level_B is None:
+            noise_level_B = jax.random.uniform(
+                _rng_noise_lvl,
+                shape=(B,),
+                minval=0.0,
+                maxval=self.max_noise_level,
+                dtype=self.dtype,
+            )
         noise_BTNM = jax.random.normal(_rng_noise, shape=(B, T, N, M), dtype=self.dtype)
         noise_bucket_idx_B = jnp.floor(
             (noise_level_B * self.noise_buckets) / self.max_noise_level
@@ -118,7 +119,7 @@ class DynamicsMaskGIT(nnx.Module):
         vid_embed_BTNM = self.patch_embed(video_tokens_BTN)
 
         B = vid_embed_BTNM.shape[0]
-        rng, _rng_prob, *_rngs_mask = jax.random.split(batch["mask_rng"], B + 2)
+        rng, _rng_prob, *_rngs_mask = jax.random.split(batch["rng"], B + 2)
         mask_prob = jax.random.uniform(_rng_prob, shape=(B,), minval=self.mask_limit)
         per_sample_shape = vid_embed_BTNM.shape[1:-1]
         mask = jax.vmap(
@@ -131,7 +132,7 @@ class DynamicsMaskGIT(nnx.Module):
         )
 
         # --- Apply noise augmentation ---
-        vid_embed_BTNM, noise_level_embed_BT1M = self._apply_noise_augmentation(
+        vid_embed_BTNM, noise_level_embed_BT1M = self.apply_noise_augmentation(
             vid_embed_BTNM, rng
         )
 
@@ -208,7 +209,7 @@ class DynamicsCausal(nnx.Module):
             self.noise_buckets, self.model_dim, rngs=rngs
         )
 
-    def _apply_noise_augmentation(self, vid_embed_BTNM, rng):
+    def apply_noise_augmentation(self, vid_embed_BTNM, rng):
         B, T, N, M = vid_embed_BTNM.shape
         rng, _rng_noise_lvl, _rng_noise = jax.random.split(rng, 3)
         noise_level_B = jax.random.uniform(
@@ -249,8 +250,8 @@ class DynamicsCausal(nnx.Module):
         padded_act_embed_BT1M = jnp.pad(
             act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0))
         )
-        vid_embed_BTNM, noise_level_embed_BT1M = self._apply_noise_augmentation(
-            video_tokens_BTN, batch["rng"]
+        vid_embed_BTNM, noise_level_embed_BT1M = self.apply_noise_augmentation(
+            vid_embed_BTNM, batch["rng"]
         )
         vid_embed_BTNp2M = jnp.concatenate(
             [padded_act_embed_BT1M, noise_level_embed_BT1M, vid_embed_BTNM], axis=2
