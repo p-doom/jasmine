@@ -18,11 +18,11 @@ import jax
 import jax.numpy as jnp
 import tyro
 import wandb
-import grain
 import flax.nnx as nnx
+from torch.utils.data import DataLoader
 
 from genie import Genie, restore_genie_components
-from utils.dataloader import get_dataloader
+from utils.dataloader_torch import get_dataloader
 from utils.train_utils import (
     get_lr_schedule,
     count_parameters_by_component,
@@ -201,27 +201,8 @@ def shard_optimizer_states(
     nnx.update(optimizer, optimizer_sharded_state)
 
 
-def build_dataloader(args: Args, data_dir: str) -> grain.DataLoaderIterator:
-    image_shape = (args.image_height, args.image_width, args.image_channels)
-    array_record_files = [
-        os.path.join(data_dir, x)
-        for x in os.listdir(data_dir)
-        if x.endswith(".array_record")
-    ]
-    grain_dataloader = get_dataloader(
-        array_record_files,
-        args.seq_len,
-        # NOTE: We deliberately pass the global batch size
-        # The dataloader shards the dataset across all processes
-        args.batch_size,
-        *image_shape,
-        num_workers=8,
-        prefetch_buffer_size=1,
-        seed=args.seed,
-    )
-    initial_state = grain_dataloader._create_initial_state()
-    grain_iterator = grain.DataLoaderIterator(grain_dataloader, initial_state)
-    return grain_iterator
+def build_dataloader(args: Args, data_dir: str) -> DataLoader:
+    return get_dataloader(data_dir, args.seq_len, args.batch_size)
 
 
 def build_checkpoint_manager(args: Args) -> Optional[ocp.CheckpointManager]:
@@ -233,31 +214,6 @@ def build_checkpoint_manager(args: Args) -> Optional[ocp.CheckpointManager]:
         handler_registry.add(
             "model_state", ocp.args.PyTreeRestore, ocp.handlers.PyTreeCheckpointHandler
         )
-        handler_registry.add(
-            "train_dataloader_state",
-            grain.checkpoint.CheckpointSave,
-            cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
-        )
-        handler_registry.add(
-            "train_dataloader_state",
-            grain.checkpoint.CheckpointRestore,
-            cast(ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler),
-        )
-        if args.val_data_dir:
-            handler_registry.add(
-                "val_dataloader_state",
-                grain.checkpoint.CheckpointSave,
-                cast(
-                    ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler
-                ),
-            )
-            handler_registry.add(
-                "val_dataloader_state",
-                grain.checkpoint.CheckpointRestore,
-                cast(
-                    ocp.handlers.CheckpointHandler, grain.checkpoint.CheckpointHandler
-                ),
-            )
         checkpoint_options = ocp.CheckpointManagerOptions(
             save_interval_steps=args.log_checkpoint_interval,
             max_to_keep=3,
@@ -279,16 +235,12 @@ def restore_or_initialize_components(
     args: Args,
     checkpoint_manager: Optional[ocp.CheckpointManager],
     optimizer: nnx.ModelAndOptimizer,
-    train_iterator: grain.DataLoaderIterator,
     rng: jax.Array,
     replicated_sharding: NamedSharding,
-    val_iterator: Optional[grain.DataLoaderIterator],
     restore_step: Optional[int] = None,
 ) -> tuple[
     int,
     nnx.ModelAndOptimizer,
-    grain.DataLoaderIterator,
-    grain.DataLoaderIterator,
     jax.Array,
 ]:
     step = 0
@@ -301,24 +253,18 @@ def restore_or_initialize_components(
         if val_iterator:
             restore_args = ocp.args.Composite(
                 model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
-                train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
-                val_dataloader_state=grain.checkpoint.CheckpointRestore(val_iterator),  # type: ignore
             )
         else:
             restore_args = ocp.args.Composite(
                 model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
-                train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
             )
         restored = checkpoint_manager.restore(
             checkpoint_manager.latest_step(), args=restore_args
         )
         restored_optimizer_state = restored["model_state"]
         nnx.update(optimizer, restored_optimizer_state)
-        train_iterator = restored["train_dataloader_state"]
-        if val_iterator:
-            val_iterator = restored["val_dataloader_state"]
         step = checkpoint_manager.latest_step() or 0
-        print(f"Restored dataloader and model state from step {step}")
+        print(f"Restored model state from step {step}")
     else:
         # Restore from pre-trained tokenizer (and LAM)
         rng, _rng = jax.random.split(rng)
@@ -793,19 +739,10 @@ def main(args: Args) -> None:
                 if val_iterator:
                     ckpt_manager_args = ocp.args.Composite(
                         model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
-                        train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
-                            train_iterator  # type: ignore
-                        ),
-                        val_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
-                            val_iterator  # type: ignore
-                        ),
                     )
                 else:
                     ckpt_manager_args = ocp.args.Composite(
                         model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
-                        train_dataloader_state=grain.checkpoint.CheckpointSave(  # type: ignore
-                            train_iterator  # type: ignore
-                        ),
                     )
                 checkpoint_manager.save(step, args=ckpt_manager_args)
                 print(f"Saved checkpoint at step {step}")
