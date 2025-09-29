@@ -18,6 +18,7 @@ dependencies = [
   "pillow>=11.3.0",
   "tqdm>=4.67.1",
   "tyro>=0.8.5",
+  "vizdoom",
 ]
 
 [build-system]
