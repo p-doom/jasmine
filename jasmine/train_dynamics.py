@@ -86,7 +86,7 @@ class Args:
     use_flash_attention: bool = True
     use_gt_actions: bool = False
     # Logging
-    log: bool = False
+    log: bool = True
     entity: str = ""
     project: str = ""
     name: str = "train_dynamics"
