@@ -59,7 +59,7 @@ class Args:
     tokenizer_ffn_dim: int = 2048
     latent_patch_dim: int = 32
     num_patch_latents: int = 1024
-    patch_size: int = 4
+    patch_size: int = 16
     tokenizer_num_blocks: int = 4
     tokenizer_num_heads: int = 8
     tokenizer_checkpoint: str = ""

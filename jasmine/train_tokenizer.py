@@ -59,7 +59,7 @@ class Args:
     ffn_dim: int = 2048
     latent_dim: int = 32
     num_latents: int = 1024
-    patch_size: int = 4
+    patch_size: int = 16
     num_blocks: int = 4
     num_heads: int = 8
     dropout: float = 0.0
