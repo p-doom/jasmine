@@ -68,7 +68,7 @@ class Args:
     dtype = jnp.bfloat16
     use_flash_attention: bool = True
     # Logging
-    log: bool = False
+    log: bool = True
     entity: str = ""
     project: str = ""
     name: str = "train_tokenizer"
