@@ -250,14 +250,9 @@ def restore_or_initialize_components(
         assert checkpoint_manager is not None
         abstract_optimizer = nnx.eval_shape(lambda: optimizer)
         abstract_optimizer_state = nnx.state(abstract_optimizer)
-        if val_iterator:
-            restore_args = ocp.args.Composite(
-                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
-            )
-        else:
-            restore_args = ocp.args.Composite(
-                model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
-            )
+        restore_args = ocp.args.Composite(
+            model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
+        )
         restored = checkpoint_manager.restore(
             checkpoint_manager.latest_step(), args=restore_args
         )
@@ -269,7 +264,7 @@ def restore_or_initialize_components(
         # Restore from pre-trained tokenizer (and LAM)
         rng, _rng = jax.random.split(rng)
         optimizer = restore_genie_components(optimizer, replicated_sharding, _rng, args)
-    return step, optimizer, train_iterator, val_iterator, rng
+    return step, optimizer, rng
 
 
 def _calculate_top_k_accuracy(
@@ -409,22 +404,19 @@ def main(args: Args) -> None:
     checkpoint_manager = build_checkpoint_manager(args)
 
     # --- Create DataLoaderIterator from dataloader ---
+    print("============\n\n", args.data_dir, "\n\n============")
     train_iterator = build_dataloader(args, args.data_dir)
     val_iterator = None
     if args.val_data_dir:
         val_iterator = build_dataloader(args, args.val_data_dir)
 
     # --- Restore checkpoint ---
-    step, optimizer, train_iterator, val_iterator, rng = (
-        restore_or_initialize_components(
-            args,
-            checkpoint_manager,
-            optimizer,
-            train_iterator,
-            rng,
-            replicated_sharding,
-            val_iterator,
-        )
+    step, optimizer, rng = restore_or_initialize_components(
+        args,
+        checkpoint_manager,
+        optimizer,
+        rng,
+        replicated_sharding,
     )
 
     # --- Define loss and train step (close over args) ---
@@ -736,14 +728,9 @@ def main(args: Args) -> None:
             if args.save_ckpt and step % args.log_checkpoint_interval == 0:
                 assert checkpoint_manager is not None
                 optimizer_state = nnx.state(optimizer)
-                if val_iterator:
-                    ckpt_manager_args = ocp.args.Composite(
-                        model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
-                    )
-                else:
-                    ckpt_manager_args = ocp.args.Composite(
-                        model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
-                    )
+                ckpt_manager_args = ocp.args.Composite(
+                    model_state=ocp.args.PyTreeSave(optimizer_state),  # type: ignore
+                )
                 checkpoint_manager.save(step, args=ckpt_manager_args)
                 print(f"Saved checkpoint at step {step}")
             if step >= args.num_steps:
