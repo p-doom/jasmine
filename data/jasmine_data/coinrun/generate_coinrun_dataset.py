@@ -11,7 +11,7 @@ from procgen import ProcgenGym3Env
 import tyro
 import json
 import os
-from data.jasmine_data.utils import save_chunks
+from jasmine_data.utils import save_chunks
 
 
 @dataclass
