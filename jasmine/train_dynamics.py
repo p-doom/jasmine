@@ -50,10 +50,10 @@ class Args:
     max_lr: float = 3e-5
     decay_end: float = 0.0
     wsd_decay_steps: int = (
-        0  # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
+        20_000  # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
     )
     warmup_steps: int = 5000
-    lr_schedule: str = "cos"  # supported options: wsd, cos
+    lr_schedule: str = "wsd"  # supported options: wsd, cos
     # Tokenizer
     tokenizer_dim: int = 512
     tokenizer_ffn_dim: int = 2048
