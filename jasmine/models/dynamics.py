@@ -209,16 +209,17 @@ class DynamicsCausal(nnx.Module):
             self.noise_buckets, self.model_dim, rngs=rngs
         )
 
-    def apply_noise_augmentation(self, vid_embed_BTNM, rng):
+    def apply_noise_augmentation(self, vid_embed_BTNM, rng, noise_level_B=None):
         B, T, N, M = vid_embed_BTNM.shape
         rng, _rng_noise_lvl, _rng_noise = jax.random.split(rng, 3)
-        noise_level_B = jax.random.uniform(
-            _rng_noise_lvl,
-            shape=(B,),
-            minval=0.0,
-            maxval=self.max_noise_level,
-            dtype=self.dtype,
-        )
+        if noise_level_B is None:
+            noise_level_B = jax.random.uniform(
+                _rng_noise_lvl,
+                shape=(B,),
+                minval=0.0,
+                maxval=self.max_noise_level,
+                dtype=self.dtype,
+            )
         noise_BTNM = jax.random.normal(_rng_noise, shape=(B, T, N, M), dtype=self.dtype)
         noise_bucket_idx_B = jnp.floor(
             (noise_level_B * self.noise_buckets) / self.max_noise_level
