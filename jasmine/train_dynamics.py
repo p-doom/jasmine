@@ -78,6 +78,8 @@ class Args:
     dyna_ffn_dim: int = 2048
     dyna_num_blocks: int = 6
     dyna_num_heads: int = 8
+    max_noise_level: float = 0.7
+    noise_buckets: int = 10
     dropout: float = 0.0
     mask_limit: float = 0.5
     z_loss_weight: float = 0.0
@@ -137,6 +139,8 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
         dyna_num_blocks=args.dyna_num_blocks,
         dyna_num_heads=args.dyna_num_heads,
         dropout=args.dropout,
+        max_noise_level=args.max_noise_level,
+        noise_buckets=args.noise_buckets,
         mask_limit=args.mask_limit,
         param_dtype=args.param_dtype,
         dtype=args.dtype,
@@ -538,11 +542,12 @@ def main(args: Args) -> None:
                 :, :-1
             ]  # remove last frame for generation
             recon_full_frame, logits_full_frame = genie.sample(
-                inputs,
-                args.seq_len,
-                args.val_temperature,
-                args.val_sample_argmax,
-                args.val_maskgit_steps,
+                batch=inputs,
+                seq_len=args.seq_len,
+                noise_level=0.0,
+                temperature=args.val_temperature,
+                sample_argmax=args.val_sample_argmax,
+                maskgit_steps=args.val_maskgit_steps,
             )
             # Calculate metrics for the last frame only
             step_outputs = {

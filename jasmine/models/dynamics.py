@@ -28,6 +28,8 @@ class DynamicsMaskGIT(nnx.Module):
         num_blocks: int,
         num_heads: int,
         dropout: float,
+        max_noise_level: float,
+        noise_buckets: int,
         mask_limit: float,
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
@@ -41,6 +43,8 @@ class DynamicsMaskGIT(nnx.Module):
         self.num_blocks = num_blocks
         self.num_heads = num_heads
         self.dropout = dropout
+        self.max_noise_level = max_noise_level
+        self.noise_buckets = noise_buckets
         self.mask_limit = mask_limit
         self.param_dtype = param_dtype
         self.dtype = dtype
@@ -70,6 +74,40 @@ class DynamicsMaskGIT(nnx.Module):
             dtype=self.dtype,
             rngs=rngs,
         )
+        self.noise_level_embed = nnx.Embed(
+            self.noise_buckets, self.model_dim, rngs=rngs
+        )
+
+    def apply_noise_augmentation(self, vid_embed_BTNM, rng, noise_level_B=None):
+        B, T, N, M = vid_embed_BTNM.shape
+        rng, _rng_noise_lvl, _rng_noise = jax.random.split(rng, 3)
+        if noise_level_B is None:
+            noise_level_B = jax.random.uniform(
+                _rng_noise_lvl,
+                shape=(B,),
+                minval=0.0,
+                maxval=self.max_noise_level,
+                dtype=self.dtype,
+            )
+        noise_BTNM = jax.random.normal(_rng_noise, shape=(B, T, N, M), dtype=self.dtype)
+        noise_bucket_idx_B = jnp.floor(
+            (noise_level_B * self.noise_buckets) / self.max_noise_level
+        ).astype(jnp.int32)
+
+        # Clip noise_bucket_idx_B to ensure it stays within valid range to prevent NaNs
+        noise_bucket_idx_B = jnp.clip(noise_bucket_idx_B, 0, self.noise_buckets - 1)
+
+        noise_bucket_idx_B11 = noise_bucket_idx_B.reshape(B, 1, 1)
+        noise_level_embed_B11M = self.noise_level_embed(noise_bucket_idx_B11)
+        noise_level_embed_BT1M = jnp.tile(noise_level_embed_B11M, (1, T, 1, 1))
+        noise_level_B111 = noise_level_B.reshape(B, 1, 1, 1)
+
+        noise_augmented_vid_embed_BTNM = (
+            jnp.sqrt(1 - noise_level_B111) * vid_embed_BTNM
+            + jnp.sqrt(noise_level_B111) * noise_BTNM
+        )
+
+        return noise_augmented_vid_embed_BTNM, noise_level_embed_BT1M
 
     def __call__(
         self,
@@ -80,11 +118,9 @@ class DynamicsMaskGIT(nnx.Module):
         latent_actions_BTm11L = batch["latent_actions"]
         vid_embed_BTNM = self.patch_embed(video_tokens_BTN)
 
-        batch_size = vid_embed_BTNM.shape[0]
-        _rng_prob, *_rngs_mask = jax.random.split(batch["mask_rng"], batch_size + 1)
-        mask_prob = jax.random.uniform(
-            _rng_prob, shape=(batch_size,), minval=self.mask_limit
-        )
+        B = vid_embed_BTNM.shape[0]
+        rng, _rng_prob, *_rngs_mask = jax.random.split(batch["rng"], B + 2)
+        mask_prob = jax.random.uniform(_rng_prob, shape=(B,), minval=self.mask_limit)
         per_sample_shape = vid_embed_BTNM.shape[1:-1]
         mask = jax.vmap(
             lambda rng, prob: jax.random.bernoulli(rng, prob, per_sample_shape),
@@ -95,16 +131,21 @@ class DynamicsMaskGIT(nnx.Module):
             jnp.expand_dims(mask, -1), self.mask_token.value, vid_embed_BTNM
         )
 
+        # --- Apply noise augmentation ---
+        vid_embed_BTNM, noise_level_embed_BT1M = self.apply_noise_augmentation(
+            vid_embed_BTNM, rng
+        )
+
         # --- Predict transition ---
         act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
         padded_act_embed_BT1M = jnp.pad(
             act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0))
         )
-        padded_act_embed_BTNM = jnp.broadcast_to(
-            padded_act_embed_BT1M, vid_embed_BTNM.shape
+        vid_embed_BTNp2M = jnp.concatenate(
+            [padded_act_embed_BT1M, noise_level_embed_BT1M, vid_embed_BTNM], axis=2
         )
-        vid_embed_BTNM += padded_act_embed_BTNM
-        logits_BTNV = self.transformer(vid_embed_BTNM)
+        logits_BTNp2V = self.transformer(vid_embed_BTNp2M)
+        logits_BTNV = logits_BTNp2V[:, :, 2:]
         return logits_BTNV, mask
 
 
@@ -120,6 +161,8 @@ class DynamicsCausal(nnx.Module):
         num_blocks: int,
         num_heads: int,
         dropout: float,
+        max_noise_level: float,
+        noise_buckets: int,
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
@@ -133,6 +176,8 @@ class DynamicsCausal(nnx.Module):
         self.num_blocks = num_blocks
         self.num_heads = num_heads
         self.dropout = dropout
+        self.max_noise_level = max_noise_level
+        self.noise_buckets = noise_buckets
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
@@ -160,6 +205,40 @@ class DynamicsCausal(nnx.Module):
             dtype=self.dtype,
             rngs=rngs,
         )
+        self.noise_level_embed = nnx.Embed(
+            self.noise_buckets, self.model_dim, rngs=rngs
+        )
+
+    def apply_noise_augmentation(self, vid_embed_BTNM, rng, noise_level_B=None):
+        B, T, N, M = vid_embed_BTNM.shape
+        rng, _rng_noise_lvl, _rng_noise = jax.random.split(rng, 3)
+        if noise_level_B is None:
+            noise_level_B = jax.random.uniform(
+                _rng_noise_lvl,
+                shape=(B,),
+                minval=0.0,
+                maxval=self.max_noise_level,
+                dtype=self.dtype,
+            )
+        noise_BTNM = jax.random.normal(_rng_noise, shape=(B, T, N, M), dtype=self.dtype)
+        noise_bucket_idx_B = jnp.floor(
+            (noise_level_B * self.noise_buckets) / self.max_noise_level
+        ).astype(jnp.int32)
+
+        # Clip noise_bucket_idx_B to ensure it stays within valid range to prevent NaNs
+        noise_bucket_idx_B = jnp.clip(noise_bucket_idx_B, 0, self.noise_buckets - 1)
+
+        noise_bucket_idx_B11 = noise_bucket_idx_B.reshape(B, 1, 1)
+        noise_level_embed_B11M = self.noise_level_embed(noise_bucket_idx_B11)
+        noise_level_embed_BT1M = jnp.tile(noise_level_embed_B11M, (1, T, 1, 1))
+        noise_level_B111 = noise_level_B.reshape(B, 1, 1, 1)
+
+        noise_augmented_vid_embed_BTNM = (
+            jnp.sqrt(1 - noise_level_B111) * vid_embed_BTNM
+            + jnp.sqrt(noise_level_B111) * noise_BTNM
+        )
+
+        return noise_augmented_vid_embed_BTNM, noise_level_embed_BT1M
 
     def __call__(
         self,
@@ -172,9 +251,12 @@ class DynamicsCausal(nnx.Module):
         padded_act_embed_BT1M = jnp.pad(
             act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0))
         )
-        vid_embed_BTNp1M = jnp.concatenate(
-            [padded_act_embed_BT1M, vid_embed_BTNM], axis=2
+        vid_embed_BTNM, noise_level_embed_BT1M = self.apply_noise_augmentation(
+            vid_embed_BTNM, batch["rng"]
         )
-        logits_BTNp1V = self.transformer(vid_embed_BTNp1M)
-        logits_BTNV = logits_BTNp1V[:, :, :-1]
+        vid_embed_BTNp2M = jnp.concatenate(
+            [padded_act_embed_BT1M, noise_level_embed_BT1M, vid_embed_BTNM], axis=2
+        )
+        logits_BTNp2V = self.transformer(vid_embed_BTNp2M)
+        logits_BTNV = logits_BTNp2V[:, :, 1:-1]
         return logits_BTNV, jnp.ones_like(video_tokens_BTN)

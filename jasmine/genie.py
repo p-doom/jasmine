@@ -38,6 +38,8 @@ class Genie(nnx.Module):
         dyna_ffn_dim: int,
         dyna_num_blocks: int,
         dyna_num_heads: int,
+        max_noise_level: float,
+        noise_buckets: int,
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
@@ -71,6 +73,8 @@ class Genie(nnx.Module):
         self.dyna_ffn_dim = dyna_ffn_dim
         self.dyna_num_blocks = dyna_num_blocks
         self.dyna_num_heads = dyna_num_heads
+        self.max_noise_level = max_noise_level
+        self.noise_buckets = noise_buckets
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
@@ -127,6 +131,8 @@ class Genie(nnx.Module):
                 num_heads=self.dyna_num_heads,
                 dropout=self.dropout,
                 mask_limit=self.mask_limit,
+                max_noise_level=self.max_noise_level,
+                noise_buckets=self.noise_buckets,
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
                 use_flash_attention=self.use_flash_attention,
@@ -141,6 +147,8 @@ class Genie(nnx.Module):
                 num_blocks=self.dyna_num_blocks,
                 num_heads=self.dyna_num_heads,
                 dropout=self.dropout,
+                max_noise_level=self.max_noise_level,
+                noise_buckets=self.noise_buckets,
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
                 use_flash_attention=self.use_flash_attention,
@@ -184,7 +192,7 @@ class Genie(nnx.Module):
                 else latent_actions_BTm11L
             ),
         )
-        outputs["mask_rng"] = batch["rng"]
+        outputs["rng"] = batch["rng"]
         dyna_logits_BTNV, dyna_mask = self.dynamics(outputs)
         outputs["token_logits"] = dyna_logits_BTNV
         outputs["mask"] = dyna_mask
@@ -199,16 +207,22 @@ class Genie(nnx.Module):
         self,
         batch: Dict[str, jax.Array],
         seq_len: int,
+        noise_level: float = 0.0,
         temperature: float = 1,
         sample_argmax: bool = False,
         maskgit_steps: int = 25,
     ) -> tuple[jax.Array, jax.Array]:
+        assert (
+            noise_level <= self.max_noise_level
+        ), "Noise level must not be greater than max_noise_level."
         if self.dyna_type == "maskgit":
             return self.sample_maskgit(
-                batch, seq_len, maskgit_steps, temperature, sample_argmax
+                batch, seq_len, noise_level, maskgit_steps, temperature, sample_argmax
             )
         elif self.dyna_type == "causal":
-            return self.sample_causal(batch, seq_len, temperature, sample_argmax)
+            return self.sample_causal(
+                batch, seq_len, noise_level, temperature, sample_argmax
+            )
         else:
             raise ValueError(f"Dynamics model type unknown: {self.dyna_type}")
 
@@ -216,6 +230,7 @@ class Genie(nnx.Module):
         self,
         batch: Dict[str, jax.Array],
         seq_len: int,
+        noise_level: float,
         steps: int = 25,
         temperature: float = 1,
         sample_argmax: bool = False,
@@ -257,6 +272,7 @@ class Genie(nnx.Module):
         init_logits_BSNV = jnp.zeros(
             shape=(*token_idxs_BSN.shape, self.num_patch_latents)
         )
+        noise_level = jnp.array(noise_level)
         if self.use_gt_actions:
             assert self.action_embed is not None
             latent_actions_BT1L = self.action_embed(batch["actions"]).reshape(
@@ -290,6 +306,8 @@ class Genie(nnx.Module):
                 num_blocks=self.dyna_num_blocks,
                 num_heads=self.dyna_num_heads,
                 dropout=self.dropout,
+                max_noise_level=self.max_noise_level,
+                noise_buckets=self.noise_buckets,
                 mask_limit=self.mask_limit,
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
@@ -313,10 +331,22 @@ class Genie(nnx.Module):
             act_embed_BS1M = jnp.reshape(
                 act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1])
             )
-            vid_embed_BSNM += act_embed_BS1M
+
+            rng, _rng_noise_augmentation = jax.random.split(rng)
+            noise_level_B = jnp.tile(noise_level, B)
+            _, noise_level_embed_BS1M = dynamics_maskgit.apply_noise_augmentation(
+                vid_embed_BSNM, _rng_noise_augmentation, noise_level_B
+            )
+
+            vid_embed_BSNp2M = jnp.concatenate(
+                [act_embed_BS1M, noise_level_embed_BS1M, vid_embed_BSNM], axis=2
+            )
             unmasked_ratio = jnp.cos(jnp.pi * (step + 1) / (steps * 2))
             step_temp = temperature * (1.0 - unmasked_ratio)
-            final_logits_BSNV = dynamics_maskgit.transformer(vid_embed_BSNM) / step_temp
+            final_logits_BSNp2V = (
+                dynamics_maskgit.transformer(vid_embed_BSNp2M) / step_temp
+            )
+            final_logits_BSNV = final_logits_BSNp2V[:, :, 2:]
 
             # --- Sample new tokens for final frame ---
             if sample_argmax:
@@ -407,6 +437,7 @@ class Genie(nnx.Module):
         self,
         batch: Dict[str, jax.Array],
         seq_len: int,
+        noise_level: float,
         temperature: float = 1,
         sample_argmax: bool = False,
     ) -> tuple[jax.Array, jax.Array]:
@@ -445,6 +476,7 @@ class Genie(nnx.Module):
         token_idxs_BSN = jnp.concatenate([token_idxs_BTN, pad], axis=1)
         logits_BSNV = jnp.zeros((*token_idxs_BSN.shape, self.num_patch_latents))
         dynamics_state = nnx.state(self.dynamics)
+        noise_level = jnp.array(noise_level)
 
         if self.use_gt_actions:
             assert self.action_embed is not None
@@ -476,6 +508,8 @@ class Genie(nnx.Module):
                 num_blocks=self.dyna_num_blocks,
                 num_heads=self.dyna_num_heads,
                 dropout=self.dropout,
+                max_noise_level=self.max_noise_level,
+                noise_buckets=self.noise_buckets,
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
                 use_flash_attention=self.use_flash_attention,
@@ -494,12 +528,21 @@ class Genie(nnx.Module):
             act_embed_BS1M = jnp.reshape(
                 act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1])
             )
-            vid_embed_BSNp1M = jnp.concatenate([act_embed_BS1M, vid_embed_BSNM], axis=2)
-            final_logits_BTNp1V = (
-                dynamics_causal.transformer(vid_embed_BSNp1M, (step_t, step_n))
+
+            rng, _rng_noise_augmentation = jax.random.split(rng)
+            noise_level_B = jnp.tile(noise_level, B)
+            _, noise_level_embed_BS1M = dynamics_causal.apply_noise_augmentation(
+                vid_embed_BSNM, _rng_noise_augmentation, noise_level_B
+            )
+
+            vid_embed_BSNp2M = jnp.concatenate(
+                [act_embed_BS1M, noise_level_embed_BS1M, vid_embed_BSNM], axis=2
+            )
+            final_logits_BTNp2V = (
+                dynamics_causal.transformer(vid_embed_BSNp2M, (step_t, step_n))
                 / temperature
             )
-            final_logits_BV = final_logits_BTNp1V[:, step_t, step_n, :]
+            final_logits_BV = final_logits_BTNp2V[:, step_t, step_n + 1, :]
 
             # --- Sample new tokens for final frame ---
             if sample_argmax:
