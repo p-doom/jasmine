@@ -39,8 +39,8 @@ class Args:
     seed: int = 0
     seq_len: int = 16
     image_channels: int = 3
-    image_height: int = 90
-    image_width: int = 160
+    image_height: int = 64
+    image_width: int = 64
     data_dir: str = ""
     save_ckpt: bool = False
     restore_ckpt: bool = False
@@ -50,7 +50,7 @@ class Args:
     max_lr: float = 3e-5
     decay_end: float = 0.0
     wsd_decay_steps: int = (
-        10000  # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
+        20_000  # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
     )
     warmup_steps: int = 5000
     lr_schedule: str = "wsd"  # supported options: wsd, cos
@@ -59,7 +59,7 @@ class Args:
     tokenizer_ffn_dim: int = 2048
     latent_patch_dim: int = 32
     num_patch_latents: int = 1024
-    patch_size: int = 4
+    patch_size: int = 16
     tokenizer_num_blocks: int = 4
     tokenizer_num_heads: int = 8
     tokenizer_checkpoint: str = ""
@@ -82,26 +82,27 @@ class Args:
     noise_buckets: int = 10
     dropout: float = 0.0
     mask_limit: float = 0.5
+    z_loss_weight: float = 0.0
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
     use_flash_attention: bool = True
     use_gt_actions: bool = False
     # Logging
-    log: bool = False
+    log: bool = True
     entity: str = ""
     project: str = ""
     name: str = "train_dynamics"
     tags: list[str] = field(default_factory=lambda: ["dynamics"])
-    log_interval: int = 5
-    log_image_interval: int = 250
+    log_interval: int = 50
+    log_image_interval: int = 1000
     ckpt_dir: str = ""
-    log_checkpoint_interval: int = 25000
-    log_checkpoint_keep_period: int = 20000
+    log_checkpoint_interval: int = 5000
+    log_checkpoint_keep_period: int = 20_000
     log_gradients: bool = False
     val_data_dir: str = ""
     val_interval: int = 20_000
     val_steps: int = 50
-    eval_full_frame: bool = False
+    eval_full_frame: bool = True
     val_maskgit_steps: int = 25
     val_temperature: float = 1
     val_sample_argmax: bool = False
@@ -329,20 +330,48 @@ def restore_or_initialize_components(
     return step, optimizer, train_iterator, val_iterator, rng
 
 
+def _calculate_top_k_accuracy(
+    token_logits_BTNV: jax.Array,
+    video_tokens_BTN: jax.Array,
+    mask_BTN: jax.Array,
+    k: int,
+) -> jax.Array:
+    _, topk_indices_BTNK = jax.lax.top_k(token_logits_BTNV, k)
+    topk_correct = jnp.any(
+        topk_indices_BTNK == video_tokens_BTN[..., jnp.newaxis], axis=-1
+    )
+    topk_acc = (mask_BTN * topk_correct).sum() / mask_BTN.sum()
+    return topk_acc
+
+
 def _calculate_step_metrics(
     outputs: dict[str, jax.Array],
     gt: jax.Array,
     num_actions: int,
     num_patch_latents: int,
 ) -> tuple[jax.Array, dict]:
-    mask = outputs["mask"]
+    mask_BTN = outputs["mask"]
     outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
     ce_loss = optax.softmax_cross_entropy_with_integer_labels(
         outputs["token_logits"], outputs["video_tokens"]
     )
-    ce_loss = (mask * ce_loss).sum() / mask.sum()
-    acc = outputs["token_logits"].argmax(-1) == outputs["video_tokens"]
-    acc = (mask * acc).sum() / mask.sum()
+    ce_loss = (mask_BTN * ce_loss).sum() / mask_BTN.sum()
+    z_val = jax.nn.logsumexp(outputs["token_logits"], axis=-1)
+    z_loss_metric = (mask_BTN * (z_val**2)).sum() / mask_BTN.sum()
+
+    masked_token_top_1_acc = _calculate_top_k_accuracy(
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 1
+    )
+    masked_token_top_2_acc = _calculate_top_k_accuracy(
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 2
+    )
+    masked_token_top_5_acc = _calculate_top_k_accuracy(
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 5
+    )
+    masked_token_top_16_acc = _calculate_top_k_accuracy(
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 16
+    )
+
     select_probs = jax.nn.softmax(outputs["token_logits"])
     gt_val = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
     recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
@@ -356,10 +385,14 @@ def _calculate_step_metrics(
     codebook_usage_tokenizer = (index_counts_tokenizer != 0).mean()
     metrics = dict(
         cross_entropy_loss=ce_loss,
-        masked_token_accuracy=acc,
+        masked_token_top1_accuracy=masked_token_top_1_acc,
+        masked_token_top2_accuracy=masked_token_top_2_acc,
+        masked_token_top5_accuracy=masked_token_top_5_acc,
+        masked_token_top16_accuracy=masked_token_top_16_acc,
         select_logit=outputs["token_logits"].max(-1).mean(),
         select_p=select_probs.max(-1).mean(),
         entropy=jax.scipy.special.entr(select_probs).sum(-1).mean(),
+        z_loss=z_loss_metric,
         psnr=psnr,
         ssim=ssim,
         codebook_usage_tokenizer=codebook_usage_tokenizer,
@@ -463,7 +496,10 @@ def main(args: Args) -> None:
         ce_loss, metrics = _calculate_step_metrics(
             outputs, gt, args.num_actions, args.num_patch_latents
         )
-        return ce_loss, (outputs["recon"], metrics)
+        z_loss = metrics["z_loss"]
+        total_loss = ce_loss + args.z_loss_weight * z_loss
+        metrics["total_loss"] = total_loss
+        return total_loss, (outputs["recon"], metrics)
 
     @nnx.jit(donate_argnums=0)
     def train_step(

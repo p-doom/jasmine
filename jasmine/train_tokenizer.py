@@ -38,8 +38,8 @@ class Args:
     seed: int = 0
     seq_len: int = 16
     image_channels: int = 3
-    image_height: int = 90
-    image_width: int = 160
+    image_height: int = 64
+    image_width: int = 64
     data_dir: str = ""
     save_ckpt: bool = False
     restore_ckpt: bool = False
@@ -50,7 +50,7 @@ class Args:
     max_lr: float = 3e-4
     decay_end: float = 0.0
     wsd_decay_steps: int = (
-        20000  # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
+        30_000  # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
     )
     lr_schedule: str = "wsd"  # supported options: wsd, cos
     warmup_steps: int = 10000
@@ -59,30 +59,30 @@ class Args:
     ffn_dim: int = 2048
     latent_dim: int = 32
     num_latents: int = 1024
-    patch_size: int = 4
+    patch_size: int = 16
     num_blocks: int = 4
     num_heads: int = 8
     dropout: float = 0.0
     codebook_dropout: float = 0.01
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
+    use_flash_attention: bool = True
     # Logging
-    log: bool = False
+    log: bool = True
     entity: str = ""
     project: str = ""
     name: str = "train_tokenizer"
     tags: list[str] = field(default_factory=lambda: ["tokenizer"])
-    log_interval: int = 5
-    log_image_interval: int = 250
+    log_interval: int = 50
+    log_image_interval: int = 1000
     ckpt_dir: str = ""
-    log_checkpoint_interval: int = 10000
-    log_checkpoint_keep_period: int = 20000
+    log_checkpoint_interval: int = 1000
+    log_checkpoint_keep_period: int = 20_000
     log_gradients: bool = False
     val_data_dir: str = ""
     val_interval: int = 20_000
     val_steps: int = 50
     wandb_id: str = ""
-    use_flash_attention: bool = True
 
 
 def build_model(args: Args, rng: jax.Array) -> tuple[TokenizerVQVAE, jax.Array]:
