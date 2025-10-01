@@ -100,11 +100,11 @@ class DynamicsMaskGIT(nnx.Module):
         padded_act_embed_BT1M = jnp.pad(
             act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0))
         )
-        padded_act_embed_BTNM = jnp.broadcast_to(
-            padded_act_embed_BT1M, vid_embed_BTNM.shape
+        vid_embed_BTNp1M = jnp.concatenate(
+            [padded_act_embed_BT1M, vid_embed_BTNM], axis=2
         )
-        vid_embed_BTNM += padded_act_embed_BTNM
-        logits_BTNV = self.transformer(vid_embed_BTNM)
+        logits_BTNp1V = self.transformer(vid_embed_BTNp1M)
+        logits_BTNV = logits_BTNp1V[:, :, 1:]
         return logits_BTNV, mask
 
 
