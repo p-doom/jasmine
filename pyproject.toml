@@ -14,6 +14,7 @@ dependencies = [
   "array-record>=0.7.2",
   "pre-commit>=4.2.0",
   "pillow>=11.3.0",
+  "torch>=2.0.1",
 ]
 
 [build-system]
