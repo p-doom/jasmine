@@ -24,7 +24,7 @@ class VideoDataset(Dataset):
 
 def collate_fn(batch):
     """Convert batch of numpy arrays to JAX array"""
-    return jnp.array(np.stack(batch))
+    return {"videos": jnp.array(np.stack(batch))}
 
 
 def get_dataloader(data_dir, seq_len, batch_size):

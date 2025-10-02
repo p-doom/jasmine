@@ -348,6 +348,7 @@ def _calculate_step_metrics(
 def main(args: Args) -> None:
     jax.distributed.initialize()
     num_devices = jax.device_count()
+    assert num_devices == 1, "This script is not meant to be run on multiple devices."
     if num_devices == 0:
         raise ValueError("No JAX devices found.")
     print(f"Running on {num_devices} devices.")
@@ -404,7 +405,6 @@ def main(args: Args) -> None:
     checkpoint_manager = build_checkpoint_manager(args)
 
     # --- Create DataLoaderIterator from dataloader ---
-    print("============\n\n", args.data_dir, "\n\n============")
     train_iterator = build_dataloader(args, args.data_dir)
     val_iterator = None
     if args.val_data_dir:
@@ -551,50 +551,18 @@ def main(args: Args) -> None:
         return val_metrics, batch, recon, recon_full_frame
 
     # --- TRAIN LOOP ---
-    dataloader_train = (
-        {
-            "videos": jax.make_array_from_process_local_data(
-                videos_sharding, local_data=elem["videos"]
-            ),
-            "actions": (
-                jax.make_array_from_process_local_data(
-                    actions_sharding, elem["actions"]
-                )
-                if args.use_gt_actions
-                else None
-            ),
-        }
-        for elem in train_iterator
-    )
-    dataloader_val = None
-    if val_iterator:
-        dataloader_val = (
-            {
-                "videos": jax.make_array_from_process_local_data(
-                    videos_sharding, elem["videos"]
-                ),
-                "actions": (
-                    jax.make_array_from_process_local_data(
-                        actions_sharding, elem["actions"]
-                    )
-                    if args.use_gt_actions
-                    else None
-                ),
-            }
-            for elem in val_iterator
-        )
     if jax.process_index() == 0:
-        first_batch = next(dataloader_train)
+        first_batch = next(iter(train_iterator))
         first_batch["rng"] = rng  # type: ignore
         compiled = train_step.lower(optimizer, first_batch).compile()
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
         # Do not skip the first batch during training
-        dataloader_train = itertools.chain([first_batch], dataloader_train)
+        train_iterator = itertools.chain([first_batch], train_iterator)
     print(f"Starting training from step {step}...")
     first_step = step
     while step < args.num_steps:
-        for batch in dataloader_train:
+        for batch in train_iterator:
             # --- Train step ---
             rng, _rng_mask = jax.random.split(rng, 2)
             batch["rng"] = _rng_mask
@@ -605,12 +573,12 @@ def main(args: Args) -> None:
 
             # --- Validation loss ---
             val_results = {}
-            if dataloader_val and step % args.val_interval == 0:
+            if val_iterator and step % args.val_interval == 0:
                 rng, _rng_mask_val = jax.random.split(rng, 2)
                 print("Calculating validation metrics...")
                 val_metrics, val_gt_batch, val_recon, val_recon_full_frame = (
                     calculate_validation_metrics(
-                        dataloader_val, optimizer.model, _rng_mask_val
+                        val_iterator, optimizer.model, _rng_mask_val
                     )
                 )
                 print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
