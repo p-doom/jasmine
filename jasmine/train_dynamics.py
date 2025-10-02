@@ -551,14 +551,6 @@ def main(args: Args) -> None:
         return val_metrics, batch, recon, recon_full_frame
 
     # --- TRAIN LOOP ---
-    if jax.process_index() == 0:
-        first_batch = next(iter(train_iterator))
-        first_batch["rng"] = rng  # type: ignore
-        compiled = train_step.lower(optimizer, first_batch).compile()
-        print_compiled_memory_stats(compiled.memory_analysis())
-        print_compiled_cost_analysis(compiled.cost_analysis())
-        # Do not skip the first batch during training
-        train_iterator = itertools.chain([first_batch], train_iterator)
     print(f"Starting training from step {step}...")
     first_step = step
     while step < args.num_steps:
@@ -570,6 +562,7 @@ def main(args: Args) -> None:
             if step == first_step:
                 print_mem_stats("After params initialized")
             step += 1
+            print(f"Step {step}")
 
             # --- Validation loss ---
             val_results = {}
