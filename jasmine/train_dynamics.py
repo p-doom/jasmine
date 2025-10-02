@@ -562,7 +562,6 @@ def main(args: Args) -> None:
             if step == first_step:
                 print_mem_stats("After params initialized")
             step += 1
-            print(f"Step {step}")
 
             # --- Validation loss ---
             val_results = {}
