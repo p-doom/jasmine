@@ -1,14 +1,12 @@
-import os
-import math
 import argparse
+import math
+import os
 import pickle
-from typing import Optional, List
+from typing import List, Optional
 
 import numpy as np
-
-from PIL import Image, ImageDraw
-
 from array_record.python.array_record_module import ArrayRecordReader
+from PIL import Image, ImageDraw
 
 
 def infer_hw_from_bytes(
@@ -41,8 +39,8 @@ def get_action_meanings(env_id: Optional[str]) -> Optional[List[str]]:
     if env_id is None:
         return None
     try:
-        import gymnasium as gym
         import ale_py
+        import gymnasium as gym
 
         gym.register_envs(ale_py)
         env = gym.make(env_id)
