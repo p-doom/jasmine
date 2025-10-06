@@ -25,7 +25,11 @@ from PIL import Image
 
 import numpy as np
 from train_ppo_parallel import DoomWithBotsCurriculum, game_instance
-from stable_baselines3.common.vec_env import VecTransposeImage, DummyVecEnv
+from stable_baselines3.common.vec_env import (
+    VecTransposeImage,
+    DummyVecEnv,
+    SubprocVecEnv,
+)
 
 from loguru import logger
 import tyro
@@ -74,7 +78,7 @@ def downsample_resolution(img):
         resample_filter = Image.LANCZOS
         img = Image.fromarray(img)
         img = img.resize(
-            (args.target_height, args.target_width), resample=resample_filter
+            (args.target_width, args.target_height), resample=resample_filter
         )
         img = np.array(img)
     return img
@@ -113,6 +117,7 @@ def make_gif(agent, eval_env_args):
 
         # Get the raw screen buffer from the Doom game instance
         screen = env.venv.envs[0].game.get_state().screen_buffer
+        screen = downsample_resolution(screen)
 
         # Get the current health value
         health = env.venv.envs[0].game.get_game_variable(GameVariable.HEALTH)
@@ -129,7 +134,8 @@ def make_gif(agent, eval_env_args):
     print("Number of images:", len(images))
 
     # Save only the first 1000 frames to avoid large file size
-    imageio.mimsave(args.output_dir, images, fps=20)
+    output_path = os.path.join(args.output_dir, "output.gif")
+    imageio.mimsave(output_path, images, fps=20)
     env.close()
     logger.info(f"GIF saved to {args.output_dir}")
 
@@ -157,17 +163,18 @@ def make_array_records_dataset(agent, eval_env_args, num_episodes, split):
     file_idx = 0
     output_dir_split = os.path.join(args.output_dir, split)
     os.makedirs(output_dir_split, exist_ok=True)
+    env.venv.render_mode = "rgb_array"
 
     while episode_idx < num_episodes // args.num_parallel_envs:
         obs = env.reset()
         done = np.array(False)
         frame_counter = 0
 
-        observations_seq = []
-        actions_seq = []
-        health_values_seq = []
-        episode_obs_chunks = []
-        episode_act_chunks = []
+        observations_seq_TBHWC = []
+        actions_seq_TB = []
+        health_values_seq_TB = []
+        episode_obs_chunks_NTBHWC = []
+        episode_act_chunks_NTB = []
 
         # --- Run episode ---
         while not done.any() and frame_counter < args.max_episode_length:
@@ -184,35 +191,43 @@ def make_array_records_dataset(agent, eval_env_args, num_episodes, split):
 
             obs, _, done, _ = env.step(current_action_B)
 
-            observations_seq.extend(screen_BHWC)
-            actions_seq.extend(current_action_B)
-            health_values_seq.extend(health_B)
+            observations_seq_TBHWC.append(screen_BHWC)
+            actions_seq_TB.append(current_action_B)
+            health_values_seq_TB.append(health_B)
 
-            while len(observations_seq) >= args.chunk_size:
-                episode_obs_chunks.append(observations_seq[: args.chunk_size])
-                episode_act_chunks.append(actions_seq[: args.chunk_size])
-                observations_seq = observations_seq[args.chunk_size :]
-                actions_seq = actions_seq[args.chunk_size :]
+            while len(observations_seq_TBHWC) >= args.chunk_size:
+                episode_obs_chunks_NTBHWC.append(
+                    observations_seq_TBHWC[: args.chunk_size]
+                )
+                episode_act_chunks_NTB.append(actions_seq_TB[: args.chunk_size])
+                observations_seq_TBHWC = observations_seq_TBHWC[args.chunk_size :]
+                actions_seq_TB = actions_seq_TB[args.chunk_size :]
 
             frame_counter += 1
 
         # --- Save episode ---
         if frame_counter >= args.min_episode_length:
-            if observations_seq:
-                if len(observations_seq) < args.chunk_size:
+            if observations_seq_TBHWC:
+                if len(observations_seq_TBHWC) < args.chunk_size:
                     print(
-                        f"Warning: Inconsistent chunk_sizes. Episode has {len(observations_seq)} frames, "
+                        f"Warning: Inconsistent chunk_sizes. Episode has {len(observations_seq_TBHWC)} frames, "
                         f"which is smaller than the requested chunk_size: {args.chunk_size}. "
                         "This might lead to performance degradation during training."
                     )
-                episode_obs_chunks.append(observations_seq)
-                episode_act_chunks.append(actions_seq)
-
+                episode_obs_chunks_NTBHWC.append(observations_seq_TBHWC)
+                episode_act_chunks_NTB.append(actions_seq_TB)
+            episode_obs_chunks_NBTHWC = [
+                np.transpose(seq, (1, 0, 2, 3, 4)).astype(np.uint8)
+                for seq in episode_obs_chunks_NTBHWC
+            ]
             obs_chunks_data = [
-                np.stack(seq).astype(np.uint8) for seq in episode_obs_chunks
+                chunk for batch in episode_obs_chunks_NBTHWC for chunk in batch
+            ]
+            episode_act_chunks_NBT = [
+                np.transpose(seq).astype(np.uint8) for seq in episode_act_chunks_NTB
             ]
             act_chunks_data = [
-                np.stack(act).astype(np.uint8) for act in episode_act_chunks
+                chunk for batch in episode_act_chunks_NBT for chunk in batch
             ]
             obs_chunks.extend(obs_chunks_data)
             act_chunks.extend(act_chunks_data)
@@ -223,6 +238,9 @@ def make_array_records_dataset(agent, eval_env_args, num_episodes, split):
             episode_metadata.extend(ep_metadata)
 
             print(f"Episode {episode_idx} completed, length: {frame_counter}.")
+            print(
+                f"Total number of frames until now: {file_idx * args.chunk_size * args.chunks_per_file}"
+            )
             episode_idx += 1
         else:
             print(f"Episode too short ({frame_counter}), resampling...")
@@ -267,12 +285,12 @@ def main():
         make_gif(agent, eval_env_args)
         return
 
-    train_episode_metadata = make_array_records_dataset(
-        agent,
-        num_episodes=args.num_episodes_train,
-        eval_env_args=eval_env_args,
-        split="train",
-    )
+    # train_episode_metadata = make_array_records_dataset(
+    # agent,
+    # num_episodes=args.num_episodes_train,
+    # eval_env_args=eval_env_args,
+    # split="train",
+    # )
     val_episode_metadata = make_array_records_dataset(
         agent,
         num_episodes=args.num_episodes_val,
@@ -288,20 +306,20 @@ def main():
     # --- Save metadata ---
     metadata = {
         "env": "coinrun",
-        "num_actions": 0,  # TODO mihir
+        "num_actions": 18,  # TODO mihir
         "num_episodes_train": args.num_episodes_train,
         "num_episodes_val": args.num_episodes_val,
         "num_episodes_test": args.num_episodes_test,
-        "avg_episode_len_train": np.mean(
-            [ep["avg_seq_len"] for ep in train_episode_metadata]
-        ),
+        # "avg_episode_len_train": np.mean(
+        # [ep["avg_seq_len"] for ep in train_episode_metadata]
+        # ),
         "avg_episode_len_val": np.mean(
             [ep["avg_seq_len"] for ep in val_episode_metadata]
         ),
         "avg_episode_len_test": np.mean(
             [ep["avg_seq_len"] for ep in test_episode_metadata]
         ),
-        "episode_metadata_train": train_episode_metadata,
+        # "episode_metadata_train": train_episode_metadata,
         "episode_metadata_val": val_episode_metadata,
         "episode_metadata_test": test_episode_metadata,
     }
