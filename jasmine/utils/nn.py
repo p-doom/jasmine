@@ -101,7 +101,7 @@ class STBlock(nnx.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             attention_fn=_create_flash_attention_fn(
-                self.use_flash_attention, is_causal=True
+                use_flash_attention=False, is_causal=True
             ),
             rngs=rngs,
             decode=False,
@@ -312,7 +312,7 @@ class TransformerBlock(nnx.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             attention_fn=_create_flash_attention_fn(
-                self.use_flash_attention, is_causal=True
+                use_flash_attention=False, is_causal=True
             ),
             rngs=rngs,
             decode=self.decode,
