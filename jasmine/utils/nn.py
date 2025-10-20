@@ -222,7 +222,7 @@ class STTransformer(nnx.Module):
             self.model_dim, max_len=max_len
         )
 
-        self.blocks = []
+        self.blocks = nnx.List[STBlock]([])
         for _ in range(self.num_blocks):
             self.blocks.append(
                 STBlock(
@@ -523,7 +523,6 @@ class TimestepEmbedder(nnx.Module):
         :param max_period: controls the minimum frequency of the embeddings.
         :return: an (N, D) Tensor of positional embeddings.
         """
-        print(t)
         # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
         t = jax.lax.convert_element_type(t, jnp.float32)
         dim = self.hidden_size
@@ -706,6 +705,7 @@ class DiffusionTransformer(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         rngs: nnx.Rngs,
+        decode: bool = False,
     ):
         self.model_dim = model_dim
         self.ffn_dim = ffn_dim
@@ -728,6 +728,7 @@ class DiffusionTransformer(nnx.Module):
                     param_dtype=self.param_dtype,
                     dtype=self.dtype,
                     rngs=rngs,
+                    decode=decode,
                 )
             )
         self.patch_size = 4
@@ -758,7 +759,6 @@ class DiffusionTransformer(nnx.Module):
         x_BTNM = modulate(x_BTNM, shift[:, None], scale[:, None])
         x_BTNP = self.dense2(x_BTNM)
         x_BTHWC = unpatchify(x_BTNP, self.patch_size, H, W)
-        print(x_BTHWC.shape)
 
         return x_BTHWC
 

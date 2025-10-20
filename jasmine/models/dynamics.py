@@ -196,6 +196,7 @@ class DynamicsDiffusion(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
+        decode: bool,
         rngs: nnx.Rngs,
     ):
         self.model_dim = model_dim
@@ -208,6 +209,7 @@ class DynamicsDiffusion(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
+        self.decode = decode
         self.denoise_steps = denoise_steps
         self.diffusion_transformer = DiffusionTransformer(
             model_dim=self.model_dim,
@@ -217,6 +219,7 @@ class DynamicsDiffusion(nnx.Module):
             dropout=self.dropout,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
+            decode=self.decode,
             rngs=rngs,
         )
 
@@ -225,7 +228,7 @@ class DynamicsDiffusion(nnx.Module):
         batch: Dict[str, jax.Array],
     ) -> tuple[jax.Array, jax.Array]:
         # For now we only denoise the last frame
-        rng, time_rng, noise_rng = jax.random.split(batch["mask_rng"], 3)
+        rng, time_rng, noise_rng = jax.random.split(batch["rng"], 3)
         force_t = batch.get("step_t", -1)
         videos = batch["videos"]
         B, T, H, W, C = videos.shape
@@ -238,11 +241,10 @@ class DynamicsDiffusion(nnx.Module):
         x_1 = videos[:,-1]
         x_0 = jax.random.normal(noise_rng, (B, H, W, C))
         x_t = (1 - (1 - 1e-5) * t_full) * x_0 + t_full * x_1
-        v_t = x_1 - (1 - 1e-5) * x_0
         dt_flow = jnp.log2(self.denoise_steps).astype(jnp.int32)
         dt_base = jnp.ones(B, dtype=jnp.int32) * dt_flow
         videos = videos.at[:,-1].set(x_t)
 
         # call the diffusion transformer
         v_pred = self.diffusion_transformer(videos, t, dt_base)
-        return v_pred[:,-1], v_t
+        return v_pred[:,-1], x_0

@@ -150,7 +150,7 @@ class Genie(nnx.Module):
                 rngs=rngs,
             )
         elif self.dyna_type == "diffusion":
-            assert self.denoising_steps > 0, "denoising_steps must be greater than 0 when using the diffusion backend"
+            assert self.diffusion_denoise_steps > 0, "diffusion_denoise_steps must be greater than 0 when using the diffusion backend"
             self.dynamics = DynamicsDiffusion(
                 model_dim=self.dyna_dim,
                 ffn_dim=self.dyna_ffn_dim,
@@ -202,11 +202,15 @@ class Genie(nnx.Module):
                     if self.use_gt_actions
                     else latent_actions_BTm11L
                 ),
+                rng=batch["rng"],
             )
-            v_pred, v_t = self.dynamics(outputs)
+            x_1 = videos_BTHWC[:, -1]
+            v_pred, x_0 = self.dynamics(outputs)
+            v_t = x_1 - (1 - 1e-5) * x_0
+            recon = v_pred + (1 - 1e-5) * x_0
             outputs["v_pred"] = v_pred
             outputs["v_t"] = v_t
-            # TODO add recons as well
+            outputs["recon"] = videos_BTHWC.at[:,-1].set(recon)
             return outputs
 
         tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
@@ -628,38 +632,39 @@ def restore_genie_components(
         options=checkpoint_options,
         handler_registry=handler_registry,
     )
-    dummy_tokenizer = TokenizerVQVAE(
-        in_dim=args.image_channels,
-        model_dim=args.tokenizer_dim,
-        ffn_dim=args.tokenizer_ffn_dim,
-        latent_dim=args.latent_patch_dim,
-        num_latents=args.num_patch_latents,
-        patch_size=args.patch_size,
-        num_blocks=args.tokenizer_num_blocks,
-        num_heads=args.tokenizer_num_heads,
-        dropout=args.dropout,
-        codebook_dropout=args.dropout,
-        param_dtype=args.param_dtype,
-        dtype=args.dtype,
-        use_flash_attention=args.use_flash_attention,
-        rngs=rngs_tokenizer,
-    )
-    dummy_tokenizer_optimizer = nnx.ModelAndOptimizer(dummy_tokenizer, tx)
-    dummy_tokenizer_optimizer_state = nnx.state(dummy_tokenizer_optimizer)
-    abstract_sharded_tokenizer_optimizer_state = _create_abstract_sharded_pytree(
-        dummy_tokenizer_optimizer_state, sharding
-    )
-    restored_tokenizer = tokenizer_checkpoint_manager.restore(
-        step=tokenizer_checkpoint_manager.latest_step(),
-        args=ocp.args.Composite(
-            model_state=ocp.args.PyTreeRestore(  # type: ignore
-                abstract_sharded_tokenizer_optimizer_state  # type: ignore
+    if args.tokenizer_checkpoint:
+        dummy_tokenizer = TokenizerVQVAE(
+            in_dim=args.image_channels,
+            model_dim=args.tokenizer_dim,
+            ffn_dim=args.tokenizer_ffn_dim,
+            latent_dim=args.latent_patch_dim,
+            num_latents=args.num_patch_latents,
+            patch_size=args.patch_size,
+            num_blocks=args.tokenizer_num_blocks,
+            num_heads=args.tokenizer_num_heads,
+            dropout=args.dropout,
+            codebook_dropout=args.dropout,
+            param_dtype=args.param_dtype,
+            dtype=args.dtype,
+            use_flash_attention=args.use_flash_attention,
+            rngs=rngs_tokenizer,
+        )
+        dummy_tokenizer_optimizer = nnx.ModelAndOptimizer(dummy_tokenizer, tx)
+        dummy_tokenizer_optimizer_state = nnx.state(dummy_tokenizer_optimizer)
+        abstract_sharded_tokenizer_optimizer_state = _create_abstract_sharded_pytree(
+            dummy_tokenizer_optimizer_state, sharding
+        )
+        restored_tokenizer = tokenizer_checkpoint_manager.restore(
+            step=tokenizer_checkpoint_manager.latest_step(),
+            args=ocp.args.Composite(
+                model_state=ocp.args.PyTreeRestore(  # type: ignore
+                    abstract_sharded_tokenizer_optimizer_state  # type: ignore
+                ),
             ),
-        ),
-    )["model_state"]
-    nnx.update(dummy_tokenizer_optimizer.model, restored_tokenizer.model)
-    model.tokenizer = dummy_tokenizer_optimizer.model
-    tokenizer_checkpoint_manager.close()
+        )["model_state"]
+        nnx.update(dummy_tokenizer_optimizer.model, restored_tokenizer.model)
+        model.tokenizer = dummy_tokenizer_optimizer.model
+        tokenizer_checkpoint_manager.close()
 
     if args.lam_checkpoint:
         lam_checkpoint_manager = ocp.CheckpointManager(
