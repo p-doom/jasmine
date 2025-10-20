@@ -80,7 +80,6 @@ def main(args: Args):
     test_dir = os.path.join(args.data_dir, "test")
     val_dir = os.path.join(args.data_dir, "val")
 
-    array_record_files = get_array_record_files(args.data_dir)
     train_array_record_files = get_array_record_files(train_dir)
     test_array_record_files = get_array_record_files(test_dir)
     val_array_record_files = get_array_record_files(val_dir)
