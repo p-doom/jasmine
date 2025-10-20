@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import flax.nnx as nnx
 import orbax.checkpoint as ocp
 
-from models.dynamics import DynamicsMaskGIT, DynamicsCausal
+from models.dynamics import DynamicsMaskGIT, DynamicsCausal, DynamicsDiffusion
 from models.lam import LatentActionModel
 from models.tokenizer import TokenizerVQVAE
 
@@ -45,6 +45,7 @@ class Genie(nnx.Module):
         rngs: nnx.Rngs,
         dropout: float = 0.0,
         mask_limit: float = 0.0,
+        diffusion_denoise_steps: int = 0,
     ):
         # --- Tokenizer ---
         self.in_dim = in_dim
@@ -76,6 +77,7 @@ class Genie(nnx.Module):
         self.use_flash_attention = use_flash_attention
         self.dropout = dropout
         self.mask_limit = mask_limit
+        self.diffusion_denoise_steps = diffusion_denoise_steps
         self.decode = decode
 
         self.tokenizer = TokenizerVQVAE(
@@ -147,6 +149,23 @@ class Genie(nnx.Module):
                 decode=decode,
                 rngs=rngs,
             )
+        elif self.dyna_type == "diffusion":
+            assert self.denoising_steps > 0, "denoising_steps must be greater than 0 when using the diffusion backend"
+            self.dynamics = DynamicsDiffusion(
+                model_dim=self.dyna_dim,
+                ffn_dim=self.dyna_ffn_dim,
+                num_latents=self.num_patch_latents,
+                latent_action_dim=self.latent_action_dim,
+                num_blocks=self.dyna_num_blocks,
+                num_heads=self.dyna_num_heads,
+                denoise_steps=self.diffusion_denoise_steps,
+                dropout=self.dropout,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+                use_flash_attention=self.use_flash_attention,
+                decode=decode,
+                rngs=rngs,
+            )
         else:
             raise ValueError(f"Invalid dynamics type: {self.dyna_type}")
 
@@ -155,8 +174,6 @@ class Genie(nnx.Module):
         batch: Dict[str, jax.Array],
     ) -> Dict[str, jax.Array]:
         videos_BTHWC = batch["videos"]
-        tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
-        token_indices_BTN = tokenizer_outputs["indices"]
         latent_actions_BTm11L = None
         action_embeddings_BTm11L = None
         if self.use_gt_actions:
@@ -176,6 +193,24 @@ class Genie(nnx.Module):
                 lambda: z_q_BTm11L,
                 lambda: jax.lax.stop_gradient(z_q_BTm11L),
             )
+        
+        if self.dyna_type == "diffusion":
+            outputs = dict(
+                videos=videos_BTHWC,
+                latent_actions=(
+                    action_embeddings_BTm11L
+                    if self.use_gt_actions
+                    else latent_actions_BTm11L
+                ),
+            )
+            v_pred, v_t = self.dynamics(outputs)
+            outputs["v_pred"] = v_pred
+            outputs["v_t"] = v_t
+            # TODO add recons as well
+            return outputs
+
+        tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
+        token_indices_BTN = tokenizer_outputs["indices"]
         outputs = dict(
             video_tokens=jax.lax.stop_gradient(token_indices_BTN),
             latent_actions=(

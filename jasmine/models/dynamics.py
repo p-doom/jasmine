@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import flax.nnx as nnx
 
-from utils.nn import STTransformer, Transformer
+from utils.nn import STTransformer, Transformer, DiffusionTransformer
 
 
 class DynamicsMaskGIT(nnx.Module):
@@ -178,3 +178,71 @@ class DynamicsCausal(nnx.Module):
         logits_BTNp1V = self.transformer(vid_embed_BTNp1M)
         logits_BTNV = logits_BTNp1V[:, :, :-1]
         return logits_BTNV, jnp.ones_like(video_tokens_BTN)
+
+
+class DynamicsDiffusion(nnx.Module):
+    """Diffusion transformer dynamics model"""
+
+    def __init__(
+        self,
+        model_dim: int,
+        ffn_dim: int,
+        num_latents: int,
+        latent_action_dim: int,
+        num_blocks: int,
+        num_heads: int,
+        denoise_steps: int,
+        dropout: float,
+        param_dtype: jnp.dtype,
+        dtype: jnp.dtype,
+        use_flash_attention: bool,
+        rngs: nnx.Rngs,
+    ):
+        self.model_dim = model_dim
+        self.ffn_dim = ffn_dim
+        self.num_latents = num_latents
+        self.latent_action_dim = latent_action_dim
+        self.num_blocks = num_blocks
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.param_dtype = param_dtype
+        self.dtype = dtype
+        self.use_flash_attention = use_flash_attention
+        self.denoise_steps = denoise_steps
+        self.diffusion_transformer = DiffusionTransformer(
+            model_dim=self.model_dim,
+            ffn_dim=self.ffn_dim,
+            num_blocks=self.num_blocks,
+            num_heads=self.num_heads,
+            dropout=self.dropout,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+
+    def __call__(
+        self,
+        batch: Dict[str, jax.Array],
+    ) -> tuple[jax.Array, jax.Array]:
+        # For now we only denoise the last frame
+        rng, time_rng, noise_rng = jax.random.split(batch["mask_rng"], 3)
+        force_t = batch.get("step_t", -1)
+        videos = batch["videos"]
+        B, T, H, W, C = videos.shape
+        # Sample t.
+        t = jax.random.randint(time_rng, (B,), minval=0, maxval=self.denoise_steps)
+        t /= self.denoise_steps
+        force_t_vec = jnp.ones(B, dtype=jnp.float32) * force_t
+        t = jnp.where(force_t_vec != -1, force_t_vec, t)  # If force_t is not -1, then use force_t.
+        t_full = t[:, None, None, None] # [batch, 1, 1, 1]
+        x_1 = videos[:,-1]
+        x_0 = jax.random.normal(noise_rng, (B, H, W, C))
+        x_t = (1 - (1 - 1e-5) * t_full) * x_0 + t_full * x_1
+        v_t = x_1 - (1 - 1e-5) * x_0
+        dt_flow = jnp.log2(self.denoise_steps).astype(jnp.int32)
+        dt_base = jnp.ones(B, dtype=jnp.int32) * dt_flow
+        videos = videos.at[:,-1].set(x_t)
+
+        # call the diffusion transformer
+        v_pred = self.diffusion_transformer(videos, t, dt_base)
+        return v_pred[:,-1], v_t

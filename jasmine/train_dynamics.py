@@ -73,13 +73,14 @@ class Args:
     lam_num_heads: int = 8
     lam_checkpoint: str = ""
     # Dynamics
-    dyna_type: str = "maskgit"  # supported options: maskgit, causal
+    dyna_type: str = "maskgit"  # supported options: maskgit, causal, diffusion
     dyna_dim: int = 512
     dyna_ffn_dim: int = 2048
     dyna_num_blocks: int = 6
     dyna_num_heads: int = 8
     dropout: float = 0.0
     mask_limit: float = 0.5
+    diffusion_denoise_steps: int = 0
     z_loss_weight: float = 0.0
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
@@ -138,6 +139,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
         dyna_num_heads=args.dyna_num_heads,
         dropout=args.dropout,
         mask_limit=args.mask_limit,
+        diffusion_denoise_steps=args.diffusion_denoise_steps,
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
