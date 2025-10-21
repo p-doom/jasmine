@@ -241,6 +241,7 @@ class Genie(nnx.Module):
         temperature: float = 1,
         sample_argmax: bool = False,
         maskgit_steps: int = 25,
+        diffusion_steps: int = 64,
     ) -> tuple[jax.Array, jax.Array]:
         if self.dyna_type == "maskgit":
             return self.sample_maskgit(
@@ -248,6 +249,8 @@ class Genie(nnx.Module):
             )
         elif self.dyna_type == "causal":
             return self.sample_causal(batch, seq_len, temperature, sample_argmax)
+        elif self.dyna_type == "diffusion":
+            return self.sample_diffusion(batch, seq_len, diffusion_steps)
         else:
             raise ValueError(f"Dynamics model type unknown: {self.dyna_type}")
 
@@ -594,6 +597,36 @@ class Genie(nnx.Module):
         )
         return final_frames_BSHWC, final_logits_BSNV
 
+    def sample_diffusion(
+        self,
+        batch: Dict[str, jax.Array],
+        seq_len: int,
+        diffusion_steps: int,
+    ) -> tuple[jax.Array, jax.Array]:
+        assert isinstance(self.dynamics, DynamicsDiffusion)
+        # --- Encode videos and actions ---
+        videos_BTHWC = batch["videos"]
+        B, T, H, W, C = videos_BTHWC.shape
+        pad_shape = (B, seq_len - T, H, W, C)
+        rng, _rng_noise = jax.random.split(batch["rng"])
+        pad = jax.random.normal(_rng_noise, pad_shape)
+        videos_BSHWC = jnp.concatenate([videos_BTHWC, pad], axis=1)
+
+        # FIXME mihir: extend this to multiple frames
+        frame_idx = seq_len - 1
+        delta_t = 1.0 / diffusion_steps
+        for denoise_step in range(diffusion_steps):
+            t = denoise_step / diffusion_steps
+            t_vector = jnp.full((B, ), t)
+            dt_flow = jnp.log2(diffusion_steps).astype(jnp.int32)
+            dt_base = jnp.ones(B, dtype=jnp.int32) * dt_flow # Smallest dt.
+
+            v_pred_BSHWC = self.dynamics.diffusion_transformer(videos_BSHWC, t_vector, dt_base)
+            frame_BHWC = videos_BSHWC[:, frame_idx] + v_pred_BSHWC[:, frame_idx] * delta_t
+            videos_BSHWC = videos_BSHWC.at[:, frame_idx].set(frame_BHWC)
+
+        return videos_BSHWC, None # TODO return logits or equivalent
+
     def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
         # --- Preprocess videos ---
         assert self.lam is not None
@@ -603,8 +636,6 @@ class Genie(nnx.Module):
         )
         lam_indices_E = lam_output["indices"]
         return lam_indices_E
-
-
 # FIXME (f.srambical): add conversion script for old checkpoints
 def restore_genie_components(
     optimizer: nnx.ModelAndOptimizer,

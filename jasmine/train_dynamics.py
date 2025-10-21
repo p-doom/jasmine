@@ -349,9 +349,12 @@ def _calculate_step_metrics(
     num_patch_latents: int,
 ) -> tuple[jax.Array, dict]:
 
-    if args.dyna_type == "diffusion":
-        mse_v = jnp.mean((outputs["v_pred"] - outputs["v_t"]) ** 2, axis=(1, 2, 3))
-        mse = jnp.mean(mse_v)
+    if args.dyna_type == "diffusion" :
+        if "v_pred" in outputs.keys():
+            mse_v = jnp.mean((outputs["v_pred"] - outputs["v_t"]) ** 2, axis=(1, 2, 3))
+            mse = jnp.mean(mse_v)
+        else:
+            mse = 0. # TODO mihir: fix this
     else:
         mask_BTN = outputs["mask"]
         outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
@@ -540,13 +543,14 @@ def main(args: Args) -> None:
 
         # --- Evaluate full frame prediction (sampling) ---
         if args.eval_full_frame:
-            # TODO mihir
-            assert args.dyna_type != "diffusion", "Full frame metrics not supported yet for diffusion"
             inputs["videos"] = gt.astype(args.dtype)
-            tokenizer_outputs = genie.tokenizer.vq_encode(
-                inputs["videos"], training=False
-            )
-            tokens_full_frame = tokenizer_outputs["indices"]
+            if args.dyna_type != "diffusion":
+                tokenizer_outputs = genie.tokenizer.vq_encode(
+                    inputs["videos"], training=False
+                )
+                tokens_full_frame = tokenizer_outputs["indices"]
+            else:
+                tokens_full_frame = None
             lam_indices_E = None
             if not args.use_gt_actions:
                 lam_indices_E = genie.vq_encode(inputs, training=False)
@@ -564,10 +568,11 @@ def main(args: Args) -> None:
             # Calculate metrics for the last frame only
             step_outputs = {
                 "recon": recon_full_frame[:, -1],
-                "token_logits": logits_full_frame[:, -1],
-                "video_tokens": tokens_full_frame[:, -1],
-                "mask": jnp.ones_like(tokens_full_frame[:, -1]),
             }
+            if args.dyna_type != "diffusion":
+                step_outputs["token_logits"] = logits_full_frame
+                step_outputs["video_tokens"] = tokens_full_frame
+                step_outputs["mask"] = jnp.ones_like(tokens_full_frame)
             if lam_indices_E is not None:
                 lam_indices_B = lam_indices_E.reshape((-1, args.seq_len - 1))[:, -1]
                 step_outputs["lam_indices"] = lam_indices_B
@@ -681,7 +686,6 @@ def main(args: Args) -> None:
             if step == first_step:
                 print_mem_stats("After params initialized")
             step += 1
-            print(f"Step {step}")
 
             # --- Validation loss ---
             val_results = {}

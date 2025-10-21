@@ -229,16 +229,13 @@ class DynamicsDiffusion(nnx.Module):
     ) -> tuple[jax.Array, jax.Array]:
         # For now we only denoise the last frame
         rng, time_rng, noise_rng = jax.random.split(batch["rng"], 3)
-        force_t = batch.get("step_t", -1)
         videos = batch["videos"]
         B, T, H, W, C = videos.shape
         # Sample t.
         t = jax.random.randint(time_rng, (B,), minval=0, maxval=self.denoise_steps)
         t /= self.denoise_steps
-        force_t_vec = jnp.ones(B, dtype=jnp.float32) * force_t
-        t = jnp.where(force_t_vec != -1, force_t_vec, t)  # If force_t is not -1, then use force_t.
         t_full = t[:, None, None, None] # [batch, 1, 1, 1]
-        x_1 = videos[:,-1]
+        x_1 = videos[:, -1]
         x_0 = jax.random.normal(noise_rng, (B, H, W, C))
         x_t = (1 - (1 - 1e-5) * t_full) * x_0 + t_full * x_1
         dt_flow = jnp.log2(self.denoise_steps).astype(jnp.int32)
@@ -246,5 +243,6 @@ class DynamicsDiffusion(nnx.Module):
         videos = videos.at[:,-1].set(x_t)
 
         # call the diffusion transformer
+        # TODO add action conditioning
         v_pred = self.diffusion_transformer(videos, t, dt_base)
         return v_pred[:,-1], x_0

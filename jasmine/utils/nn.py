@@ -625,7 +625,7 @@ class DiTBlock(nnx.Module):
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             attention_fn=_create_flash_attention_fn(
-                self.use_flash_attention, is_causal=True
+                self.use_flash_attention, is_causal=False
             ),
             rngs=rngs,
             decode=self.decode,
@@ -748,6 +748,7 @@ class DiffusionTransformer(nnx.Module):
         x_BTNM = self.pos_enc(x_BTNM)
         te = self.time_step_embedder(t) # (B, hidden_size)
         dte = self.step_size_embedder(dt) # (B, hidden_size)
+        # TODO add action conditioning here
         c = te + dte # TODO change this to prepending later
         for block in self.blocks:
             x_BTNM = block(x_BTNM, c)
