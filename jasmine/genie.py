@@ -612,6 +612,22 @@ class Genie(nnx.Module):
         pad = jax.random.normal(_rng_noise, pad_shape)
         videos_BSHWC = jnp.concatenate([videos_BTHWC, pad], axis=1)
 
+        if self.use_gt_actions:
+            assert self.action_embed is not None
+            latent_actions_BT1L = self.action_embed(batch["actions"]).reshape(
+                *batch["actions"].shape[:2], 1, self.latent_action_dim
+            )
+            latent_actions_BTm11L = latent_actions_BT1L[:, :-1]
+            action_tokens_EL = latent_actions_BTm11L.reshape(-1, self.latent_action_dim)
+        else:
+            assert self.lam is not None
+            latent_actions_E = batch["latent_actions"]
+            action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
+
+        action_tokens_BSm1L = jnp.reshape(action_tokens_EL, (B, seq_len - 1, -1))
+        act_embed_BSL = jnp.pad(action_tokens_BSm1L, ((0, 0), (1, 0), (0, 0)))
+        act_embed_BSM = self.dynamics.action_up(act_embed_BSL)
+
         # FIXME mihir: extend this to multiple frames
         frame_idx = seq_len - 1
         delta_t = 1.0 / diffusion_steps
@@ -622,7 +638,7 @@ class Genie(nnx.Module):
             dt_flow = jnp.log2(diffusion_steps).astype(jnp.int32)
             dt_base = jnp.ones((B, seq_len), dtype=jnp.int32) * dt_flow # Smallest dt.
 
-            v_pred_BSHWC = self.dynamics.diffusion_transformer(videos_BSHWC, t_vector, dt_base)
+            v_pred_BSHWC = self.dynamics.diffusion_transformer(videos_BSHWC, t_vector, dt_base, act_embed_BSM)
             frame_BHWC = videos_BSHWC[:, frame_idx] + v_pred_BSHWC[:, frame_idx] * delta_t
             videos_BSHWC = videos_BSHWC.at[:, frame_idx].set(frame_BHWC)
 

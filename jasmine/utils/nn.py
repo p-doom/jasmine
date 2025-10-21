@@ -728,7 +728,7 @@ class DiffusionTransformer(nnx.Module):
         self.layer_norm = nnx.LayerNorm(self.ffn_dim, use_bias=False, use_scale=False, rngs=rngs)
         self.dense2 = nnx.Linear(self.model_dim, self.patch_dim, kernel_init=nnx.initializers.normal(0.02), bias_init=nnx.initializers.normal(0.02), rngs=rngs)
 
-    def __call__(self, x_BTHWC: jax.Array, t: jax.Array, dt: jax.Array) -> jax.Array:
+    def __call__(self, x_BTHWC: jax.Array, t: jax.Array, dt: jax.Array, act_embed_BTM: jax.Array) -> jax.Array:
         B,T,H,W,C = x_BTHWC.shape
         x_BTNP = patchify(x_BTHWC, self.patch_size)
         x_BTNM = self.patch_up(x_BTNP)
@@ -737,7 +737,7 @@ class DiffusionTransformer(nnx.Module):
         dte = self.step_size_embedder(dt) # (B, T, hidden_size)
         # TODO add action conditioning here
         # TODO maybe prepending later?
-        c = te + dte # (B, T, hidden_size)
+        c = te + dte + act_embed_BTM # (B, T, hidden_size)
         for block in self.blocks:
             x_BTNM = block(x_BTNM, c)
 

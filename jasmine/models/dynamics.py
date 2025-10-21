@@ -222,6 +222,14 @@ class DynamicsDiffusion(nnx.Module):
             decode=self.decode,
             rngs=rngs,
         )
+        self.action_up = nnx.Linear(
+            self.latent_action_dim,
+            self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+
 
     def __call__(
         self,
@@ -243,8 +251,12 @@ class DynamicsDiffusion(nnx.Module):
         dt_base = jnp.ones((B,T), dtype=jnp.int32) * dt_flow # [B, T]
         videos = x_t
 
+        act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
+        padded_act_embed_BTM = jnp.pad(
+            act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0))
+        ).reshape(B, T, self.model_dim)
 
         # call the diffusion transformer
         # TODO add action conditioning
-        v_pred = self.diffusion_transformer(videos, t, dt_base)
+        v_pred = self.diffusion_transformer(videos, t, dt_base, padded_act_embed_BTM)
         return v_pred, x_0
