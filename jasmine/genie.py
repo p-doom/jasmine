@@ -631,18 +631,27 @@ class Genie(nnx.Module):
         # FIXME mihir: extend this to multiple frames
         frame_idx = seq_len - 1
         delta_t = 1.0 / diffusion_steps
-        for denoise_step in range(diffusion_steps):
+
+        @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
+        def denoise_step_fn(carry, denoise_step: jax.Array) -> jax.Array:
+            vid_BSHWC, frame_i = carry
             t = denoise_step / diffusion_steps
             t_vector = jnp.ones((B, seq_len))
-            t_vector = t_vector.at[:, frame_idx].set(t)
+            t_vector = t_vector.at[:, frame_i].set(t)
             dt_flow = jnp.log2(diffusion_steps).astype(jnp.int32)
             dt_base = jnp.ones((B, seq_len), dtype=jnp.int32) * dt_flow # Smallest dt.
 
-            v_pred_BSHWC = self.dynamics.diffusion_transformer(videos_BSHWC, t_vector, dt_base, act_embed_BSM)
-            frame_BHWC = videos_BSHWC[:, frame_idx] + v_pred_BSHWC[:, frame_idx] * delta_t
-            videos_BSHWC = videos_BSHWC.at[:, frame_idx].set(frame_BHWC)
+            v_pred_BSHWC = self.dynamics.diffusion_transformer(vid_BSHWC, t_vector, dt_base, act_embed_BSM)
+            frame_BHWC = vid_BSHWC[:, frame_i] + v_pred_BSHWC[:, frame_i] * delta_t
+            vid_BSHWC = vid_BSHWC.at[:, frame_i].set(frame_BHWC)
+            new_carry = (vid_BSHWC, frame_i)
+            return new_carry
 
-        return videos_BSHWC, None # TODO return logits or equivalent
+        initial_carry = (videos_BSHWC, frame_idx)
+        final_carry = denoise_step_fn(initial_carry, jnp.arange(diffusion_steps))
+        final_videos_BSHWC = final_carry[0]
+
+        return final_videos_BSHWC, None # TODO return something meaningful? 
 
     def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
         # --- Preprocess videos ---
