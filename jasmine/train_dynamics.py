@@ -1,7 +1,7 @@
 import os
 
 
-os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.98")
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
 
 from dataclasses import dataclass, field
 import itertools
@@ -688,7 +688,6 @@ def main(args: Args) -> None:
             if step == first_step:
                 print_mem_stats("After params initialized")
             step += 1
-            print(f"Step {step}")
 
             # --- Validation loss ---
             val_results = {}
