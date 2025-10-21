@@ -564,7 +564,9 @@ def main(args: Args) -> None:
                 args.val_temperature,
                 args.val_sample_argmax,
                 args.val_maskgit_steps,
+                args.diffusion_denoise_steps,
             )
+
             # Calculate metrics for the last frame only
             step_outputs = {
                 "recon": recon_full_frame[:, -1],
@@ -686,6 +688,7 @@ def main(args: Args) -> None:
             if step == first_step:
                 print_mem_stats("After params initialized")
             step += 1
+            print(f"Step {step}")
 
             # --- Validation loss ---
             val_results = {}

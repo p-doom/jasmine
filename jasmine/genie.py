@@ -204,13 +204,13 @@ class Genie(nnx.Module):
                 ),
                 rng=batch["rng"],
             )
-            x_1 = videos_BTHWC[:, -1]
+            x_1 = videos_BTHWC
             v_pred, x_0 = self.dynamics(outputs)
             v_t = x_1 - (1 - 1e-5) * x_0
             recon = v_pred + (1 - 1e-5) * x_0
             outputs["v_pred"] = v_pred
             outputs["v_t"] = v_t
-            outputs["recon"] = videos_BTHWC.at[:,-1].set(recon)
+            outputs["recon"] = recon
             return outputs
 
         tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
@@ -617,9 +617,10 @@ class Genie(nnx.Module):
         delta_t = 1.0 / diffusion_steps
         for denoise_step in range(diffusion_steps):
             t = denoise_step / diffusion_steps
-            t_vector = jnp.full((B, ), t)
+            t_vector = jnp.ones((B, seq_len))
+            t_vector = t_vector.at[:, frame_idx].set(t)
             dt_flow = jnp.log2(diffusion_steps).astype(jnp.int32)
-            dt_base = jnp.ones(B, dtype=jnp.int32) * dt_flow # Smallest dt.
+            dt_base = jnp.ones((B, seq_len), dtype=jnp.int32) * dt_flow # Smallest dt.
 
             v_pred_BSHWC = self.dynamics.diffusion_transformer(videos_BSHWC, t_vector, dt_base)
             frame_BHWC = videos_BSHWC[:, frame_idx] + v_pred_BSHWC[:, frame_idx] * delta_t

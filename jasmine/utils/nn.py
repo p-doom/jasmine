@@ -487,7 +487,7 @@ class Transformer(nnx.Module):
         return x_BTNV
 
 def modulate(x, shift, scale):
-    return x * (1 + scale[:, None]) + shift[:, None]
+    return x * (1 + scale) + shift
 
 # TODO mihir clean this up
 class TimestepEmbedder(nnx.Module):
@@ -524,38 +524,13 @@ class TimestepEmbedder(nnx.Module):
         :return: an (N, D) Tensor of positional embeddings.
         """
         # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
-        t = jax.lax.convert_element_type(t, jnp.float32)
+        t = jax.lax.convert_element_type(t, jnp.float32) # [B, T]
         dim = self.hidden_size
         half = dim // 2
         freqs = jnp.exp( -math.log(max_period) * jnp.arange(start=0, stop=half, dtype=jnp.float32) / half)
-        args = t[:, None] * freqs[None]
+        args = t[: ,: , None] * freqs[None, None] # TODO verify this
         embedding = jnp.concatenate([jnp.cos(args), jnp.sin(args)], axis=-1)
         return embedding
-
-# TODO mihir remove this
-class PatchEmbed(nnx.Module):
-    """ 2D Image to Patch Embedding """
-
-    def __init__(
-        self,
-        patch_size: int,
-        hidden_size: int,
-        rngs: nnx.Rngs,
-        bias: bool = True, 
-    ):
-        self.patch_size = patch_size
-        self.hidden_size = hidden_size
-        self.bias = bias
-        patch_tuple = (self.patch_size, self.patch_size)
-        self.conv = nnx.Conv(self.hidden_size, self.hidden_size, patch_tuple, patch_tuple, padding="VALID", rngs=rngs)
-
-    def __call__(self, x):
-        B, T, H, W, C = x.shape
-        num_patches = (H // self.patch_size)
-        x = einops.rearrange(x, "b t h w c -> (b t) h w c")
-        x = self.conv(x) # (B, P, P, hidden_size)
-        x = einops.rearrange(x, '(b t) h w c -> b t (h w) c', t=T, h=num_patches, w=num_patches)
-        return x
 
 class DiTBlock(nnx.Module):
     """DiT block"""
@@ -647,28 +622,40 @@ class DiTBlock(nnx.Module):
 
 
 
-    def __call__(self, x_BTNM, c):
+    def __call__(self, x_BTNM, c_BTM):
         B, T, N, M = x_BTNM.shape
         
         # Calculate adaLn modulation parameters.
-        c = nnx.silu(c)
-        c = self.condition_up(c)
+        c_BTM = nnx.silu(c_BTM)
+        c = self.condition_up(c_BTM) # (B, T, 6*M)
         shift_spatial, scale_spatial, gate_spatial, shift_temporal, scale_temporal, gate_temporal, shift_mlp, scale_mlp, gate_mlp = jnp.split(c, 9, axis=-1)
 
         # TODO find a better way to do this
-        shift_spatial = jnp.tile(shift_spatial, (T, 1))
-        scale_spatial = jnp.tile(scale_spatial, (T, 1))
-        gate_spatial = jnp.tile(gate_spatial, (T, 1))
-        shift_temporal = jnp.tile(shift_temporal, (N, 1))
-        scale_temporal = jnp.tile(scale_temporal, (N, 1))
-        gate_temporal = jnp.tile(gate_temporal, (N, 1))
+        """
+        We adapt adaLN conditioning to the spatio-temporal block. 
 
+        For spatial attention:
+        Each frame gets its noise level conditioning. Frame level condititioning is broadcasted to all patches in the frame.
+
+        For temporal attention:
+        Each patch needs to be aware of its noise level. Thus we replicate the frame level condititioning to all patches in the frame.
+        """
+        shift_spatial = einops.rearrange(shift_spatial, "b t m -> (b t) 1 m")
+        scale_spatial = einops.rearrange(scale_spatial, "b t m -> (b t) 1 m")
+        gate_spatial = einops.rearrange(gate_spatial, "b t m -> (b t) 1 m")
+        shift_temporal = einops.repeat(shift_temporal, "b t m -> (tile b) t m", tile=N)
+        scale_temporal = einops.repeat(scale_temporal, "b t m -> (tile b) t m", tile=N)
+        gate_temporal = einops.repeat(gate_temporal, "b t m -> (tile b) t m", tile=N)
+        shift_mlp = einops.rearrange(shift_mlp, "b t m -> b t 1 m")
+        scale_mlp = einops.rearrange(scale_mlp, "b t m -> b t 1 m")
+        gate_mlp = einops.rearrange(gate_mlp, "b t m -> b t 1 m")
+        
         # --- Spatial attention ---
         z_FNM = einops.rearrange(x_BTNM, "b t n m -> (b t) n m")
         z_FNM = self.spatial_norm(z_FNM)
         z_FNM = modulate(z_FNM, shift_spatial, scale_spatial)
         z_FNM = self.spatial_attention(z_FNM, sow_weights=self.sow_weights)
-        z_FNM = z_FNM * gate_spatial[:, None]
+        z_FNM = z_FNM * gate_spatial
         z_BTNM = einops.rearrange(z_FNM, "(b t) n m -> b t n m", t=T)
         x_BTNM = x_BTNM + z_BTNM
         # --- Temporal attention ---
@@ -676,16 +663,16 @@ class DiTBlock(nnx.Module):
         z_PTM = self.temporal_norm(z_PTM)
         z_PTM = modulate(z_PTM, shift_temporal, scale_temporal)
         z_PTM = self.temporal_attention(z_PTM, sow_weights=self.sow_weights)
-        z_PTM = z_PTM * gate_temporal[:, None]
+        z_PTM = z_PTM * gate_temporal
         z_BTNM = einops.rearrange(z_PTM, "(b n) t m -> b t n m", n=N)
         x_BTNM = x_BTNM + z_BTNM
         # --- Feedforward ---
         z_BTNM = self.ffn_norm(x_BTNM)
-        z_BTNM = modulate(z_BTNM, shift_mlp[:, None], scale_mlp[:, None])
+        z_BTNM = modulate(z_BTNM, shift_mlp, scale_mlp)
         z_BTND = self.ffn_dense1(z_BTNM)
         z_BTND = jax.nn.gelu(z_BTND)
         z_BTNM = self.ffn_dense2(z_BTND)
-        z_BTNM = z_BTNM * gate_mlp[:, None, None]
+        z_BTNM = z_BTNM * gate_mlp
         x_BTNM = x_BTNM + z_BTNM
         if self.sow_activations:
             self.sow(nnx.Intermediate, "activations", x_BTNM)
@@ -746,18 +733,21 @@ class DiffusionTransformer(nnx.Module):
         x_BTNP = patchify(x_BTHWC, self.patch_size)
         x_BTNM = self.patch_up(x_BTNP)
         x_BTNM = self.pos_enc(x_BTNM)
-        te = self.time_step_embedder(t) # (B, hidden_size)
-        dte = self.step_size_embedder(dt) # (B, hidden_size)
+        te = self.time_step_embedder(t) # (B, T, hidden_size)
+        dte = self.step_size_embedder(dt) # (B, T, hidden_size)
         # TODO add action conditioning here
-        c = te + dte # TODO change this to prepending later
+        # TODO maybe prepending later?
+        c = te + dte # (B, T, hidden_size)
         for block in self.blocks:
             x_BTNM = block(x_BTNM, c)
 
         c = nnx.silu(c)
         c = self.condition_up(c)
         shift, scale = jnp.split(c, 2, axis=-1)
+        shift = einops.rearrange(shift, "b t m -> b t 1 m")
+        scale = einops.rearrange(scale, "b t m -> b t 1 m")
         x_BTNM = self.layer_norm(x_BTNM)
-        x_BTNM = modulate(x_BTNM, shift[:, None], scale[:, None])
+        x_BTNM = modulate(x_BTNM, shift, scale)
         x_BTNP = self.dense2(x_BTNM)
         x_BTHWC = unpatchify(x_BTNP, self.patch_size, H, W)
 
