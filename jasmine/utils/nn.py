@@ -635,10 +635,10 @@ class DiTBlock(nnx.Module):
         We adapt adaLN conditioning to the spatio-temporal block. 
 
         For spatial attention:
-        Each frame gets its noise level conditioning. Frame level condititioning is broadcasted to all patches in the frame.
+        Each frame gets its noise level conditioning. Frame level conditioning is broadcasted to all patches in the frame.
 
         For temporal attention:
-        Each patch needs to be aware of its noise level. Thus we replicate the frame level condititioning to all patches in the frame.
+        Each patch needs to be aware of its noise level. Thus we replicate the frame level conditioning to all patches in the frame.
         """
         shift_spatial = einops.rearrange(shift_spatial, "b t m -> (b t) 1 m")
         scale_spatial = einops.rearrange(scale_spatial, "b t m -> (b t) 1 m")
