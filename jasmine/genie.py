@@ -628,8 +628,6 @@ class Genie(nnx.Module):
         act_embed_BSL = jnp.pad(action_tokens_BSm1L, ((0, 0), (1, 0), (0, 0)))
         act_embed_BSM = self.dynamics.action_up(act_embed_BSL)
 
-        # FIXME mihir: extend this to multiple frames
-        frame_idx = seq_len - 1
         delta_t = 1.0 / diffusion_steps
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
@@ -647,9 +645,19 @@ class Genie(nnx.Module):
             new_carry = (vid_BSHWC, frame_i)
             return new_carry
 
-        initial_carry = (videos_BSHWC, frame_idx)
-        final_carry = denoise_step_fn(initial_carry, jnp.arange(diffusion_steps))
-        final_videos_BSHWC = final_carry[0]
+        # FIXME mihir: extend this to sliding window of frames
+        @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
+        def autoregressive_step_fn(carry, frame_t: jax.Array) -> jax.Array:
+            vid_t_BSHWC = carry
+            carry_denoise = (vid_t_BSHWC, frame_t)
+            final_carry_denoise = denoise_step_fn(carry_denoise, jnp.arange(diffusion_steps))
+            vid_t_BSHWC = final_carry_denoise[0]
+            new_carry = vid_t_BSHWC
+            return new_carry
+
+        initial_carry = videos_BSHWC
+        final_carry = autoregressive_step_fn(initial_carry, jnp.arange(T, seq_len))
+        final_videos_BSHWC = final_carry
 
         return final_videos_BSHWC, None # TODO return something meaningful? 
 
@@ -662,6 +670,7 @@ class Genie(nnx.Module):
         )
         lam_indices_E = lam_output["indices"]
         return lam_indices_E
+
 # FIXME (f.srambical): add conversion script for old checkpoints
 def restore_genie_components(
     optimizer: nnx.ModelAndOptimizer,
