@@ -36,7 +36,7 @@ class Args:
     temperature: float = 1.0
     sample_argmax: bool = True
     start_frame: int = 1
-    diffusion_steps: int = 64
+    diffusion_denoise_steps: int = 0
     # Tokenizer checkpoint
     tokenizer_dim: int = 512
     tokenizer_ffn_dim: int = 2048
@@ -113,6 +113,7 @@ if __name__ == "__main__":
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
+        diffusion_denoise_steps=args.diffusion_denoise_steps,
         # FIXME (f.srambical): implement spatiotemporal KV caching and set decode=True
         decode=False,
         rngs=rngs,
@@ -165,6 +166,7 @@ if __name__ == "__main__":
         assert args.dyna_type in [
             "maskgit",
             "causal",
+            "diffusion",
         ], f"Invalid dynamics type: {args.dyna_type}"
         frames, _ = model.sample(
             batch,
@@ -172,7 +174,7 @@ if __name__ == "__main__":
             args.temperature,
             args.sample_argmax,
             args.maskgit_steps,
-            args.diffusion_steps,
+            args.diffusion_denoise_steps,
         )
         return frames
 
