@@ -765,7 +765,7 @@ class DiffusionTransformer(nnx.Module):
             rngs=rngs,
         )
         self.layer_norm = nnx.LayerNorm(
-            self.ffn_dim, use_bias=False, use_scale=False, rngs=rngs
+            self.model_dim, use_bias=False, use_scale=False, rngs=rngs
         )
         self.dense2 = nnx.Linear(
             self.model_dim,
