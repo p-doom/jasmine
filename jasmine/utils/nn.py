@@ -486,8 +486,10 @@ class Transformer(nnx.Module):
             self.sow(nnx.Intermediate, "logits", x_BTNV)
         return x_BTNV
 
+
 def modulate(x, shift, scale):
     return x * (1 + scale) + shift
+
 
 # TODO mihir clean this up
 class TimestepEmbedder(nnx.Module):
@@ -495,16 +497,23 @@ class TimestepEmbedder(nnx.Module):
     Embeds scalar timesteps into vector representations.
     """
 
-    def __init__(
-        self,
-        hidden_size: int,
-        rngs,
-        bias: bool = True
-    ):
+    def __init__(self, hidden_size: int, rngs, bias: bool = True):
         self.hidden_size = hidden_size
         self.bias = bias
-        self.dense1 = nnx.Linear(self.hidden_size, self.hidden_size, kernel_init=nnx.initializers.normal(0.02), bias_init=nnx.initializers.normal(0.02), rngs=rngs)
-        self.dense2 = nnx.Linear(self.hidden_size, self.hidden_size, kernel_init=nnx.initializers.normal(0.02), bias_init=nnx.initializers.normal(0.02), rngs=rngs)
+        self.dense1 = nnx.Linear(
+            self.hidden_size,
+            self.hidden_size,
+            kernel_init=nnx.initializers.normal(0.02),
+            bias_init=nnx.initializers.normal(0.02),
+            rngs=rngs,
+        )
+        self.dense2 = nnx.Linear(
+            self.hidden_size,
+            self.hidden_size,
+            kernel_init=nnx.initializers.normal(0.02),
+            bias_init=nnx.initializers.normal(0.02),
+            rngs=rngs,
+        )
 
     def __call__(self, t):
         x = self.timestep_embedding(t)
@@ -512,7 +521,7 @@ class TimestepEmbedder(nnx.Module):
         x = nnx.silu(x)
         x = self.dense2(x)
         return x
-    
+
     # t is between [0, 1].
     def timestep_embedding(self, t, max_period=10000):
         """
@@ -524,13 +533,18 @@ class TimestepEmbedder(nnx.Module):
         :return: an (N, D) Tensor of positional embeddings.
         """
         # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
-        t = jax.lax.convert_element_type(t, jnp.float32) # [B, T]
+        t = jax.lax.convert_element_type(t, jnp.float32)  # [B, T]
         dim = self.hidden_size
         half = dim // 2
-        freqs = jnp.exp( -math.log(max_period) * jnp.arange(start=0, stop=half, dtype=jnp.float32) / half)
-        args = t[: ,: , None] * freqs[None, None] # TODO verify this
+        freqs = jnp.exp(
+            -math.log(max_period)
+            * jnp.arange(start=0, stop=half, dtype=jnp.float32)
+            / half
+        )
+        args = t[:, :, None] * freqs[None, None]  # TODO verify this
         embedding = jnp.concatenate([jnp.cos(args), jnp.sin(args)], axis=-1)
         return embedding
+
 
 class DiTBlock(nnx.Module):
     """DiT block"""
@@ -559,8 +573,14 @@ class DiTBlock(nnx.Module):
         self.decode = decode
         self.sow_weights = sow_weights
         self.sow_activations = sow_activations
-        self.condition_up = nnx.Linear(self.model_dim, 9 * self.model_dim, kernel_init=nnx.initializers.normal(0.02), bias_init=nnx.initializers.normal(0.02), rngs=rngs)
-        
+        self.condition_up = nnx.Linear(
+            self.model_dim,
+            9 * self.model_dim,
+            kernel_init=nnx.initializers.normal(0.02),
+            bias_init=nnx.initializers.normal(0.02),
+            rngs=rngs,
+        )
+
         self.temporal_norm = nnx.LayerNorm(
             num_features=self.model_dim,
             param_dtype=self.param_dtype,
@@ -620,15 +640,23 @@ class DiTBlock(nnx.Module):
             rngs=rngs,
         )
 
-
-
     def __call__(self, x_BTNM, c_BTM):
         B, T, N, M = x_BTNM.shape
-        
+
         # Calculate adaLn modulation parameters.
         c_BTM = nnx.silu(c_BTM)
-        c = self.condition_up(c_BTM) # (B, T, 6*M)
-        shift_spatial, scale_spatial, gate_spatial, shift_temporal, scale_temporal, gate_temporal, shift_mlp, scale_mlp, gate_mlp = jnp.split(c, 9, axis=-1)
+        c = self.condition_up(c_BTM)  # (B, T, 6*M)
+        (
+            shift_spatial,
+            scale_spatial,
+            gate_spatial,
+            shift_temporal,
+            scale_temporal,
+            gate_temporal,
+            shift_mlp,
+            scale_mlp,
+            gate_mlp,
+        ) = jnp.split(c, 9, axis=-1)
 
         # TODO find a better way to do this
         """
@@ -649,7 +677,7 @@ class DiTBlock(nnx.Module):
         shift_mlp = einops.rearrange(shift_mlp, "b t m -> b t 1 m")
         scale_mlp = einops.rearrange(scale_mlp, "b t m -> b t 1 m")
         gate_mlp = einops.rearrange(gate_mlp, "b t m -> b t 1 m")
-        
+
         # --- Spatial attention ---
         z_FNM = einops.rearrange(x_BTNM, "b t n m -> (b t) n m")
         z_FNM = self.spatial_norm(z_FNM)
@@ -679,6 +707,7 @@ class DiTBlock(nnx.Module):
 
         return x_BTNM
 
+
 class DiffusionTransformer(nnx.Module):
     """Diffusion transformer"""
 
@@ -701,9 +730,7 @@ class DiffusionTransformer(nnx.Module):
         self.dropout = dropout
         self.param_dtype = param_dtype
         self.dtype = dtype
-        self.pos_enc = _get_spatiotemporal_positional_encoding(
-            self.model_dim
-        )
+        self.pos_enc = _get_spatiotemporal_positional_encoding(self.model_dim)
         self.blocks: nnx.List[DiTBlock] = nnx.List([])
         for _ in range(self.num_blocks):
             self.blocks.append(
@@ -723,21 +750,43 @@ class DiffusionTransformer(nnx.Module):
         self.step_size_embedder = TimestepEmbedder(self.model_dim, rngs=rngs)
 
         self.patch_dim = self.patch_size * self.patch_size * 3
-        self.patch_up = nnx.Linear(self.patch_dim, self.model_dim, kernel_init=nnx.initializers.normal(0.02), bias_init=nnx.initializers.normal(0.02), rngs=rngs)
-        self.condition_up = nnx.Linear(self.model_dim, 2*self.model_dim, kernel_init=nnx.initializers.normal(0.02), bias_init=nnx.initializers.normal(0.02), rngs=rngs)
-        self.layer_norm = nnx.LayerNorm(self.ffn_dim, use_bias=False, use_scale=False, rngs=rngs)
-        self.dense2 = nnx.Linear(self.model_dim, self.patch_dim, kernel_init=nnx.initializers.normal(0.02), bias_init=nnx.initializers.normal(0.02), rngs=rngs)
+        self.patch_up = nnx.Linear(
+            self.patch_dim,
+            self.model_dim,
+            kernel_init=nnx.initializers.normal(0.02),
+            bias_init=nnx.initializers.normal(0.02),
+            rngs=rngs,
+        )
+        self.condition_up = nnx.Linear(
+            self.model_dim,
+            2 * self.model_dim,
+            kernel_init=nnx.initializers.normal(0.02),
+            bias_init=nnx.initializers.normal(0.02),
+            rngs=rngs,
+        )
+        self.layer_norm = nnx.LayerNorm(
+            self.ffn_dim, use_bias=False, use_scale=False, rngs=rngs
+        )
+        self.dense2 = nnx.Linear(
+            self.model_dim,
+            self.patch_dim,
+            kernel_init=nnx.initializers.normal(0.02),
+            bias_init=nnx.initializers.normal(0.02),
+            rngs=rngs,
+        )
 
-    def __call__(self, x_BTHWC: jax.Array, t: jax.Array, dt: jax.Array, act_embed_BTM: jax.Array) -> jax.Array:
-        B,T,H,W,C = x_BTHWC.shape
+    def __call__(
+        self, x_BTHWC: jax.Array, t: jax.Array, dt: jax.Array, act_embed_BTM: jax.Array
+    ) -> jax.Array:
+        B, T, H, W, C = x_BTHWC.shape
         x_BTNP = patchify(x_BTHWC, self.patch_size)
         x_BTNM = self.patch_up(x_BTNP)
         x_BTNM = self.pos_enc(x_BTNM)
-        te = self.time_step_embedder(t) # (B, T, hidden_size)
-        dte = self.step_size_embedder(dt) # (B, T, hidden_size)
+        te = self.time_step_embedder(t)  # (B, T, hidden_size)
+        dte = self.step_size_embedder(dt)  # (B, T, hidden_size)
         # TODO add action conditioning here
         # TODO maybe prepending later?
-        c = te + dte + act_embed_BTM # (B, T, hidden_size)
+        c = te + dte + act_embed_BTM  # (B, T, hidden_size)
         for block in self.blocks:
             x_BTNM = block(x_BTNM, c)
 
