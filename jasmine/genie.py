@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional
 
 import einops
 import jax
@@ -242,6 +242,7 @@ class Genie(nnx.Module):
         sample_argmax: bool = False,
         maskgit_steps: int = 25,
         diffusion_steps: int = 64,
+        window_size: Optional[int] = None,
     ) -> tuple[jax.Array, jax.Array]:
         if self.dyna_type == "maskgit":
             return self.sample_maskgit(
@@ -250,7 +251,7 @@ class Genie(nnx.Module):
         elif self.dyna_type == "causal":
             return self.sample_causal(batch, seq_len, temperature, sample_argmax)
         elif self.dyna_type == "diffusion":
-            return self.sample_diffusion(batch, seq_len, diffusion_steps)
+            return self.sample_diffusion(batch, seq_len, diffusion_steps, window_size)
         else:
             raise ValueError(f"Dynamics model type unknown: {self.dyna_type}")
 
@@ -602,15 +603,20 @@ class Genie(nnx.Module):
         batch: Dict[str, jax.Array],
         seq_len: int,
         diffusion_steps: int,
+        window_size: Optional[int] = None,
     ) -> tuple[jax.Array, jax.Array]:
         assert isinstance(self.dynamics, DynamicsDiffusion)
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
+        window_size = window_size or seq_len
         B, T, H, W, C = videos_BTHWC.shape
-        pad_shape = (B, seq_len - T, H, W, C)
-        rng, _rng_noise = jax.random.split(batch["rng"])
-        pad = jax.random.normal(_rng_noise, pad_shape)
-        videos_BSHWC = jnp.concatenate([videos_BTHWC, pad], axis=1)
+        rng, _rng_noise_window, _rng_noise_full = jax.random.split(batch["rng"], 3)
+        pad_shape_window = (B, min(window_size, seq_len) - T, H, W, C)
+        pad_window = jax.random.normal(_rng_noise_window, pad_shape_window)
+        videos_BSHWC = jnp.concatenate([videos_BTHWC, pad_window], axis=1)
+        pad_shape_full = (B, seq_len - T, H, W, C)
+        pad_full = jax.random.normal(_rng_noise_full, pad_shape_full)
+        videos_BFHWC = jnp.concatenate([videos_BTHWC, pad_full], axis=1)
 
         if self.use_gt_actions:
             assert self.action_embed is not None
@@ -633,33 +639,56 @@ class Genie(nnx.Module):
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
         def denoise_step_fn(carry, denoise_step: jax.Array) -> jax.Array:
             vid_BSHWC, frame_i = carry
-            t = denoise_step / diffusion_steps
-            t_vector = jnp.ones((B, seq_len))
-            t_vector = t_vector.at[:, frame_i].set(t)
-            dt_flow = jnp.log2(diffusion_steps).astype(jnp.int32)
-            dt_base = jnp.ones((B, seq_len), dtype=jnp.int32) * dt_flow # Smallest dt.
 
-            v_pred_BSHWC = self.dynamics.diffusion_transformer(vid_BSHWC, t_vector, dt_base, act_embed_BSM)
-            frame_BHWC = vid_BSHWC[:, frame_i] + v_pred_BSHWC[:, frame_i] * delta_t
-            vid_BSHWC = vid_BSHWC.at[:, frame_i].set(frame_BHWC)
-            new_carry = (vid_BSHWC, frame_i)
+            # align actions with sliding window of frames
+            act_embed_window_BSM, frame_i_window = nnx.cond(frame_i < window_size, 
+                                    lambda: (act_embed_BSM[:, :window_size], frame_i), 
+                                    lambda: (jax.lax.dynamic_slice(act_embed_BSM, (0, frame_i - window_size + 1, 0), 
+                                            (B, window_size, act_embed_BSM.shape[-1])), window_size - 1)
+                                    )
+
+            act_embed_window_BSM = act_embed_window_BSM.at[:, 0].set(0)
+
+            t = denoise_step / diffusion_steps
+
+            # TODO mihir: corrupt the context frames like in Dreamer 4 section 3.2
+            t_vector = jnp.ones((B, min(window_size, seq_len)))
+            t_vector = t_vector.at[:, frame_i_window].set(t)
+
+            dt_flow = jnp.log2(diffusion_steps).astype(jnp.int32)
+            dt_base = jnp.ones((B, min(window_size, seq_len)), dtype=jnp.int32) * dt_flow # Smallest dt.
+
+            v_pred_BSHWC = self.dynamics.diffusion_transformer(vid_BSHWC, t_vector, dt_base, act_embed_window_BSM)
+            frame_BHWC = vid_BSHWC[:, frame_i_window] + v_pred_BSHWC[:, frame_i_window] * delta_t
+            vid_BSHWC = vid_BSHWC.at[:, frame_i_window].set(frame_BHWC)
+            new_carry = (vid_BSHWC, frame_i_window)
             return new_carry
 
-        # FIXME mihir: extend this to sliding window of frames
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
         def autoregressive_step_fn(carry, frame_t: jax.Array) -> jax.Array:
-            vid_t_BSHWC = carry
-            carry_denoise = (vid_t_BSHWC, frame_t)
+            vid_t_window_BSHWC, vid_t_full_BFHWC, rng = carry
+            rng, _rng_noise = jax.random.split(rng)
+
+            # slide the window forward by 1 frame if necessary
+            vid_t_window_BSHWC, frame_id_window = nnx.cond(frame_t < window_size, 
+                                    lambda: (vid_t_window_BSHWC, frame_t), 
+                                    lambda: (jnp.roll(vid_t_window_BSHWC, -1, axis=1).at[:, -1]
+                                    .set(jax.random.normal(_rng_noise, (B, H, W, C))), window_size - 1)
+                                    )
+
+            carry_denoise = (vid_t_window_BSHWC, frame_id_window)
             final_carry_denoise = denoise_step_fn(carry_denoise, jnp.arange(diffusion_steps))
-            vid_t_BSHWC = final_carry_denoise[0]
-            new_carry = vid_t_BSHWC
+            vid_t_window_BSHWC = final_carry_denoise[0]
+            vid_t_full_BFHWC = vid_t_full_BFHWC.at[:, frame_t].set(vid_t_window_BSHWC[:, frame_id_window])
+            new_carry = (vid_t_window_BSHWC, vid_t_full_BFHWC, rng)
             return new_carry
 
-        initial_carry = videos_BSHWC
+        rng, _rng_sample = jax.random.split(rng)
+        initial_carry = (videos_BSHWC, videos_BFHWC, _rng_sample)
         final_carry = autoregressive_step_fn(initial_carry, jnp.arange(T, seq_len))
-        final_videos_BSHWC = final_carry
+        final_videos_BFHWC = final_carry[1]
 
-        return final_videos_BSHWC, None # TODO return something meaningful? 
+        return final_videos_BFHWC, None # TODO return something meaningful? 
 
     def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
         # --- Preprocess videos ---
