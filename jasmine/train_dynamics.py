@@ -1,7 +1,7 @@
 import os
 
-
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.98")
+os.environ.setdefault("JAX_COMPILER_ENABLE_REMAT_PASS", "false")
 
 from dataclasses import dataclass, field
 import itertools
