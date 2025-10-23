@@ -419,9 +419,10 @@ def main(args: Args) -> None:
             metrics["encoder_gradients_std/"] = jax.tree.map(
                 lambda x: x.std(), grads["params"]["encoder"]
             )
-            metrics["vq_gradients_std/"] = jax.tree.map(
-                lambda x: x.std(), grads["params"]["vq"]
-            )
+            if args.tokenizer_type == "vqvae":
+                metrics["vq_gradients_std/"] = jax.tree.map(
+                    lambda x: x.std(), grads["params"]["vq"]
+                )
             metrics["decoder_gradients_std/"] = jax.tree.map(
                 lambda x: x.std(), grads["params"]["decoder"]
             )
