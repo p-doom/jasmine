@@ -713,8 +713,10 @@ class DiffusionTransformer(nnx.Module):
 
     def __init__(
         self,
+        input_dim: int,
         model_dim: int,
         ffn_dim: int,
+        out_dim: int,
         num_blocks: int,
         num_heads: int,
         dropout: float,
@@ -723,8 +725,10 @@ class DiffusionTransformer(nnx.Module):
         rngs: nnx.Rngs,
         decode: bool = False,
     ):
+        self.input_dim = input_dim
         self.model_dim = model_dim
         self.ffn_dim = ffn_dim
+        self.out_dim = out_dim
         self.num_blocks = num_blocks
         self.num_heads = num_heads
         self.dropout = dropout
@@ -745,13 +749,11 @@ class DiffusionTransformer(nnx.Module):
                     decode=decode,
                 )
             )
-        self.patch_size = 4
         self.time_step_embedder = TimestepEmbedder(self.model_dim, rngs=rngs)
         self.step_size_embedder = TimestepEmbedder(self.model_dim, rngs=rngs)
 
-        self.patch_dim = self.patch_size * self.patch_size * 3
-        self.patch_up = nnx.Linear(
-            self.patch_dim,
+        self.input_dense = nnx.Linear(
+            self.input_dim,
             self.model_dim,
             kernel_init=nnx.initializers.normal(0.02),
             bias_init=nnx.initializers.normal(0.02),
@@ -767,24 +769,22 @@ class DiffusionTransformer(nnx.Module):
         self.layer_norm = nnx.LayerNorm(
             self.model_dim, use_bias=False, use_scale=False, rngs=rngs
         )
-        self.dense2 = nnx.Linear(
+        self.output_dense = nnx.Linear(
             self.model_dim,
-            self.patch_dim,
+            self.out_dim,
             kernel_init=nnx.initializers.normal(0.02),
             bias_init=nnx.initializers.normal(0.02),
             rngs=rngs,
         )
 
     def __call__(
-        self, x_BTHWC: jax.Array, t: jax.Array, dt: jax.Array, act_embed_BTM: jax.Array
+        self, x_BTNL: jax.Array, t: jax.Array, dt: jax.Array, act_embed_BTM: jax.Array
     ) -> jax.Array:
-        B, T, H, W, C = x_BTHWC.shape
-        x_BTNP = patchify(x_BTHWC, self.patch_size)
-        x_BTNM = self.patch_up(x_BTNP)
+        B, T, N, L = x_BTNL.shape
+        x_BTNM = self.input_dense(x_BTNL)
         x_BTNM = self.pos_enc(x_BTNM)
         te = self.time_step_embedder(t)  # (B, T, hidden_size)
         dte = self.step_size_embedder(dt)  # (B, T, hidden_size)
-        # TODO add action conditioning here
         # TODO maybe prepending later?
         c = te + dte + act_embed_BTM  # (B, T, hidden_size)
         for block in self.blocks:
@@ -797,10 +797,8 @@ class DiffusionTransformer(nnx.Module):
         scale = einops.rearrange(scale, "b t m -> b t 1 m")
         x_BTNM = self.layer_norm(x_BTNM)
         x_BTNM = modulate(x_BTNM, shift, scale)
-        x_BTNP = self.dense2(x_BTNM)
-        x_BTHWC = unpatchify(x_BTNP, self.patch_size, H, W)
-
-        return x_BTHWC
+        x_BTNL = self.output_dense(x_BTNM)
+        return x_BTNL
 
 
 def normalize(x: jax.Array) -> jax.Array:

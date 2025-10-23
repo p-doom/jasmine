@@ -87,7 +87,9 @@ class Args:
     wandb_id: str = ""
 
 
-def build_model(args: Args, rng: jax.Array) -> tuple[TokenizerVQVAE, jax.Array]:
+def build_model(
+    args: Args, rng: jax.Array
+) -> tuple[TokenizerVQVAE | TokenizerMAE, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
     if args.tokenizer_type == "vqvae":
