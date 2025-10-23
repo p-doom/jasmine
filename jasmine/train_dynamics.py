@@ -357,9 +357,9 @@ def _calculate_step_metrics(
             mse = jnp.mean(mse_BT)
             if args.diffusion_use_ramp_weight:
                 ramp_weight = 0.9 * outputs["signal_level"] + 0.1
+                loss = jnp.mean(mse_BT * ramp_weight)
             else:
-                ramp_weight = 1.0
-            loss = jnp.mean(mse_BT * ramp_weight)
+                loss = mse
         else:
             mse = 0.0  # TODO mihir: fix this
             loss = 0.0
