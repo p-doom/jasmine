@@ -209,7 +209,7 @@ class Genie(nnx.Module):
             x_pred, t = self.dynamics(outputs)
             outputs["x_pred"] = x_pred
             outputs["x_gt"] = videos_BTHWC
-            outputs["noise_level"] = t
+            outputs["signal_level"] = t
             outputs["recon"] = x_pred  # TODO mihir: fix this
             return outputs
 
