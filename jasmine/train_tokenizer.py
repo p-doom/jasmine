@@ -435,13 +435,15 @@ def main(args: Args) -> None:
         (loss, (recon, metrics)) = tokenizer_loss_fn(tokenizer, inputs, training=False)
         return loss, recon, metrics
 
-    def calculate_validation_metrics(val_dataloader, tokenizer):
+    def calculate_validation_metrics(val_dataloader, tokenizer, rng):
         step = 0
         loss_per_step = []
         metrics_per_step = []
         batch = None
         recon = None
         for batch in val_dataloader:
+            rng, _rng_mask = jax.random.split(rng, 2)
+            batch["rng"] = _rng_mask
             loss, recon, metrics = val_step(tokenizer, batch)
             loss_per_step.append(loss)
             metrics_per_step.append(metrics)
@@ -506,8 +508,9 @@ def main(args: Args) -> None:
             val_results = {}
             if dataloader_val and step % args.val_interval == 0:
                 print("Calculating validation metrics...")
+                rng, _rng_mask_val = jax.random.split(rng, 2)
                 val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(
-                    dataloader_val, optimizer.model
+                    dataloader_val, optimizer.model, _rng_mask_val
                 )
                 print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
                 val_results = {
