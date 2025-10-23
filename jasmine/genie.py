@@ -224,6 +224,7 @@ class Genie(nnx.Module):
             rng, _rng = jax.random.split(batch["rng"])
             tokenizer_outputs = self.tokenizer.mask_and_encode(videos_BTHWC, rng)
             token_latents_BTNL = tokenizer_outputs["z"]
+            token_latents_BTNL = jax.lax.stop_gradient(token_latents_BTNL)
             outputs = dict(
                 token_latents=token_latents_BTNL,
                 latent_actions=(
