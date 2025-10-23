@@ -349,12 +349,12 @@ def _calculate_step_metrics(
     num_patch_latents: int,
 ) -> tuple[jax.Array, dict]:
 
-    if args.dyna_type == "diffusion" :
-        if "v_pred" in outputs.keys():
-            mse_v = jnp.mean((outputs["v_pred"] - outputs["v_t"]) ** 2, axis=(1, 2, 3))
-            mse = jnp.mean(mse_v)
+    if args.dyna_type == "diffusion":
+        if "x_pred" in outputs.keys():
+            mse_x = jnp.mean((outputs["x_pred"] - outputs["x_gt"]) ** 2, axis=(1, 2, 3))
+            mse = jnp.mean(mse_x)
         else:
-            mse = 0. # TODO mihir: fix this
+            mse = 0.0  # TODO mihir: fix this
     else:
         mask_BTN = outputs["mask"]
         outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
@@ -510,7 +510,7 @@ def main(args: Args) -> None:
         if "z_loss" in metrics.keys():
             z_loss = metrics["z_loss"]
             total_loss = loss + args.z_loss_weight * z_loss
-        else: 
+        else:
             total_loss = loss
         metrics["total_loss"] = total_loss
         return total_loss, (outputs["recon"], metrics)

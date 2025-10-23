@@ -150,7 +150,9 @@ class Genie(nnx.Module):
                 rngs=rngs,
             )
         elif self.dyna_type == "diffusion":
-            assert self.diffusion_denoise_steps > 0, "diffusion_denoise_steps must be greater than 0 when using the diffusion backend"
+            assert (
+                self.diffusion_denoise_steps > 0
+            ), "diffusion_denoise_steps must be greater than 0 when using the diffusion backend"
             self.dynamics = DynamicsDiffusion(
                 model_dim=self.dyna_dim,
                 ffn_dim=self.dyna_ffn_dim,
@@ -193,7 +195,7 @@ class Genie(nnx.Module):
                 lambda: z_q_BTm11L,
                 lambda: jax.lax.stop_gradient(z_q_BTm11L),
             )
-        
+
         if self.dyna_type == "diffusion":
             outputs = dict(
                 videos=videos_BTHWC,
@@ -204,13 +206,11 @@ class Genie(nnx.Module):
                 ),
                 rng=batch["rng"],
             )
-            x_1 = videos_BTHWC
-            v_pred, x_0 = self.dynamics(outputs)
-            v_t = x_1 - (1 - 1e-5) * x_0
-            recon = v_pred + (1 - 1e-5) * x_0
-            outputs["v_pred"] = v_pred
-            outputs["v_t"] = v_t
-            outputs["recon"] = recon
+            x_pred, t = self.dynamics(outputs)
+            outputs["x_pred"] = x_pred
+            outputs["x_gt"] = videos_BTHWC
+            outputs["noise_level"] = t
+            outputs["recon"] = x_pred  # TODO mihir: fix this
             return outputs
 
         tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
@@ -641,11 +641,18 @@ class Genie(nnx.Module):
             vid_BSHWC, frame_i = carry
 
             # align actions with sliding window of frames
-            act_embed_window_BSM, frame_i_window = nnx.cond(frame_i < window_size, 
-                                    lambda: (act_embed_BSM[:, :window_size], frame_i), 
-                                    lambda: (jax.lax.dynamic_slice(act_embed_BSM, (0, frame_i - window_size + 1, 0), 
-                                            (B, window_size, act_embed_BSM.shape[-1])), window_size - 1)
-                                    )
+            act_embed_window_BSM, frame_i_window = nnx.cond(
+                frame_i < window_size,
+                lambda: (act_embed_BSM[:, :window_size], frame_i),
+                lambda: (
+                    jax.lax.dynamic_slice(
+                        act_embed_BSM,
+                        (0, frame_i - window_size + 1, 0),
+                        (B, window_size, act_embed_BSM.shape[-1]),
+                    ),
+                    window_size - 1,
+                ),
+            )
 
             act_embed_window_BSM = act_embed_window_BSM.at[:, 0].set(0)
 
@@ -656,10 +663,16 @@ class Genie(nnx.Module):
             t_vector = t_vector.at[:, frame_i_window].set(t)
 
             dt_flow = jnp.log2(diffusion_steps).astype(jnp.int32)
-            dt_base = jnp.ones((B, min(window_size, seq_len)), dtype=jnp.int32) * dt_flow # Smallest dt.
+            dt_base = (
+                jnp.ones((B, min(window_size, seq_len)), dtype=jnp.int32) * dt_flow
+            )  # Smallest dt.
 
-            v_pred_BSHWC = self.dynamics.diffusion_transformer(vid_BSHWC, t_vector, dt_base, act_embed_window_BSM)
-            frame_BHWC = vid_BSHWC[:, frame_i_window] + v_pred_BSHWC[:, frame_i_window] * delta_t
+            v_pred_BSHWC = self.dynamics.diffusion_transformer(
+                vid_BSHWC, t_vector, dt_base, act_embed_window_BSM
+            )
+            frame_BHWC = (
+                vid_BSHWC[:, frame_i_window] + v_pred_BSHWC[:, frame_i_window] * delta_t
+            )
             vid_BSHWC = vid_BSHWC.at[:, frame_i_window].set(frame_BHWC)
             new_carry = (vid_BSHWC, frame_i_window)
             return new_carry
@@ -670,16 +683,25 @@ class Genie(nnx.Module):
             rng, _rng_noise = jax.random.split(rng)
 
             # slide the window forward by 1 frame if necessary
-            vid_t_window_BSHWC, frame_id_window = nnx.cond(frame_t < window_size, 
-                                    lambda: (vid_t_window_BSHWC, frame_t), 
-                                    lambda: (jnp.roll(vid_t_window_BSHWC, -1, axis=1).at[:, -1]
-                                    .set(jax.random.normal(_rng_noise, (B, H, W, C))), window_size - 1)
-                                    )
+            vid_t_window_BSHWC, frame_id_window = nnx.cond(
+                frame_t < window_size,
+                lambda: (vid_t_window_BSHWC, frame_t),
+                lambda: (
+                    jnp.roll(vid_t_window_BSHWC, -1, axis=1)
+                    .at[:, -1]
+                    .set(jax.random.normal(_rng_noise, (B, H, W, C))),
+                    window_size - 1,
+                ),
+            )
 
             carry_denoise = (vid_t_window_BSHWC, frame_id_window)
-            final_carry_denoise = denoise_step_fn(carry_denoise, jnp.arange(diffusion_steps))
+            final_carry_denoise = denoise_step_fn(
+                carry_denoise, jnp.arange(diffusion_steps)
+            )
             vid_t_window_BSHWC = final_carry_denoise[0]
-            vid_t_full_BFHWC = vid_t_full_BFHWC.at[:, frame_t].set(vid_t_window_BSHWC[:, frame_id_window])
+            vid_t_full_BFHWC = vid_t_full_BFHWC.at[:, frame_t].set(
+                vid_t_window_BSHWC[:, frame_id_window]
+            )
             new_carry = (vid_t_window_BSHWC, vid_t_full_BFHWC, rng)
             return new_carry
 
@@ -688,7 +710,7 @@ class Genie(nnx.Module):
         final_carry = autoregressive_step_fn(initial_carry, jnp.arange(T, seq_len))
         final_videos_BFHWC = final_carry[1]
 
-        return final_videos_BFHWC, None # TODO return something meaningful? 
+        return final_videos_BFHWC, None  # TODO return something meaningful?
 
     def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
         # --- Preprocess videos ---
@@ -699,6 +721,7 @@ class Genie(nnx.Module):
         )
         lam_indices_E = lam_output["indices"]
         return lam_indices_E
+
 
 # FIXME (f.srambical): add conversion script for old checkpoints
 def restore_genie_components(

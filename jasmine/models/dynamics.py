@@ -230,7 +230,6 @@ class DynamicsDiffusion(nnx.Module):
             rngs=rngs,
         )
 
-
     def __call__(
         self,
         batch: Dict[str, jax.Array],
@@ -241,14 +240,14 @@ class DynamicsDiffusion(nnx.Module):
         latent_actions_BTm11L = batch["latent_actions"]
         B, T, H, W, C = videos.shape
         # Sample t.
-        t = jax.random.randint(time_rng, (B,T), minval=0, maxval=self.denoise_steps)
+        t = jax.random.randint(time_rng, (B, T), minval=0, maxval=self.denoise_steps)
         t /= self.denoise_steps
-        t_full = t[:, :, None, None, None] # [B, T, 1, 1, 1]
+        t_full = t[:, :, None, None, None]  # [B, T, 1, 1, 1]
         x_1 = videos
         x_0 = jax.random.normal(noise_rng, (B, T, H, W, C))
         x_t = (1 - (1 - 1e-5) * t_full) * x_0 + t_full * x_1
         dt_flow = jnp.log2(self.denoise_steps).astype(jnp.int32)
-        dt_base = jnp.ones((B,T), dtype=jnp.int32) * dt_flow # [B, T]
+        dt_base = jnp.ones((B, T), dtype=jnp.int32) * dt_flow  # [B, T]
         videos = x_t
 
         act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
@@ -258,5 +257,5 @@ class DynamicsDiffusion(nnx.Module):
 
         # call the diffusion transformer
         # TODO add action conditioning
-        v_pred = self.diffusion_transformer(videos, t, dt_base, padded_act_embed_BTM)
-        return v_pred, x_0
+        x_pred = self.diffusion_transformer(videos, t, dt_base, padded_act_embed_BTM)
+        return x_pred, t
