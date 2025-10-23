@@ -507,15 +507,7 @@ def main(args: Args) -> None:
             # --- Logging ---
             if args.log:
                 if step % args.log_interval == 0 and jax.process_index() == 0:
-                    sequences_seen = step * args.batch_size
-                    frames_seen = step * args.seq_len * args.batch_size
-                    log_dict = {
-                        "loss": loss,
-                        "step": step,
-                        "sequences_seen": sequences_seen,
-                        "frames_seen": frames_seen,
-                        **metrics,
-                    }
+                    log_dict = {"loss": loss, "step": step, **metrics}
                     if val_results:
                         log_dict.update(val_results["metrics"])
                     wandb.log(log_dict)
