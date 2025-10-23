@@ -20,7 +20,7 @@ import wandb
 import grain
 import flax.nnx as nnx
 
-from models.tokenizer import TokenizerVQVAE
+from models.tokenizer import TokenizerVQVAE, TokenizerMAE
 from utils.dataloader import get_dataloader
 from utils.train_utils import (
     get_lr_schedule,
@@ -64,6 +64,8 @@ class Args:
     num_heads: int = 8
     dropout: float = 0.0
     codebook_dropout: float = 0.01
+    max_mask_ratio: float = 0.9
+    tokenizer_type: str = "vqvae"  # supported options: vqvae, mae
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
     use_flash_attention: bool = True
@@ -88,8 +90,8 @@ class Args:
 def build_model(args: Args, rng: jax.Array) -> tuple[TokenizerVQVAE, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
-    return (
-        TokenizerVQVAE(
+    if args.tokenizer_type == "vqvae":
+        tokenizer = TokenizerVQVAE(
             in_dim=args.image_channels,
             model_dim=args.model_dim,
             ffn_dim=args.ffn_dim,
@@ -104,12 +106,32 @@ def build_model(args: Args, rng: jax.Array) -> tuple[TokenizerVQVAE, jax.Array]:
             dtype=args.dtype,
             use_flash_attention=args.use_flash_attention,
             rngs=rngs,
-        ),
-        rng,
-    )
+        )
+    elif args.tokenizer_type == "mae":
+        tokenizer = TokenizerMAE(
+            in_dim=args.image_channels,
+            model_dim=args.model_dim,
+            ffn_dim=args.ffn_dim,
+            latent_dim=args.latent_dim,
+            num_latents=args.num_latents,
+            patch_size=args.patch_size,
+            num_blocks=args.num_blocks,
+            num_heads=args.num_heads,
+            dropout=args.dropout,
+            max_mask_ratio=args.max_mask_ratio,
+            param_dtype=args.param_dtype,
+            dtype=args.dtype,
+            use_flash_attention=args.use_flash_attention,
+            rngs=rngs,
+        )
+    else:
+        raise ValueError(f"Invalid tokenizer type: {args.tokenizer_type}")
+    return tokenizer, rng
 
 
-def build_optimizer(model: TokenizerVQVAE, args: Args) -> nnx.ModelAndOptimizer:
+def build_optimizer(
+    model: TokenizerVQVAE | TokenizerMAE, args: Args
+) -> nnx.ModelAndOptimizer:
     lr_schedule = get_lr_schedule(
         args.lr_schedule,
         args.init_lr,
@@ -338,43 +360,54 @@ def main(args: Args) -> None:
 
     # --- Define loss and train step (close over args) ---
     def tokenizer_loss_fn(
-        model: TokenizerVQVAE, inputs: dict, training: bool = False
+        model: TokenizerVQVAE | TokenizerMAE, inputs: dict, training: bool = False
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
         outputs = model(inputs, training=training)
         outputs["recon"] = outputs["recon"].astype(jnp.float32)
         mse = jnp.square(gt - outputs["recon"]).mean()
-        q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()
-        commitment_loss = jnp.square(
-            outputs["emb"] - jax.lax.stop_gradient(outputs["z"])
-        ).mean()
-        loss = mse + q_loss + args.vq_beta * commitment_loss
 
         gt_clipped = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
         recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
         psnr = jnp.asarray(pix.psnr(gt_clipped, recon)).mean()
         ssim = jnp.asarray(pix.ssim(gt_clipped, recon)).mean()
-        _, index_counts = jnp.unique_counts(
-            jnp.ravel(outputs["indices"]), size=args.num_latents, fill_value=0
-        )
-        codebook_usage = (index_counts != 0).mean()
+
         metrics = dict(
-            loss=loss,
             mse=mse,
-            q_loss=q_loss,
-            commitment_loss=commitment_loss,
             psnr=psnr,
             ssim=ssim,
-            codebook_usage=codebook_usage,
         )
+
+        if args.tokenizer_type == "vqvae":
+            q_loss = jnp.square(
+                jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]
+            ).mean()
+            commitment_loss = jnp.square(
+                outputs["emb"] - jax.lax.stop_gradient(outputs["z"])
+            ).mean()
+            loss = mse + q_loss + args.vq_beta * commitment_loss
+            _, index_counts = jnp.unique_counts(
+                jnp.ravel(outputs["indices"]), size=args.num_latents, fill_value=0
+            )
+            codebook_usage = (index_counts != 0).mean()
+            metrics["loss"] = loss
+            metrics["q_loss"] = q_loss
+            metrics["commitment_loss"] = commitment_loss
+            metrics["codebook_usage"] = codebook_usage
+        else:
+            loss = mse
+            metrics["loss"] = loss
+
         return loss, (outputs["recon"], metrics)
 
     @nnx.jit(donate_argnums=0)
     def train_step(
         optimizer: nnx.ModelAndOptimizer, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
-        def loss_fn(model: TokenizerVQVAE) -> tuple[jax.Array, tuple[jax.Array, dict]]:
+        def loss_fn(
+            model: TokenizerVQVAE | TokenizerMAE,
+        ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
             model.train()
             return tokenizer_loss_fn(model, inputs, training=True)
 
@@ -386,9 +419,10 @@ def main(args: Args) -> None:
             metrics["encoder_gradients_std/"] = jax.tree.map(
                 lambda x: x.std(), grads["params"]["encoder"]
             )
-            metrics["vq_gradients_std/"] = jax.tree.map(
-                lambda x: x.std(), grads["params"]["vq"]
-            )
+            if args.tokenizer_type == "vqvae":
+                metrics["vq_gradients_std/"] = jax.tree.map(
+                    lambda x: x.std(), grads["params"]["vq"]
+                )
             metrics["decoder_gradients_std/"] = jax.tree.map(
                 lambda x: x.std(), grads["params"]["decoder"]
             )
@@ -396,19 +430,21 @@ def main(args: Args) -> None:
 
     @nnx.jit
     def val_step(
-        tokenizer: TokenizerVQVAE, inputs: dict
+        tokenizer: TokenizerVQVAE | TokenizerMAE, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
         tokenizer.eval()
         (loss, (recon, metrics)) = tokenizer_loss_fn(tokenizer, inputs, training=False)
         return loss, recon, metrics
 
-    def calculate_validation_metrics(val_dataloader, tokenizer):
+    def calculate_validation_metrics(val_dataloader, tokenizer, rng):
         step = 0
         loss_per_step = []
         metrics_per_step = []
         batch = None
         recon = None
         for batch in val_dataloader:
+            rng, _rng_mask = jax.random.split(rng, 2)
+            batch["rng"] = _rng_mask
             loss, recon, metrics = val_step(tokenizer, batch)
             loss_per_step.append(loss)
             metrics_per_step.append(metrics)
@@ -449,7 +485,9 @@ def main(args: Args) -> None:
             for elem in val_iterator
         )
     if jax.process_index() == 0:
+        rng, _rng = jax.random.split(rng)
         first_batch = next(dataloader_train)
+        first_batch["rng"] = _rng
         compiled = train_step.lower(optimizer, first_batch).compile()
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
@@ -460,6 +498,8 @@ def main(args: Args) -> None:
     while step < args.num_steps:
         for batch in dataloader_train:
             # --- Train step ---
+            rng, _rng = jax.random.split(rng)
+            batch["rng"] = _rng
             loss, recon, metrics = train_step(optimizer, batch)
             if step == first_step:
                 print_mem_stats("After params initialized")
@@ -469,8 +509,9 @@ def main(args: Args) -> None:
             val_results = {}
             if dataloader_val and step % args.val_interval == 0:
                 print("Calculating validation metrics...")
+                rng, _rng_mask_val = jax.random.split(rng, 2)
                 val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(
-                    dataloader_val, optimizer.model
+                    dataloader_val, optimizer.model, _rng_mask_val
                 )
                 print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
                 val_results = {
