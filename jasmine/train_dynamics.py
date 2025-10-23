@@ -81,6 +81,7 @@ class Args:
     dropout: float = 0.0
     mask_limit: float = 0.5
     diffusion_denoise_steps: int = 0
+    diffusion_use_ramp_weight: bool = True
     z_loss_weight: float = 0.0
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
@@ -351,10 +352,17 @@ def _calculate_step_metrics(
 
     if args.dyna_type == "diffusion":
         if "x_pred" in outputs.keys():
-            mse_x = jnp.mean((outputs["x_pred"] - outputs["x_gt"]) ** 2, axis=(1, 2, 3))
-            mse = jnp.mean(mse_x)
+            mse_BTHWC = (outputs["x_pred"] - outputs["x_gt"]) ** 2
+            mse_BT = jnp.mean(mse_BTHWC, axis=(2, 3, 4))
+            mse = jnp.mean(mse_BT)
+            if args.diffusion_use_ramp_weight:
+                ramp_weight = 0.9 * outputs["signal_level"] + 0.1
+            else:
+                ramp_weight = 1.0
+            loss = jnp.mean(mse_BT * ramp_weight)
         else:
             mse = 0.0  # TODO mihir: fix this
+            loss = 0.0
     else:
         mask_BTN = outputs["mask"]
         outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
@@ -395,7 +403,6 @@ def _calculate_step_metrics(
     )
     if args.dyna_type == "diffusion":
         metrics["mse"] = mse
-        loss = mse
     else:
         metrics["cross_entropy_loss"] = ce_loss
         metrics["masked_token_top1_accuracy"] = masked_token_top_1_acc
