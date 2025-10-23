@@ -213,7 +213,7 @@ class TokenizerMAE(nnx.Module):
         outputs["recon"] = recon_BTHWC
         return outputs
 
-    def mask_and_encode(self, videos: jax.Array, rng: nnx.Rngs) -> jax.Array:
+    def mask_and_encode(self, videos: jax.Array, rng: nnx.Rngs) -> Dict[str, jax.Array]:
         # --- Mask and encode ---
         B, T = videos.shape[:2]
         patch_BTNP = patchify(videos, self.patch_size)
