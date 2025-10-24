@@ -699,15 +699,11 @@ class Genie(nnx.Module):
                 jnp.ones((B, min(window_size, seq_len)), dtype=jnp.int32) * dt_flow
             )  # Smallest dt.
 
-            v_pred_BSNL = self.dynamics.diffusion_transformer(
+            tok_lat_pred_BSNL = self.dynamics.diffusion_transformer(
                 tok_latents_BSNL, t_vector, dt_base, act_embed_window_BSM
             )
-            tok_latents_BNL = (
-                tok_latents_BSNL[:, frame_i_window]
-                + v_pred_BSNL[:, frame_i_window] * delta_t
-            )
             tok_latents_BSNL = tok_latents_BSNL.at[:, frame_i_window].set(
-                tok_latents_BNL
+                tok_lat_pred_BSNL[:, frame_i_window]
             )
             new_carry = (tok_latents_BSNL, frame_i_window)
             return new_carry
