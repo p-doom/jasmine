@@ -285,12 +285,12 @@ def main():
         make_gif(agent, eval_env_args)
         return
 
-    # train_episode_metadata = make_array_records_dataset(
-    # agent,
-    # num_episodes=args.num_episodes_train,
-    # eval_env_args=eval_env_args,
-    # split="train",
-    # )
+    train_episode_metadata = make_array_records_dataset(
+        agent,
+        num_episodes=args.num_episodes_train,
+        eval_env_args=eval_env_args,
+        split="train",
+    )
     val_episode_metadata = make_array_records_dataset(
         agent,
         num_episodes=args.num_episodes_val,
@@ -310,16 +310,16 @@ def main():
         "num_episodes_train": args.num_episodes_train,
         "num_episodes_val": args.num_episodes_val,
         "num_episodes_test": args.num_episodes_test,
-        # "avg_episode_len_train": np.mean(
-        # [ep["avg_seq_len"] for ep in train_episode_metadata]
-        # ),
+        "avg_episode_len_train": np.mean(
+            [ep["avg_seq_len"] for ep in train_episode_metadata]
+        ),
         "avg_episode_len_val": np.mean(
             [ep["avg_seq_len"] for ep in val_episode_metadata]
         ),
         "avg_episode_len_test": np.mean(
             [ep["avg_seq_len"] for ep in test_episode_metadata]
         ),
-        # "episode_metadata_train": train_episode_metadata,
+        "episode_metadata_train": train_episode_metadata,
         "episode_metadata_val": val_episode_metadata,
         "episode_metadata_test": test_episode_metadata,
     }
