@@ -724,8 +724,7 @@ class Genie(nnx.Module):
                     window_size - 1,
                 ),
             )
-
-            carry_denoise = (tok_latents_BSNL, frame_id_window)
+            carry_denoise = (tok_latents_BSNL, frame_t)
             final_carry_denoise = denoise_step_fn(
                 carry_denoise, jnp.arange(diffusion_steps)
             )
