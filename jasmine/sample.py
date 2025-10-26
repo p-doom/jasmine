@@ -37,7 +37,8 @@ class Args:
     sample_argmax: bool = True
     start_frame: int = 1
     diffusion_denoise_steps: int = 0
-    diffusion_corrupt_context_factor: float = 0.1
+    window_size: int = 16
+    corrupt_context_factor: float = 0.1
     # Tokenizer checkpoint
     tokenizer_type: str = "vqvae"
     tokenizer_dim: int = 512
@@ -178,7 +179,8 @@ if __name__ == "__main__":
             args.sample_argmax,
             args.maskgit_steps,
             args.diffusion_denoise_steps,
-            args.diffusion_corrupt_context_factor,
+            # args.corrupt_context_factor,
+            args.window_size,
         )
         return frames
 

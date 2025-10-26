@@ -269,7 +269,7 @@ class Genie(nnx.Module):
         sample_argmax: bool = False,
         maskgit_steps: int = 25,
         diffusion_steps: int = 64,
-        diffusion_corrupt_context_factor: float = 0.1,
+        window_size: Optional[int] = None,
     ) -> tuple[jax.Array, jax.Array]:
         if self.dyna_type == "maskgit":
             return self.sample_maskgit(
@@ -278,9 +278,7 @@ class Genie(nnx.Module):
         elif self.dyna_type == "causal":
             return self.sample_causal(batch, seq_len, temperature, sample_argmax)
         elif self.dyna_type == "diffusion":
-            return self.sample_diffusion(
-                batch, seq_len, diffusion_steps, diffusion_corrupt_context_factor
-            )
+            return self.sample_diffusion(batch, seq_len, diffusion_steps, window_size)
         else:
             raise ValueError(f"Dynamics model type unknown: {self.dyna_type}")
 
@@ -632,19 +630,25 @@ class Genie(nnx.Module):
         batch: Dict[str, jax.Array],
         seq_len: int,
         diffusion_steps: int,
-        diffusion_corrupt_context_factor: float = 0.1,
+        window_size: Optional[int] = None,
     ) -> tuple[jax.Array, jax.Array]:
         assert isinstance(self.dynamics, DynamicsDiffusion)
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
         H, W = videos_BTHWC.shape[2:4]
-        rng, _rng_mask, _rng_noise_full = jax.random.split(batch["rng"], 3)
+        window_size = window_size or seq_len
+        rng, _rng_mask, _rng_noise_window, _rng_noise_full = jax.random.split(
+            batch["rng"], 4
+        )
         tokenizer_outputs = self.tokenizer.mask_and_encode(videos_BTHWC, _rng_mask)
         token_latents_BTNL = tokenizer_outputs["z"]
         B, T, N, L = token_latents_BTNL.shape
-        pad_shape = (B, seq_len - T, N, L)
-        pad = jax.random.normal(_rng_noise_full, pad_shape)
-        token_latents_BSNL = jnp.concatenate([token_latents_BTNL, pad], axis=1)
+        pad_shape_window = (B, min(window_size, seq_len) - T, N, L)
+        pad_window = jax.random.normal(_rng_noise_window, pad_shape_window)
+        token_latents_BSNL = jnp.concatenate([token_latents_BTNL, pad_window], axis=1)
+        pad_shape_full = (B, seq_len - T, N, L)
+        pad_full = jax.random.normal(_rng_noise_full, pad_shape_full)
+        token_latents_BFNL = jnp.concatenate([token_latents_BTNL, pad_full], axis=1)
 
         if self.use_gt_actions:
             assert self.action_embed is not None
@@ -662,7 +666,7 @@ class Genie(nnx.Module):
         act_embed_BSL = jnp.pad(action_tokens_BSm1L, ((0, 0), (1, 0), (0, 0)))
         act_embed_BSM = self.dynamics.action_up(act_embed_BSL)
 
-        t_corrupt_context = 1 - diffusion_corrupt_context_factor
+        t_corrupt_context = 0.9
         t_corrupt_context = jnp.argmin(
             jnp.abs(jnp.arange(diffusion_steps) / diffusion_steps - t_corrupt_context)
         )
@@ -673,14 +677,30 @@ class Genie(nnx.Module):
             tok_latents_BSNL, frame_i, rng = carry
             rng, _rng_noise_context = jax.random.split(rng)
 
+            # align actions with sliding window of frames
+            act_embed_window_BSM, frame_i_window = nnx.cond(
+                frame_i < window_size,
+                lambda: (act_embed_BSM[:, :window_size], frame_i),
+                lambda: (
+                    jax.lax.dynamic_slice(
+                        act_embed_BSM,
+                        (0, frame_i - window_size + 1, 0),
+                        (B, window_size, act_embed_BSM.shape[-1]),
+                    ),
+                    window_size - 1,
+                ),
+            )
+
+            act_embed_window_BSM = act_embed_window_BSM.at[:, 0].set(0)
+
             t = denoise_step / diffusion_steps
 
-            # corrupt the context frames like in Dreamer 4 section 3.2
-            t_vector = jnp.ones((B, seq_len)) * t_corrupt_context
-            t_vector = t_vector.at[:, frame_i].set(t)
+            # TODO mihir: corrupt the context frames like in Dreamer 4 section 3.2
+            t_vector = jnp.ones((B, min(window_size, seq_len))) * t_corrupt_context
+            t_vector = t_vector.at[:, frame_i_window].set(t)
 
             noise_context_BSNL = jax.random.normal(
-                _rng_noise_context, (B, seq_len, N, L)
+                _rng_noise_context, (B, min(window_size, seq_len), N, L)
             )
             currupted_latents_BSNL = (
                 tok_latents_BSNL * t_corrupt_context
@@ -688,7 +708,7 @@ class Genie(nnx.Module):
             )
 
             # Create a mask for the frames to update
-            frame_mask = jnp.arange(seq_len) < frame_i
+            frame_mask = jnp.arange(min(window_size, seq_len)) < frame_i_window
             frame_mask = frame_mask.reshape(1, -1, 1, 1)  # Broadcast to BSNL shape
             # Update only the frames that should be corrupted
             corrupted_tok_latents_BSNL = jnp.where(
@@ -696,40 +716,56 @@ class Genie(nnx.Module):
             )
 
             dt_flow = jnp.log2(diffusion_steps).astype(jnp.int32)
-            dt_base = jnp.ones((B, seq_len), dtype=jnp.int32) * dt_flow  # Smallest dt.
+            dt_base = (
+                jnp.ones((B, min(window_size, seq_len)), dtype=jnp.int32) * dt_flow
+            )  # Smallest dt.
 
             tok_lat_pred_BSNL = self.dynamics.diffusion_transformer(
-                corrupted_tok_latents_BSNL, t_vector, dt_base, act_embed_BSM
+                corrupted_tok_latents_BSNL, t_vector, dt_base, act_embed_window_BSM
             )
-            tok_latents_BSNL = tok_latents_BSNL.at[:, frame_i].set(
-                tok_lat_pred_BSNL[:, frame_i]
+            tok_latents_BSNL = tok_latents_BSNL.at[:, frame_i_window].set(
+                tok_lat_pred_BSNL[:, frame_i_window]
             )
-            new_carry = (tok_latents_BSNL, frame_i, rng)
+            new_carry = (tok_latents_BSNL, frame_i_window, rng)
             return new_carry
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
         def autoregressive_step_fn(carry, frame_t: jax.Array) -> jax.Array:
-            tok_latents_BSNL, rng = carry
-            rng, _rng_noise_context = jax.random.split(rng)
+            tok_latents_BSNL, tok_latents_BFNL, rng = carry
+            rng, _rng_noise, _rng_noise_context = jax.random.split(rng, 3)
 
+            # slide the window forward by 1 frame if necessary
+            tok_latents_BSNL, frame_id_window = nnx.cond(
+                frame_t < window_size,
+                lambda: (tok_latents_BSNL, frame_t),
+                lambda: (
+                    jnp.roll(tok_latents_BSNL, -1, axis=1)
+                    .at[:, -1]
+                    .set(jax.random.normal(_rng_noise, (B, N, L))),
+                    window_size - 1,
+                ),
+            )
             carry_denoise = (tok_latents_BSNL, frame_t, _rng_noise_context)
             final_carry_denoise = denoise_step_fn(
                 carry_denoise, jnp.arange(diffusion_steps)
             )
             tok_latents_BSNL = final_carry_denoise[0]
-            new_carry = (tok_latents_BSNL, rng)
+            tok_latents_BFNL = tok_latents_BFNL.at[:, frame_t].set(
+                tok_latents_BSNL[:, frame_id_window]
+            )
+            new_carry = (tok_latents_BSNL, tok_latents_BFNL, rng)
             return new_carry
 
         rng, _rng_sample = jax.random.split(rng)
-        initial_carry = (token_latents_BSNL, _rng_sample)
+        initial_carry = (token_latents_BSNL, token_latents_BFNL, _rng_sample)
         final_carry = autoregressive_step_fn(initial_carry, jnp.arange(T, seq_len))
-        final_token_latents_BSNL = final_carry[0]
+        final_token_latents_BFNL = final_carry[1]
 
-        final_videos_BSHWC = self.tokenizer.decode(
-            final_token_latents_BSNL, video_hw=(H, W)
+        final_videos_BFHWC = self.tokenizer.decode(
+            final_token_latents_BFNL, video_hw=(H, W)
         )
 
-        return final_videos_BSHWC, None  # TODO return something meaningful?
+        return final_videos_BFHWC, None  # TODO return something meaningful?
 
     def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
         # --- Preprocess videos ---
