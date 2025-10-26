@@ -189,7 +189,7 @@ class DynamicsDiffusion(nnx.Module):
         model_dim: int,
         ffn_dim: int,
         out_dim: int,
-        num_latents: int,
+        num_latents: int,  # unused! TODO remove
         latent_action_dim: int,
         num_blocks: int,
         num_heads: int,
@@ -198,14 +198,13 @@ class DynamicsDiffusion(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
-        decode: bool,
+        decode: bool,  # TODO remove
         rngs: nnx.Rngs,
     ):
-        self.input_dim = input_dim
+        self.input_dim = input_dim  # TODO should be latent_patch_dim
         self.model_dim = model_dim
         self.ffn_dim = ffn_dim
-        self.out_dim = out_dim
-        self.num_latents = num_latents
+        self.out_dim = out_dim  # TODO should be latent patch dim
         self.latent_action_dim = latent_action_dim
         self.num_blocks = num_blocks
         self.num_heads = num_heads
@@ -213,19 +212,19 @@ class DynamicsDiffusion(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
-        self.decode = decode
         self.denoise_steps = denoise_steps
+
         self.diffusion_transformer = DiffusionTransformer(
-            input_dim=self.input_dim,
-            model_dim=self.model_dim,
-            ffn_dim=self.ffn_dim,
-            out_dim=self.out_dim,
-            num_blocks=self.num_blocks,
-            num_heads=self.num_heads,
-            dropout=self.dropout,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-            decode=self.decode,
+            self.input_dim,
+            self.model_dim,
+            self.ffn_dim,
+            self.out_dim,
+            self.num_blocks,
+            self.num_heads,
+            self.dropout,
+            self.param_dtype,
+            self.dtype,
+            use_flash_attention=self.use_flash_attention,
             rngs=rngs,
         )
         self.action_up = nnx.Linear(
@@ -240,30 +239,32 @@ class DynamicsDiffusion(nnx.Module):
         self,
         batch: Dict[str, jax.Array],
     ) -> tuple[jax.Array, jax.Array]:
-        # For now we only denoise the last frame
-        rng, time_rng, noise_rng = jax.random.split(batch["rng"], 3)
-        token_latents_BTNL = batch["token_latents"]
+        rng, _rng_time, _rng_noise = jax.random.split(batch["rng"], 3)
+        latents_BTNL = batch["token_latents"]
         latent_actions_BTm11L = batch["latent_actions"]
-        B, T, N, L = token_latents_BTNL.shape
-        # Sample t.
-        t = jax.random.randint(time_rng, (B, T), minval=0, maxval=self.denoise_steps)
-        t /= self.denoise_steps
-        t_full = t[:, :, None, None]  # [B, T, 1, 1]
-        x_1 = token_latents_BTNL
-        x_0 = jax.random.normal(noise_rng, (B, T, N, L))
-        x_t = (1 - (1 - 1e-5) * t_full) * x_0 + t_full * x_1
-        dt_flow = jnp.log2(self.denoise_steps).astype(jnp.int32)
-        dt_base = jnp.ones((B, T), dtype=jnp.int32) * dt_flow  # [B, T]
-        token_latents_BTNL = x_t
+        B, T, N, L = latents_BTNL.shape
 
+        # --- Add noise to latents ---
+        denoise_step_BT = jax.random.randint(
+            _rng_time, (B, T), minval=0, maxval=self.denoise_steps
+        )
+        denoise_t_BT = denoise_step_BT / self.denoise_steps
+        denoise_t_BT11 = denoise_t_BT[:, :, None, None]
+        noise_BTNL = jax.random.normal(_rng_noise, (B, T, N, L))
+        noised_latents_BTNL = (
+            1 - (1 - 1e-5) * denoise_t_BT11
+        ) * noise_BTNL + denoise_t_BT11 * latents_BTNL
+
+        # --- Process actions ---
         act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
         padded_act_embed_BTM = jnp.pad(
             act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0))
         ).reshape(B, T, self.model_dim)
 
-        # call the diffusion transformer
-        # TODO add action conditioning
-        x_pred = self.diffusion_transformer(
-            token_latents_BTNL, t, dt_base, padded_act_embed_BTM
+        # --- Call the diffusion transformer ---
+        pred_latents_BTNL = self.diffusion_transformer(
+            noised_latents_BTNL,
+            denoise_t_BT,
+            padded_act_embed_BTM,
         )
-        return x_pred, t
+        return pred_latents_BTNL, denoise_t_BT
