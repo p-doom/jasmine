@@ -8,7 +8,7 @@ import orbax.checkpoint as ocp
 
 from models.dynamics import DynamicsMaskGIT, DynamicsCausal, DynamicsDiffusion
 from models.lam import LatentActionModel
-from models.tokenizer import TokenizerVQVAE
+from models.tokenizer import TokenizerVQVAE, TokenizerMAE
 
 
 class Genie(nnx.Module):
@@ -22,6 +22,7 @@ class Genie(nnx.Module):
         latent_patch_dim: int,
         num_patch_latents: int,
         patch_size: int,
+        tokenizer_type: str,
         tokenizer_num_blocks: int,
         tokenizer_num_heads: int,
         lam_dim: int,
@@ -79,23 +80,43 @@ class Genie(nnx.Module):
         self.mask_limit = mask_limit
         self.diffusion_denoise_steps = diffusion_denoise_steps
         self.decode = decode
-
-        self.tokenizer = TokenizerVQVAE(
-            in_dim=self.in_dim,
-            model_dim=self.tokenizer_dim,
-            ffn_dim=self.tokenizer_ffn_dim,
-            latent_dim=self.latent_patch_dim,
-            num_latents=self.num_patch_latents,
-            patch_size=self.patch_size,
-            num_blocks=self.tokenizer_num_blocks,
-            num_heads=self.tokenizer_num_heads,
-            dropout=0.0,
-            codebook_dropout=0.0,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-            use_flash_attention=self.use_flash_attention,
-            rngs=rngs,
-        )
+        self.tokenizer_type = tokenizer_type
+        if self.tokenizer_type == "vqvae":
+            self.tokenizer = TokenizerVQVAE(
+                in_dim=self.in_dim,
+                model_dim=self.tokenizer_dim,
+                ffn_dim=self.tokenizer_ffn_dim,
+                latent_dim=self.latent_patch_dim,
+                num_latents=self.num_patch_latents,
+                patch_size=self.patch_size,
+                num_blocks=self.tokenizer_num_blocks,
+                num_heads=self.tokenizer_num_heads,
+                dropout=0.0,
+                codebook_dropout=0.0,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+                use_flash_attention=self.use_flash_attention,
+                rngs=rngs,
+            )
+        elif self.tokenizer_type == "mae":
+            self.tokenizer = TokenizerMAE(
+                in_dim=self.in_dim,
+                model_dim=self.tokenizer_dim,
+                ffn_dim=self.tokenizer_ffn_dim,
+                latent_dim=self.latent_patch_dim,
+                num_latents=self.num_patch_latents,
+                patch_size=self.patch_size,
+                num_blocks=self.tokenizer_num_blocks,
+                num_heads=self.tokenizer_num_heads,
+                dropout=0.0,
+                max_mask_ratio=0.0,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+                use_flash_attention=self.use_flash_attention,
+                rngs=rngs,
+            )
+        else:
+            raise ValueError(f"Invalid tokenizer type: {self.tokenizer_type}")
         if self.use_gt_actions:
             self.action_embed = nnx.Embed(
                 self.num_actions, self.latent_action_dim, rngs=rngs
@@ -154,8 +175,10 @@ class Genie(nnx.Module):
                 self.diffusion_denoise_steps > 0
             ), "diffusion_denoise_steps must be greater than 0 when using the diffusion backend"
             self.dynamics = DynamicsDiffusion(
+                input_dim=self.latent_patch_dim,
                 model_dim=self.dyna_dim,
                 ffn_dim=self.dyna_ffn_dim,
+                out_dim=self.latent_patch_dim,
                 num_latents=self.num_patch_latents,
                 latent_action_dim=self.latent_action_dim,
                 num_blocks=self.dyna_num_blocks,
@@ -176,6 +199,7 @@ class Genie(nnx.Module):
         batch: Dict[str, jax.Array],
     ) -> Dict[str, jax.Array]:
         videos_BTHWC = batch["videos"]
+        H, W = videos_BTHWC.shape[2:4]
         latent_actions_BTm11L = None
         action_embeddings_BTm11L = None
         if self.use_gt_actions:
@@ -197,20 +221,24 @@ class Genie(nnx.Module):
             )
 
         if self.dyna_type == "diffusion":
+            rng, _rng = jax.random.split(batch["rng"])
+            tokenizer_outputs = self.tokenizer.mask_and_encode(videos_BTHWC, rng)
+            token_latents_BTNL = tokenizer_outputs["z"]
+            token_latents_BTNL = jax.lax.stop_gradient(token_latents_BTNL)
             outputs = dict(
-                videos=videos_BTHWC,
+                token_latents=token_latents_BTNL,
                 latent_actions=(
                     action_embeddings_BTm11L
                     if self.use_gt_actions
                     else latent_actions_BTm11L
                 ),
-                rng=batch["rng"],
+                rng=rng,
             )
             x_pred, t = self.dynamics(outputs)
             outputs["x_pred"] = x_pred
-            outputs["x_gt"] = videos_BTHWC
+            outputs["x_gt"] = token_latents_BTNL
             outputs["signal_level"] = t
-            outputs["recon"] = x_pred  # TODO mihir: fix this
+            outputs["recon"] = self.tokenizer.decode(x_pred, video_hw=(H, W))
             return outputs
 
         tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
@@ -228,7 +256,6 @@ class Genie(nnx.Module):
         outputs["token_logits"] = dyna_logits_BTNV
         outputs["mask"] = dyna_mask
         mle_indices_BTN = jnp.argmax(outputs["token_logits"], axis=-1)
-        H, W = batch["videos"].shape[2:4]
         outputs["recon"] = self.tokenizer.decode(mle_indices_BTN, (H, W))
         if action_indices_E is not None:
             outputs["lam_indices"] = action_indices_E
@@ -242,7 +269,7 @@ class Genie(nnx.Module):
         sample_argmax: bool = False,
         maskgit_steps: int = 25,
         diffusion_steps: int = 64,
-        window_size: Optional[int] = None,
+        diffusion_corrupt_context_factor: float = 0.1,
     ) -> tuple[jax.Array, jax.Array]:
         if self.dyna_type == "maskgit":
             return self.sample_maskgit(
@@ -251,7 +278,9 @@ class Genie(nnx.Module):
         elif self.dyna_type == "causal":
             return self.sample_causal(batch, seq_len, temperature, sample_argmax)
         elif self.dyna_type == "diffusion":
-            return self.sample_diffusion(batch, seq_len, diffusion_steps, window_size)
+            return self.sample_diffusion(
+                batch, seq_len, diffusion_steps, diffusion_corrupt_context_factor
+            )
         else:
             raise ValueError(f"Dynamics model type unknown: {self.dyna_type}")
 
@@ -603,20 +632,19 @@ class Genie(nnx.Module):
         batch: Dict[str, jax.Array],
         seq_len: int,
         diffusion_steps: int,
-        window_size: Optional[int] = None,
+        diffusion_corrupt_context_factor: float = 0.1,
     ) -> tuple[jax.Array, jax.Array]:
         assert isinstance(self.dynamics, DynamicsDiffusion)
         # --- Encode videos and actions ---
         videos_BTHWC = batch["videos"]
-        window_size = window_size or seq_len
-        B, T, H, W, C = videos_BTHWC.shape
-        rng, _rng_noise_window, _rng_noise_full = jax.random.split(batch["rng"], 3)
-        pad_shape_window = (B, min(window_size, seq_len) - T, H, W, C)
-        pad_window = jax.random.normal(_rng_noise_window, pad_shape_window)
-        videos_BSHWC = jnp.concatenate([videos_BTHWC, pad_window], axis=1)
-        pad_shape_full = (B, seq_len - T, H, W, C)
-        pad_full = jax.random.normal(_rng_noise_full, pad_shape_full)
-        videos_BFHWC = jnp.concatenate([videos_BTHWC, pad_full], axis=1)
+        H, W = videos_BTHWC.shape[2:4]
+        rng, _rng_mask, _rng_noise_full = jax.random.split(batch["rng"], 3)
+        tokenizer_outputs = self.tokenizer.mask_and_encode(videos_BTHWC, _rng_mask)
+        token_latents_BTNL = tokenizer_outputs["z"]
+        B, T, N, L = token_latents_BTNL.shape
+        pad_shape = (B, seq_len - T, N, L)
+        pad = jax.random.normal(_rng_noise_full, pad_shape)
+        token_latents_BSNL = jnp.concatenate([token_latents_BTNL, pad], axis=1)
 
         if self.use_gt_actions:
             assert self.action_embed is not None
@@ -634,83 +662,74 @@ class Genie(nnx.Module):
         act_embed_BSL = jnp.pad(action_tokens_BSm1L, ((0, 0), (1, 0), (0, 0)))
         act_embed_BSM = self.dynamics.action_up(act_embed_BSL)
 
-        delta_t = 1.0 / diffusion_steps
+        t_corrupt_context = 1 - diffusion_corrupt_context_factor
+        t_corrupt_context = jnp.argmin(
+            jnp.abs(jnp.arange(diffusion_steps) / diffusion_steps - t_corrupt_context)
+        )
+        t_corrupt_context = t_corrupt_context / diffusion_steps
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
         def denoise_step_fn(carry, denoise_step: jax.Array) -> jax.Array:
-            vid_BSHWC, frame_i = carry
-
-            # align actions with sliding window of frames
-            act_embed_window_BSM, frame_i_window = nnx.cond(
-                frame_i < window_size,
-                lambda: (act_embed_BSM[:, :window_size], frame_i),
-                lambda: (
-                    jax.lax.dynamic_slice(
-                        act_embed_BSM,
-                        (0, frame_i - window_size + 1, 0),
-                        (B, window_size, act_embed_BSM.shape[-1]),
-                    ),
-                    window_size - 1,
-                ),
-            )
-
-            act_embed_window_BSM = act_embed_window_BSM.at[:, 0].set(0)
+            tok_latents_BSNL, frame_i, rng = carry
+            rng, _rng_noise_context = jax.random.split(rng)
 
             t = denoise_step / diffusion_steps
 
-            # TODO mihir: corrupt the context frames like in Dreamer 4 section 3.2
-            t_vector = jnp.ones((B, min(window_size, seq_len)))
-            t_vector = t_vector.at[:, frame_i_window].set(t)
+            # corrupt the context frames like in Dreamer 4 section 3.2
+            t_vector = jnp.ones((B, seq_len)) * t_corrupt_context
+            t_vector = t_vector.at[:, frame_i].set(t)
+
+            noise_context_BSNL = jax.random.normal(
+                _rng_noise_context, (B, seq_len, N, L)
+            )
+            currupted_latents_BSNL = (
+                tok_latents_BSNL * t_corrupt_context
+                + (1 - t_corrupt_context) * noise_context_BSNL
+            )
+
+            # Create a mask for the frames to update
+            frame_mask = jnp.arange(seq_len) < frame_i
+            frame_mask = frame_mask.reshape(1, -1, 1, 1)  # Broadcast to BSNL shape
+            # Update only the frames that should be corrupted
+            corrupted_tok_latents_BSNL = jnp.where(
+                frame_mask, currupted_latents_BSNL, tok_latents_BSNL
+            )
 
             dt_flow = jnp.log2(diffusion_steps).astype(jnp.int32)
-            dt_base = (
-                jnp.ones((B, min(window_size, seq_len)), dtype=jnp.int32) * dt_flow
-            )  # Smallest dt.
+            dt_base = jnp.ones((B, seq_len), dtype=jnp.int32) * dt_flow  # Smallest dt.
 
-            v_pred_BSHWC = self.dynamics.diffusion_transformer(
-                vid_BSHWC, t_vector, dt_base, act_embed_window_BSM
+            tok_lat_pred_BSNL = self.dynamics.diffusion_transformer(
+                corrupted_tok_latents_BSNL, t_vector, dt_base, act_embed_BSM
             )
-            frame_BHWC = (
-                vid_BSHWC[:, frame_i_window] + v_pred_BSHWC[:, frame_i_window] * delta_t
+            tok_latents_BSNL = tok_latents_BSNL.at[:, frame_i].set(
+                tok_lat_pred_BSNL[:, frame_i]
             )
-            vid_BSHWC = vid_BSHWC.at[:, frame_i_window].set(frame_BHWC)
-            new_carry = (vid_BSHWC, frame_i_window)
+            new_carry = (tok_latents_BSNL, frame_i, rng)
             return new_carry
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
         def autoregressive_step_fn(carry, frame_t: jax.Array) -> jax.Array:
-            vid_t_window_BSHWC, vid_t_full_BFHWC, rng = carry
-            rng, _rng_noise = jax.random.split(rng)
+            tok_latents_BSNL, rng = carry
+            rng, _rng_noise_context = jax.random.split(rng)
 
-            # slide the window forward by 1 frame if necessary
-            vid_t_window_BSHWC, frame_id_window = nnx.cond(
-                frame_t < window_size,
-                lambda: (vid_t_window_BSHWC, frame_t),
-                lambda: (
-                    jnp.roll(vid_t_window_BSHWC, -1, axis=1)
-                    .at[:, -1]
-                    .set(jax.random.normal(_rng_noise, (B, H, W, C))),
-                    window_size - 1,
-                ),
-            )
-
-            carry_denoise = (vid_t_window_BSHWC, frame_id_window)
+            carry_denoise = (tok_latents_BSNL, frame_t, _rng_noise_context)
             final_carry_denoise = denoise_step_fn(
                 carry_denoise, jnp.arange(diffusion_steps)
             )
-            vid_t_window_BSHWC = final_carry_denoise[0]
-            vid_t_full_BFHWC = vid_t_full_BFHWC.at[:, frame_t].set(
-                vid_t_window_BSHWC[:, frame_id_window]
-            )
-            new_carry = (vid_t_window_BSHWC, vid_t_full_BFHWC, rng)
+            tok_latents_BSNL = final_carry_denoise[0]
+            new_carry = (tok_latents_BSNL, rng)
             return new_carry
 
         rng, _rng_sample = jax.random.split(rng)
-        initial_carry = (videos_BSHWC, videos_BFHWC, _rng_sample)
+        initial_carry = (token_latents_BSNL, _rng_sample)
         final_carry = autoregressive_step_fn(initial_carry, jnp.arange(T, seq_len))
-        final_videos_BFHWC = final_carry[1]
+        final_token_latents_BSNL = final_carry[0]
 
-        return final_videos_BFHWC, None  # TODO return something meaningful?
+        final_videos_BSHWC = self.tokenizer.decode(
+            final_token_latents_BSNL, video_hw=(H, W)
+        )
+
+        return final_videos_BSHWC, None  # TODO return something meaningful?
 
     def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
         # --- Preprocess videos ---
@@ -750,7 +769,7 @@ def restore_genie_components(
         options=checkpoint_options,
         handler_registry=handler_registry,
     )
-    if args.tokenizer_checkpoint:
+    if args.tokenizer_type == "vqvae":
         dummy_tokenizer = TokenizerVQVAE(
             in_dim=args.image_channels,
             model_dim=args.tokenizer_dim,
@@ -767,22 +786,41 @@ def restore_genie_components(
             use_flash_attention=args.use_flash_attention,
             rngs=rngs_tokenizer,
         )
-        dummy_tokenizer_optimizer = nnx.ModelAndOptimizer(dummy_tokenizer, tx)
-        dummy_tokenizer_optimizer_state = nnx.state(dummy_tokenizer_optimizer)
-        abstract_sharded_tokenizer_optimizer_state = _create_abstract_sharded_pytree(
-            dummy_tokenizer_optimizer_state, sharding
+    elif args.tokenizer_type == "mae":
+        dummy_tokenizer = TokenizerMAE(
+            in_dim=args.image_channels,
+            model_dim=args.tokenizer_dim,
+            ffn_dim=args.tokenizer_ffn_dim,
+            latent_dim=args.latent_patch_dim,
+            num_latents=args.num_patch_latents,
+            patch_size=args.patch_size,
+            num_blocks=args.tokenizer_num_blocks,
+            num_heads=args.tokenizer_num_heads,
+            dropout=args.dropout,
+            max_mask_ratio=0.0,
+            param_dtype=args.param_dtype,
+            dtype=args.dtype,
+            use_flash_attention=args.use_flash_attention,
+            rngs=rngs_tokenizer,
         )
-        restored_tokenizer = tokenizer_checkpoint_manager.restore(
-            step=tokenizer_checkpoint_manager.latest_step(),
-            args=ocp.args.Composite(
-                model_state=ocp.args.PyTreeRestore(  # type: ignore
-                    abstract_sharded_tokenizer_optimizer_state  # type: ignore
-                ),
+    else:
+        raise ValueError(f"Invalid tokenizer type: {args.tokenizer_type}")
+    dummy_tokenizer_optimizer = nnx.ModelAndOptimizer(dummy_tokenizer, tx)
+    dummy_tokenizer_optimizer_state = nnx.state(dummy_tokenizer_optimizer)
+    abstract_sharded_tokenizer_optimizer_state = _create_abstract_sharded_pytree(
+        dummy_tokenizer_optimizer_state, sharding
+    )
+    restored_tokenizer = tokenizer_checkpoint_manager.restore(
+        step=tokenizer_checkpoint_manager.latest_step(),
+        args=ocp.args.Composite(
+            model_state=ocp.args.PyTreeRestore(  # type: ignore
+                abstract_sharded_tokenizer_optimizer_state  # type: ignore
             ),
-        )["model_state"]
-        nnx.update(dummy_tokenizer_optimizer.model, restored_tokenizer.model)
-        model.tokenizer = dummy_tokenizer_optimizer.model
-        tokenizer_checkpoint_manager.close()
+        ),
+    )["model_state"]
+    nnx.update(dummy_tokenizer_optimizer.model, restored_tokenizer.model)
+    model.tokenizer = dummy_tokenizer_optimizer.model
+    tokenizer_checkpoint_manager.close()
 
     if args.lam_checkpoint:
         lam_checkpoint_manager = ocp.CheckpointManager(

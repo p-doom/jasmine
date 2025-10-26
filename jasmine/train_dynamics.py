@@ -55,6 +55,7 @@ class Args:
     warmup_steps: int = 5000
     lr_schedule: str = "wsd"  # supported options: wsd, cos
     # Tokenizer
+    tokenizer_type: str = "vqvae"  # supported options: vqvae, mae
     tokenizer_dim: int = 512
     tokenizer_ffn_dim: int = 2048
     latent_patch_dim: int = 32
@@ -122,6 +123,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
         patch_size=args.patch_size,
         tokenizer_num_blocks=args.tokenizer_num_blocks,
         tokenizer_num_heads=args.tokenizer_num_heads,
+        tokenizer_type=args.tokenizer_type,
         # LAM
         lam_dim=args.lam_dim,
         lam_ffn_dim=args.lam_ffn_dim,
@@ -352,8 +354,8 @@ def _calculate_step_metrics(
 
     if args.dyna_type == "diffusion":
         if "x_pred" in outputs.keys():
-            mse_BTHWC = (outputs["x_pred"] - outputs["x_gt"]) ** 2
-            mse_BT = jnp.mean(mse_BTHWC, axis=(2, 3, 4))
+            mse_BTNL = (outputs["x_pred"] - outputs["x_gt"]) ** 2
+            mse_BT = jnp.mean(mse_BTNL, axis=(2, 3))
             mse = jnp.mean(mse_BT)
             if args.diffusion_use_ramp_weight:
                 ramp_weight = 0.9 * outputs["signal_level"] + 0.1

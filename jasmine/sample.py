@@ -37,13 +37,14 @@ class Args:
     sample_argmax: bool = True
     start_frame: int = 1
     diffusion_denoise_steps: int = 0
-    window_size: int = 16
+    diffusion_corrupt_context_factor: float = 0.1
     # Tokenizer checkpoint
+    tokenizer_type: str = "vqvae"
     tokenizer_dim: int = 512
     tokenizer_ffn_dim: int = 2048
     latent_patch_dim: int = 32
     num_patch_latents: int = 1024
-    patch_size: int = 4
+    patch_size: int = 16
     tokenizer_num_blocks: int = 4
     tokenizer_num_heads: int = 8
     # LAM checkpoint
@@ -95,6 +96,7 @@ if __name__ == "__main__":
         patch_size=args.patch_size,
         tokenizer_num_blocks=args.tokenizer_num_blocks,
         tokenizer_num_heads=args.tokenizer_num_heads,
+        tokenizer_type=args.tokenizer_type,
         # LAM
         lam_dim=args.lam_dim,
         lam_ffn_dim=args.lam_ffn_dim,
@@ -176,7 +178,7 @@ if __name__ == "__main__":
             args.sample_argmax,
             args.maskgit_steps,
             args.diffusion_denoise_steps,
-            args.window_size,
+            args.diffusion_corrupt_context_factor,
         )
         return frames
 

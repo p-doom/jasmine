@@ -185,8 +185,10 @@ class DynamicsDiffusion(nnx.Module):
 
     def __init__(
         self,
+        input_dim: int,
         model_dim: int,
         ffn_dim: int,
+        out_dim: int,
         num_latents: int,
         latent_action_dim: int,
         num_blocks: int,
@@ -199,8 +201,10 @@ class DynamicsDiffusion(nnx.Module):
         decode: bool,
         rngs: nnx.Rngs,
     ):
+        self.input_dim = input_dim
         self.model_dim = model_dim
         self.ffn_dim = ffn_dim
+        self.out_dim = out_dim
         self.num_latents = num_latents
         self.latent_action_dim = latent_action_dim
         self.num_blocks = num_blocks
@@ -212,8 +216,10 @@ class DynamicsDiffusion(nnx.Module):
         self.decode = decode
         self.denoise_steps = denoise_steps
         self.diffusion_transformer = DiffusionTransformer(
+            input_dim=self.input_dim,
             model_dim=self.model_dim,
             ffn_dim=self.ffn_dim,
+            out_dim=self.out_dim,
             num_blocks=self.num_blocks,
             num_heads=self.num_heads,
             dropout=self.dropout,
@@ -236,19 +242,19 @@ class DynamicsDiffusion(nnx.Module):
     ) -> tuple[jax.Array, jax.Array]:
         # For now we only denoise the last frame
         rng, time_rng, noise_rng = jax.random.split(batch["rng"], 3)
-        videos = batch["videos"]
+        token_latents_BTNL = batch["token_latents"]
         latent_actions_BTm11L = batch["latent_actions"]
-        B, T, H, W, C = videos.shape
+        B, T, N, L = token_latents_BTNL.shape
         # Sample t.
         t = jax.random.randint(time_rng, (B, T), minval=0, maxval=self.denoise_steps)
         t /= self.denoise_steps
-        t_full = t[:, :, None, None, None]  # [B, T, 1, 1, 1]
-        x_1 = videos
-        x_0 = jax.random.normal(noise_rng, (B, T, H, W, C))
+        t_full = t[:, :, None, None]  # [B, T, 1, 1]
+        x_1 = token_latents_BTNL
+        x_0 = jax.random.normal(noise_rng, (B, T, N, L))
         x_t = (1 - (1 - 1e-5) * t_full) * x_0 + t_full * x_1
         dt_flow = jnp.log2(self.denoise_steps).astype(jnp.int32)
         dt_base = jnp.ones((B, T), dtype=jnp.int32) * dt_flow  # [B, T]
-        videos = x_t
+        token_latents_BTNL = x_t
 
         act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
         padded_act_embed_BTM = jnp.pad(
@@ -257,5 +263,7 @@ class DynamicsDiffusion(nnx.Module):
 
         # call the diffusion transformer
         # TODO add action conditioning
-        x_pred = self.diffusion_transformer(videos, t, dt_base, padded_act_embed_BTM)
+        x_pred = self.diffusion_transformer(
+            token_latents_BTNL, t, dt_base, padded_act_embed_BTM
+        )
         return x_pred, t

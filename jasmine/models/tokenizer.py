@@ -234,6 +234,7 @@ class TokenizerMAE(nnx.Module):
             mask_BTN[..., None], self.mask_patch.value, patch_BTNP
         )
         z_BTNL = self.encoder(masked_patch_BTNP)
+        z_BTNL = nnx.tanh(z_BTNL)
         outputs = dict(z=z_BTNL, mask=mask_BTN)
         return outputs
 
