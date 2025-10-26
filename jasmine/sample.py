@@ -30,6 +30,7 @@ class Args:
     checkpoint: str = ""
     print_action_indices: bool = True
     output_dir: str = "gifs/"
+    output_name: str = "generation"
     # Sampling
     batch_size: int = 1
     maskgit_steps: int = 25
@@ -60,7 +61,8 @@ class Args:
     dyna_num_blocks: int = 6
     dyna_num_heads: int = 8
     param_dtype = jnp.float32
-    dtype = jnp.bfloat16
+    dtype = jnp.float32
+    # dtype = jnp.bfloat16
     use_flash_attention: bool = True
 
 
@@ -231,7 +233,8 @@ if __name__ == "__main__":
     print(f"SSIM: {avg_ssim}")
     print(f"PSNR: {avg_psnr}")
 
-    # --- Construct video ---
+
+    # # --- Construct video ---
     true_videos = (gt_video * 255).astype(np.uint8)
     pred_videos = (recon_video_BSHWC * 255).astype(np.uint8)
     video_comparison = np.zeros((2, *recon_video_BSHWC.shape), dtype=np.uint8)
@@ -239,29 +242,66 @@ if __name__ == "__main__":
     video_comparison[1] = pred_videos
     frames = einops.rearrange(video_comparison, "n b t h w c -> t (b h) (n w) c")
 
-    # --- Save video ---
-    imgs = [Image.fromarray(img) for img in frames]
-    # Write actions on each frame, on each row (i.e., for each video in the batch, on the GT row)
+
     B = batch["videos"].shape[0]
-    if action_batch_E is not None:
-        action_batch_BSm11 = jnp.reshape(action_batch_E, (B, args.seq_len - 1, 1))
-    else:
-        action_batch_BSm11 = jnp.reshape(
-            batch["actions"][:, :-1], (B, args.seq_len - 1, 1)
-        )
-    for t, img in enumerate(imgs[1:]):
+    action_batch_BSm11 = jnp.reshape(action_batch_E, (B, args.seq_len - 1, 1))
+    pred_frames = np.array(pred_videos[0])
+    imgs = [Image.fromarray(img) for img in pred_frames]
+
+    for idx, img in enumerate(imgs[1:]):
         d = ImageDraw.Draw(img)
         for row in range(B):
             if args.print_action_indices:
-                action = action_batch_BSm11[row, t, 0]
+                action = action_batch_BSm11[row, idx, 0]
                 y_offset = row * batch["videos"].shape[2] + 2
                 d.text((2, y_offset), f"{action}", fill=255)
 
+    concatenated_frames = np.concatenate(imgs, axis=1).astype(np.uint8)
+    image = Image.fromarray(concatenated_frames)
     os.makedirs(args.output_dir, exist_ok=True)
-    imgs[0].save(
-        os.path.join(args.output_dir, f"generation_{time.time()}.gif"),
-        save_all=True,
-        append_images=imgs[1:],
-        duration=250,
-        loop=0,
-    )
+    image.save(f"{args.output_dir}/{args.output_name}.png")
+    
+
+    # concatenated_frames = np.concatenate(pred_videos[0], axis=1).astype(np.uint8)
+
+    
+    # os.makedirs(args.output_dir, exist_ok=True)
+    # image = Image.fromarray(concatenated_frames)
+    # image.save(f"{args.output_dir}/{args.output_name}.png")
+
+    # # save the ground truth video as png  concated
+    concatenated_frames = np.concatenate(true_videos[0], axis=1).astype(np.uint8)
+    image = Image.fromarray(concatenated_frames)
+    image.save(f"{args.output_dir}/{args.output_name}_gt.png")
+
+
+
+
+
+
+    # # --- Save video ---
+    # imgs = [Image.fromarray(img) for img in frames]
+    # # Write actions on each frame, on each row (i.e., for each video in the batch, on the GT row)
+    # B = batch["videos"].shape[0]
+    # if action_batch_E is not None:
+    #     action_batch_BSm11 = jnp.reshape(action_batch_E, (B, args.seq_len - 1, 1))
+    # else:
+    #     action_batch_BSm11 = jnp.reshape(
+    #         batch["actions"][:, :-1], (B, args.seq_len - 1, 1)
+    #     )
+    # for t, img in enumerate(imgs[1:]):
+    #     d = ImageDraw.Draw(img)
+    #     for row in range(B):
+    #         if args.print_action_indices:
+    #             action = action_batch_BSm11[row, t, 0]
+    #             y_offset = row * batch["videos"].shape[2] + 2
+    #             d.text((2, y_offset), f"{action}", fill=255)
+
+    # os.makedirs(args.output_dir, exist_ok=True)
+    # imgs[0].save(
+    #     os.path.join(args.output_dir, f"{args.output_name}.gif"),
+    #     save_all=True,
+    #     append_images=imgs[1:],
+    #     duration=250,
+    #     loop=0,
+    # )
