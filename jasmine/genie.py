@@ -313,10 +313,13 @@ class Genie(nnx.Module):
             act_embed_BS1M = jnp.reshape(
                 act_embed_BSM, (B, S, 1, act_embed_BSM.shape[-1])
             )
-            vid_embed_BSNM += act_embed_BS1M
+            vid_embed_BSNp1M = jnp.concatenate([act_embed_BS1M, vid_embed_BSNM], axis=2)
             unmasked_ratio = jnp.cos(jnp.pi * (step + 1) / (steps * 2))
             step_temp = temperature * (1.0 - unmasked_ratio)
-            final_logits_BSNV = dynamics_maskgit.transformer(vid_embed_BSNM) / step_temp
+            final_logits_BSNp1V = (
+                dynamics_maskgit.transformer(vid_embed_BSNp1M) / step_temp
+            )
+            final_logits_BSNV = final_logits_BSNp1V[:, :, 1:]
 
             # --- Sample new tokens for final frame ---
             if sample_argmax:
