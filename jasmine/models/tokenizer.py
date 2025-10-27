@@ -187,7 +187,7 @@ class TokenizerMAE(nnx.Module):
             self.dropout,
             self.param_dtype,
             self.dtype,
-            use_flash_attention=use_flash_attention,
+            use_flash_attention=self.use_flash_attention,
             rngs=rngs,
         )
 

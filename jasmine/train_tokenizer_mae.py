@@ -352,12 +352,10 @@ def main(args: Args) -> None:
             mse=mse,
             psnr=psnr,
             ssim=ssim,
+            loss=mse,
         )
 
-        loss = mse
-        metrics["loss"] = loss
-
-        return loss, (outputs["recon"], metrics)
+        return mse, (outputs["recon"], metrics)
 
     @nnx.jit(donate_argnums=0)
     def train_step(

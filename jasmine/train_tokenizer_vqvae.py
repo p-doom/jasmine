@@ -343,6 +343,15 @@ def main(args: Args) -> None:
         outputs = model(inputs, training=training)
         outputs["recon"] = outputs["recon"].astype(jnp.float32)
         mse = jnp.square(gt - outputs["recon"]).mean()
+        q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()
+        commitment_loss = jnp.square(
+            outputs["emb"] - jax.lax.stop_gradient(outputs["z"])
+        ).mean()
+        loss = mse + q_loss + args.vq_beta * commitment_loss
+        _, index_counts = jnp.unique_counts(
+            jnp.ravel(outputs["indices"]), size=args.num_latents, fill_value=0
+        )
+        codebook_usage = (index_counts != 0).mean()
 
         gt_clipped = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
         recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
@@ -353,21 +362,11 @@ def main(args: Args) -> None:
             mse=mse,
             psnr=psnr,
             ssim=ssim,
+            loss=loss,
+            q_loss=q_loss,
+            commitment_loss=commitment_loss,
+            codebook_usage=codebook_usage,
         )
-
-        q_loss = jnp.square(jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]).mean()
-        commitment_loss = jnp.square(
-            outputs["emb"] - jax.lax.stop_gradient(outputs["z"])
-        ).mean()
-        loss = mse + q_loss + args.vq_beta * commitment_loss
-        _, index_counts = jnp.unique_counts(
-            jnp.ravel(outputs["indices"]), size=args.num_latents, fill_value=0
-        )
-        codebook_usage = (index_counts != 0).mean()
-        metrics["loss"] = loss
-        metrics["q_loss"] = q_loss
-        metrics["commitment_loss"] = commitment_loss
-        metrics["codebook_usage"] = codebook_usage
 
         return loss, (outputs["recon"], metrics)
 
@@ -405,15 +404,13 @@ def main(args: Args) -> None:
         (loss, (recon, metrics)) = tokenizer_loss_fn(tokenizer, inputs, training=False)
         return loss, recon, metrics
 
-    def calculate_validation_metrics(val_dataloader, tokenizer, rng):
+    def calculate_validation_metrics(val_dataloader, tokenizer):
         step = 0
         loss_per_step = []
         metrics_per_step = []
         batch = None
         recon = None
         for batch in val_dataloader:
-            rng, _rng_mask = jax.random.split(rng, 2)
-            batch["rng"] = _rng_mask
             loss, recon, metrics = val_step(tokenizer, batch)
             loss_per_step.append(loss)
             metrics_per_step.append(metrics)
@@ -454,9 +451,7 @@ def main(args: Args) -> None:
             for elem in val_iterator
         )
     if jax.process_index() == 0:
-        rng, _rng = jax.random.split(rng)
         first_batch = next(dataloader_train)
-        first_batch["rng"] = _rng
         compiled = train_step.lower(optimizer, first_batch).compile()
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
@@ -467,8 +462,6 @@ def main(args: Args) -> None:
     while step < args.num_steps:
         for batch in dataloader_train:
             # --- Train step ---
-            rng, _rng = jax.random.split(rng)
-            batch["rng"] = _rng
             loss, recon, metrics = train_step(optimizer, batch)
             if step == first_step:
                 print_mem_stats("After params initialized")
@@ -478,9 +471,8 @@ def main(args: Args) -> None:
             val_results = {}
             if dataloader_val and step % args.val_interval == 0:
                 print("Calculating validation metrics...")
-                rng, _rng_mask_val = jax.random.split(rng, 2)
                 val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(
-                    dataloader_val, optimizer.model, _rng_mask_val
+                    dataloader_val, optimizer.model
                 )
                 print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
                 val_results = {
