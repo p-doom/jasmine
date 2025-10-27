@@ -693,11 +693,12 @@ class Genie(nnx.Module):
             )
             nnx.update(dynamics_diffusion, dynamics_state)
 
-            t = denoise_step / diffusion_steps
-
             # corrupt the context frames like in Dreamer 4 section 3.2
-            t_vector = jnp.ones((B, seq_len)) * t_corrupt_context
-            t_vector = t_vector.at[:, frame_i].set(t)
+            denoise_step_vector = (
+                jnp.ones((B, seq_len)) * t_corrupt_context * diffusion_steps
+            )
+            denoise_step_vector = denoise_step_vector.at[:, frame_i].set(denoise_step)
+            denoise_step_vector = denoise_step_vector.astype(jnp.int32)
 
             noise_context_BSNL = jax.random.normal(
                 _rng_noise_context, (B, seq_len, N, L)
@@ -714,7 +715,7 @@ class Genie(nnx.Module):
 
             # --- Predict transition ---
             pred_latents_BSNL = dynamics_diffusion.diffusion_transformer(
-                corrupted_tok_latents_BSNL, t_vector, act_embed_BSM
+                corrupted_tok_latents_BSNL, denoise_step_vector, act_embed_BSM
             )
             latents_BSNL = latents_BSNL.at[:, frame_i].set(
                 pred_latents_BSNL[:, frame_i]

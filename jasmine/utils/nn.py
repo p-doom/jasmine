@@ -486,64 +486,6 @@ def modulate(x, shift, scale):
     return x * (1 + scale) + shift
 
 
-# TODO mihir clean this up
-class TimestepEmbedder(nnx.Module):
-    """
-    Embeds scalar timesteps into vector representations.
-    """
-
-    def __init__(
-        self, hidden_size: int, param_dtype: jnp.dtype, dtype: jnp.dtype, rngs: nnx.Rngs
-    ):
-        self.hidden_size = hidden_size
-        self.param_dtype = param_dtype
-        self.dtype = dtype
-        self.dense1 = nnx.Linear(
-            self.hidden_size,
-            self.hidden_size,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-            rngs=rngs,
-        )
-        self.dense2 = nnx.Linear(
-            self.hidden_size,
-            self.hidden_size,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-            rngs=rngs,
-        )
-
-    def __call__(self, t):
-        x = self.timestep_embedding(t)
-        x = self.dense1(x)
-        x = nnx.silu(x)
-        x = self.dense2(x)
-        return x
-
-    # t is between [0, 1].
-    def timestep_embedding(self, t, max_period=10000):
-        """
-        Create sinusoidal timestep embeddings.
-        :param t: a 1-D Tensor of N indices, one per batch element.
-                            These may be fractional.
-        :param dim: the dimension of the output.
-        :param max_period: controls the minimum frequency of the embeddings.
-        :return: an (N, D) Tensor of positional embeddings.
-        """
-        # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
-        t = jax.lax.convert_element_type(t, jnp.float32)  # [B, T]
-        dim = self.hidden_size
-        half = dim // 2
-        freqs = jnp.exp(
-            -math.log(max_period)
-            * jnp.arange(start=0, stop=half, dtype=jnp.float32)
-            / half
-        )
-        args = t[:, :, None] * freqs[None, None]  # TODO verify this
-        embedding = jnp.concatenate([jnp.cos(args), jnp.sin(args)], axis=-1)
-        return embedding
-
-
 class DiTBlock(nnx.Module):
     """DiT block"""
 
@@ -714,6 +656,7 @@ class DiffusionTransformer(nnx.Module):
         num_blocks: int,
         num_heads: int,
         dropout: float,
+        diffusion_steps: int,
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
@@ -730,6 +673,7 @@ class DiffusionTransformer(nnx.Module):
         self.num_blocks = num_blocks
         self.num_heads = num_heads
         self.dropout = dropout
+        self.diffusion_steps = diffusion_steps
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
@@ -757,8 +701,9 @@ class DiffusionTransformer(nnx.Module):
                     rngs=rngs,
                 )
             )
-        self.time_step_embedder = TimestepEmbedder(
-            self.model_dim,
+        self.time_step_embedder = nnx.Embed(
+            num_embeddings=self.diffusion_steps,
+            features=self.model_dim,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             rngs=rngs,

@@ -215,6 +215,7 @@ class DynamicsDiffusion(nnx.Module):
             self.num_blocks,
             self.num_heads,
             self.dropout,
+            self.denoise_steps,
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
@@ -257,7 +258,7 @@ class DynamicsDiffusion(nnx.Module):
         # --- Call the diffusion transformer ---
         pred_latents_BTNL = self.diffusion_transformer(
             noised_latents_BTNL,
-            denoise_t_BT,
+            denoise_step_BT,
             padded_act_embed_BTM,
         )
         return pred_latents_BTNL, denoise_t_BT
