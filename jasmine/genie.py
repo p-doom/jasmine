@@ -222,7 +222,9 @@ class Genie(nnx.Module):
 
         if self.dyna_type == "diffusion":
             rng, _rng = jax.random.split(batch["rng"])
-            tokenizer_outputs = self.tokenizer.mask_and_encode(videos_BTHWC, rng)
+            tokenizer_outputs = self.tokenizer.mask_and_encode(
+                videos_BTHWC, rng, training=False
+            )
             token_latents_BTNL = tokenizer_outputs["z"]
             token_latents_BTNL = jax.lax.stop_gradient(token_latents_BTNL)
             outputs = dict(
@@ -644,7 +646,9 @@ class Genie(nnx.Module):
         videos_BTHWC = batch["videos"]
         H, W = videos_BTHWC.shape[2:4]
         rng, _rng_mask, _rng_noise_full = jax.random.split(batch["rng"], 3)
-        tokenizer_outputs = self.tokenizer.mask_and_encode(videos_BTHWC, _rng_mask)
+        tokenizer_outputs = self.tokenizer.mask_and_encode(
+            videos_BTHWC, _rng_mask, training=False
+        )
         token_latents_BTNL = tokenizer_outputs["z"]
         B, T, N, L = token_latents_BTNL.shape
         pad_shape = (B, seq_len - T, N, L)

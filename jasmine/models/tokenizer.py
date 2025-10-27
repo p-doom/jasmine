@@ -216,7 +216,7 @@ class TokenizerMAE(nnx.Module):
     ) -> Dict[str, jax.Array]:
         H, W = batch["videos"].shape[2:4]
         videos_BTHWC = batch["videos"]
-        outputs = self.mask_and_encode(videos_BTHWC, batch["rng"])
+        outputs = self.mask_and_encode(videos_BTHWC, batch["rng"], training)
         z_BTNL = outputs["z"]
         recon_BTHWC = self.decoder(z_BTNL)
         recon_BTHWC = recon_BTHWC.astype(jnp.float32)
@@ -226,29 +226,32 @@ class TokenizerMAE(nnx.Module):
         outputs["recon"] = recon_BTHWC
         return outputs
 
-    def mask_and_encode(self, videos: jax.Array, rng: nnx.Rngs) -> Dict[str, jax.Array]:
+    def mask_and_encode(
+        self, videos: jax.Array, rng: nnx.Rngs, training: bool = True
+    ) -> Dict[str, jax.Array]:
         # --- Preprocess videos ---
         B, T = videos.shape[:2]
         patch_BTNP = patchify(videos, self.patch_size)
         N = patch_BTNP.shape[2]
 
         # --- Randomly mask patches ---
-        _rng_prob, *_rngs_mask = jax.random.split(rng, B + 1)
-        mask_prob = jax.random.uniform(
-            _rng_prob, shape=(B,), minval=0, maxval=self.max_mask_ratio
-        )
-        mask_BTN = jax.vmap(
-            lambda rng, prob: jax.random.bernoulli(rng, prob, (T, N)),
-            in_axes=(0, 0),
-        )(jnp.asarray(_rngs_mask), mask_prob)
-        masked_patch_BTNP = jnp.where(
-            mask_BTN[..., None], self.mask_patch.value, patch_BTNP
-        )
+        if training:
+            _rng_prob, *_rngs_mask = jax.random.split(rng, B + 1)
+            mask_prob = jax.random.uniform(
+                _rng_prob, shape=(B,), minval=0, maxval=self.max_mask_ratio
+            )
+            mask_BTN = jax.vmap(
+                lambda rng, prob: jax.random.bernoulli(rng, prob, (T, N)),
+                in_axes=(0, 0),
+            )(jnp.asarray(_rngs_mask), mask_prob)
+            patch_BTNP = jnp.where(
+                mask_BTN[..., None], self.mask_patch.value, patch_BTNP
+            )
 
         # --- Encode ---
-        z_BTNL = self.encoder(masked_patch_BTNP)
+        z_BTNL = self.encoder(patch_BTNP)
         z_BTNL = nnx.tanh(z_BTNL)
-        outputs = dict(z=z_BTNL, mask=mask_BTN)
+        outputs = dict(z=z_BTNL)
         return outputs
 
     def decode(self, z_BTNL: jax.Array, video_hw: Tuple[int, int]) -> jax.Array:
