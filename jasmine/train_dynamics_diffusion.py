@@ -78,7 +78,6 @@ class Args:
     dyna_num_blocks: int = 6
     dyna_num_heads: int = 8
     dropout: float = 0.0
-    mask_limit: float = 0.5
     diffusion_denoise_steps: int = 0
     diffusion_use_ramp_weight: bool = True
     param_dtype = jnp.float32
@@ -137,7 +136,6 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
         dyna_num_blocks=args.dyna_num_blocks,
         dyna_num_heads=args.dyna_num_heads,
         dropout=args.dropout,
-        mask_limit=args.mask_limit,
         diffusion_denoise_steps=args.diffusion_denoise_steps,
         param_dtype=args.param_dtype,
         dtype=args.dtype,

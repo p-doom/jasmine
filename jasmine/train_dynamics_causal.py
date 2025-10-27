@@ -78,7 +78,6 @@ class Args:
     dyna_num_blocks: int = 6
     dyna_num_heads: int = 8
     dropout: float = 0.0
-    mask_limit: float = 0.5
     z_loss_weight: float = 0.0
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
@@ -136,7 +135,6 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
         dyna_num_blocks=args.dyna_num_blocks,
         dyna_num_heads=args.dyna_num_heads,
         dropout=args.dropout,
-        mask_limit=args.mask_limit,
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
