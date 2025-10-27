@@ -21,9 +21,9 @@ import wandb
 import grain
 import flax.nnx as nnx
 
-from models.genie import GenieMaskGIT, restore_genie_components
-from utils.dataloader import get_dataloader
-from utils.train_utils import (
+from jasmine.models.genie import GenieMaskGIT, restore_genie_components
+from jasmine.utils.dataloader import get_dataloader
+from jasmine.utils.train_utils import (
     get_lr_schedule,
     count_parameters_by_component,
     print_mem_stats,

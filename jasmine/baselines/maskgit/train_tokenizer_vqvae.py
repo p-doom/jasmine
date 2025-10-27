@@ -20,9 +20,9 @@ import wandb
 import grain
 import flax.nnx as nnx
 
-from models.tokenizer import TokenizerVQVAE
-from utils.dataloader import get_dataloader
-from utils.train_utils import (
+from jasmine.models.tokenizer import TokenizerVQVAE
+from jasmine.utils.dataloader import get_dataloader
+from jasmine.utils.train_utils import (
     get_lr_schedule,
     count_parameters_by_component,
     print_mem_stats,

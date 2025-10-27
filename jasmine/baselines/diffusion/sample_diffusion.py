@@ -13,8 +13,8 @@ from PIL import Image, ImageDraw
 import tyro
 from flax import nnx
 
-from models.genie import GenieDiffusion
-from utils.dataloader import get_dataloader
+from jasmine.models.genie import GenieDiffusion
+from jasmine.utils.dataloader import get_dataloader
 
 
 @dataclass
