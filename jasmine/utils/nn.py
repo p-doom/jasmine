@@ -637,64 +637,26 @@ class DiTBlock(nnx.Module):
         )
 
     @nnx.remat
-    def __call__(self, x_BTNM, c_BTM):
+    def __call__(self, x_BTNM):
         B, T, N, M = x_BTNM.shape
-
-        # --- Calculate adaLn modulation parameters ---
-        c_BTM = nnx.silu(c_BTM)
-        c = self.condition_up(c_BTM)  # (B, T, 6*M)
-        (
-            shift_spatial_BTM,
-            scale_spatial_BTM,
-            gate_spatial_BTM,
-            shift_temporal_BTM,
-            scale_temporal_BTM,
-            gate_temporal_BTM,
-            shift_mlp_BTM,
-            scale_mlp_BTM,
-            gate_mlp_BTM,
-        ) = jnp.split(c, 9, axis=-1)
-
-        # --- Prepare adaLN conditioning for spatio-temporal block ---
-        shift_spatial_F1M = einops.rearrange(shift_spatial_BTM, "b t m -> (b t) 1 m")
-        scale_spatial_F1M = einops.rearrange(scale_spatial_BTM, "b t m -> (b t) 1 m")
-        gate_spatial_F1M = einops.rearrange(gate_spatial_BTM, "b t m -> (b t) 1 m")
-        shift_temporal_PTM = einops.repeat(
-            shift_temporal_BTM, "b t m -> (tile b) t m", tile=N
-        )
-        scale_temporal_PTM = einops.repeat(
-            scale_temporal_BTM, "b t m -> (tile b) t m", tile=N
-        )
-        gate_temporal_PTM = einops.repeat(
-            gate_temporal_BTM, "b t m -> (tile b) t m", tile=N
-        )
-        shift_mlp_BT1M = einops.rearrange(shift_mlp_BTM, "b t m -> b t 1 m")
-        scale_mlp_BT1M = einops.rearrange(scale_mlp_BTM, "b t m -> b t 1 m")
-        gate_mlp_BT1M = einops.rearrange(gate_mlp_BTM, "b t m -> b t 1 m")
 
         # --- Spatial attention ---
         z_FNM = einops.rearrange(x_BTNM, "b t n m -> (b t) n m")
         z_FNM = self.spatial_norm(z_FNM)
-        z_FNM = modulate(z_FNM, shift_spatial_F1M, scale_spatial_F1M)
         z_FNM = self.spatial_attention(z_FNM, sow_weights=self.sow_weights)
-        z_FNM = z_FNM * gate_spatial_F1M
         z_BTNM = einops.rearrange(z_FNM, "(b t) n m -> b t n m", t=T)
         x_BTNM = x_BTNM + z_BTNM
         # --- Temporal attention ---
         z_PTM = einops.rearrange(x_BTNM, "b t n m -> (b n) t m")
         z_PTM = self.temporal_norm(z_PTM)
-        z_PTM = modulate(z_PTM, shift_temporal_PTM, scale_temporal_PTM)
         z_PTM = self.temporal_attention(z_PTM, sow_weights=self.sow_weights)
-        z_PTM = z_PTM * gate_temporal_PTM
         z_BTNM = einops.rearrange(z_PTM, "(b n) t m -> b t n m", n=N)
         x_BTNM = x_BTNM + z_BTNM
         # --- Feedforward ---
         z_BTNM = self.ffn_norm(x_BTNM)
-        z_BTNM = modulate(z_BTNM, shift_mlp_BT1M, scale_mlp_BT1M)
         z_BTND = self.ffn_dense1(z_BTNM)
         z_BTND = jax.nn.gelu(z_BTND)
         z_BTNM = self.ffn_dense2(z_BTND)
-        z_BTNM = z_BTNM * gate_mlp_BT1M
         x_BTNM = x_BTNM + z_BTNM
         if self.sow_activations:
             self.sow(nnx.Intermediate, "activations", x_BTNM)
@@ -813,18 +775,15 @@ class DiffusionTransformer(nnx.Module):
         x_BTNM = self.input_norm2(x_BTNM)
         x_BTNM = self.pos_enc(x_BTNM)
         t_BTM = self.time_step_embedder(t)
+        t_BT1M = einops.rearrange(t_BTM, "b t m -> b t 1 m")
+        act_embed_BT1M = einops.rearrange(act_embed_BTM, "b t m -> b t 1 m")
+        x_BTNp2M = jnp.concatenate([act_embed_BT1M, t_BT1M, x_BTNM], axis=2)
 
-        c_BTM = t_BTM + act_embed_BTM
         for block in self.blocks:
-            x_BTNM = block(x_BTNM, c_BTM)
+            x_BTNp2M = block(x_BTNp2M)
 
-        c_BTM = nnx.silu(c_BTM)
-        c_BTM = self.condition_up(c_BTM)
-        shift_BTM, scale_BTM = jnp.split(c_BTM, 2, axis=-1)
-        shift_BT1M = einops.rearrange(shift_BTM, "b t m -> b t 1 m")
-        scale_BT1M = einops.rearrange(scale_BTM, "b t m -> b t 1 m")
-        x_BTNM = self.output_norm(x_BTNM)
-        x_BTNM = modulate(x_BTNM, shift_BT1M, scale_BT1M)
+        x_BTNp2M = self.output_norm(x_BTNp2M)
+        x_BTNM = x_BTNp2M[:, :, 2:]
         x_BTNL = self.output_dense(x_BTNM)
 
         if self.sow_logits:
