@@ -30,6 +30,7 @@ class Args:
     checkpoint: str = ""
     print_action_indices: bool = True
     output_dir: str = "gifs/"
+    output_name: str = "generation"
     # Sampling
     batch_size: int = 1
     maskgit_steps: int = 25
@@ -259,7 +260,7 @@ if __name__ == "__main__":
 
     os.makedirs(args.output_dir, exist_ok=True)
     imgs[0].save(
-        os.path.join(args.output_dir, f"generation_{time.time()}.gif"),
+        os.path.join(args.output_dir, f"{args.output_name}_{time.time()}.gif"),
         save_all=True,
         append_images=imgs[1:],
         duration=250,
