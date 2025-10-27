@@ -1,7 +1,7 @@
 import os
 
 
-os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.98")
 
 from dataclasses import dataclass, field
 import itertools
@@ -55,7 +55,6 @@ class Args:
     warmup_steps: int = 5000
     lr_schedule: str = "wsd"  # supported options: wsd, cos
     # Tokenizer
-    tokenizer_type: str = "vqvae"  # supported options: vqvae, mae
     tokenizer_dim: int = 512
     tokenizer_ffn_dim: int = 2048
     latent_patch_dim: int = 32
@@ -74,15 +73,11 @@ class Args:
     lam_num_heads: int = 8
     lam_checkpoint: str = ""
     # Dynamics
-    dyna_type: str = "maskgit"  # supported options: maskgit, causal, diffusion
     dyna_dim: int = 512
     dyna_ffn_dim: int = 2048
     dyna_num_blocks: int = 6
     dyna_num_heads: int = 8
     dropout: float = 0.0
-    mask_limit: float = 0.5
-    diffusion_denoise_steps: int = 0
-    diffusion_use_ramp_weight: bool = True
     z_loss_weight: float = 0.0
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
@@ -92,8 +87,8 @@ class Args:
     log: bool = True
     entity: str = ""
     project: str = ""
-    name: str = "train_dynamics"
-    tags: list[str] = field(default_factory=lambda: ["dynamics"])
+    name: str = "train_dynamics_causal"
+    tags: list[str] = field(default_factory=lambda: ["dynamics", "causal"])
     log_interval: int = 50
     log_image_interval: int = 1000
     ckpt_dir: str = ""
@@ -104,7 +99,6 @@ class Args:
     val_interval: int = 20_000
     val_steps: int = 50
     eval_full_frame: bool = True
-    val_maskgit_steps: int = 25
     val_temperature: float = 1
     val_sample_argmax: bool = False
     wandb_id: str = ""
@@ -123,7 +117,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
         patch_size=args.patch_size,
         tokenizer_num_blocks=args.tokenizer_num_blocks,
         tokenizer_num_heads=args.tokenizer_num_heads,
-        tokenizer_type=args.tokenizer_type,
+        tokenizer_type="vqvae",
         # LAM
         lam_dim=args.lam_dim,
         lam_ffn_dim=args.lam_ffn_dim,
@@ -135,18 +129,15 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
         lam_co_train=not args.lam_checkpoint,
         use_gt_actions=args.use_gt_actions,
         # Dynamics
-        dyna_type=args.dyna_type,
+        dyna_type="causal",
         dyna_dim=args.dyna_dim,
         dyna_ffn_dim=args.dyna_ffn_dim,
         dyna_num_blocks=args.dyna_num_blocks,
         dyna_num_heads=args.dyna_num_heads,
         dropout=args.dropout,
-        mask_limit=args.mask_limit,
-        diffusion_denoise_steps=args.diffusion_denoise_steps,
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
-        decode=False,
         rngs=rngs,
     )
     if args.use_gt_actions:
@@ -327,7 +318,9 @@ def restore_or_initialize_components(
     else:
         # Restore from pre-trained tokenizer (and LAM)
         rng, _rng = jax.random.split(rng)
-        optimizer = restore_genie_components(optimizer, replicated_sharding, _rng, args)
+        optimizer = restore_genie_components(
+            optimizer, replicated_sharding, _rng, "vqvae", args
+        )
     return step, optimizer, train_iterator, val_iterator, rng
 
 
@@ -351,72 +344,53 @@ def _calculate_step_metrics(
     num_actions: int,
     num_patch_latents: int,
 ) -> tuple[jax.Array, dict]:
+    mask_BTN = outputs["mask"]
+    outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
+    ce_loss = optax.softmax_cross_entropy_with_integer_labels(
+        outputs["token_logits"], outputs["video_tokens"]
+    )
+    ce_loss = (mask_BTN * ce_loss).sum() / mask_BTN.sum()
+    z_val = jax.nn.logsumexp(outputs["token_logits"], axis=-1)
+    z_loss_metric = (mask_BTN * (z_val**2)).sum() / mask_BTN.sum()
 
-    if args.dyna_type == "diffusion":
-        if "x_pred" in outputs.keys():
-            mse_BTNL = (outputs["x_pred"] - outputs["x_gt"]) ** 2
-            mse_BT = jnp.mean(mse_BTNL, axis=(2, 3))
-            mse = jnp.mean(mse_BT)
-            if args.diffusion_use_ramp_weight:
-                ramp_weight = 0.9 * outputs["signal_level"] + 0.1
-                loss = jnp.mean(mse_BT * ramp_weight)
-            else:
-                loss = mse
-        else:
-            mse = 0.0  # TODO mihir: fix this
-            loss = 0.0
-    else:
-        mask_BTN = outputs["mask"]
-        outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
-        ce_loss = optax.softmax_cross_entropy_with_integer_labels(
-            outputs["token_logits"], outputs["video_tokens"]
-        )
-        ce_loss = (mask_BTN * ce_loss).sum() / mask_BTN.sum()
-        z_val = jax.nn.logsumexp(outputs["token_logits"], axis=-1)
-        z_loss_metric = (mask_BTN * (z_val**2)).sum() / mask_BTN.sum()
+    masked_token_top_1_acc = _calculate_top_k_accuracy(
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 1
+    )
+    masked_token_top_2_acc = _calculate_top_k_accuracy(
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 2
+    )
+    masked_token_top_5_acc = _calculate_top_k_accuracy(
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 5
+    )
+    masked_token_top_16_acc = _calculate_top_k_accuracy(
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 16
+    )
 
-        masked_token_top_1_acc = _calculate_top_k_accuracy(
-            outputs["token_logits"], outputs["video_tokens"], mask_BTN, 1
-        )
-        masked_token_top_2_acc = _calculate_top_k_accuracy(
-            outputs["token_logits"], outputs["video_tokens"], mask_BTN, 2
-        )
-        masked_token_top_5_acc = _calculate_top_k_accuracy(
-            outputs["token_logits"], outputs["video_tokens"], mask_BTN, 5
-        )
-        masked_token_top_16_acc = _calculate_top_k_accuracy(
-            outputs["token_logits"], outputs["video_tokens"], mask_BTN, 16
-        )
-
-        select_probs = jax.nn.softmax(outputs["token_logits"])
-        _, index_counts_tokenizer = jnp.unique_counts(
-            jnp.ravel(outputs["video_tokens"]),
-            size=num_patch_latents,
-            fill_value=0,
-        )
-        codebook_usage_tokenizer = (index_counts_tokenizer != 0).mean()
+    select_probs = jax.nn.softmax(outputs["token_logits"])
     gt_val = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
     recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
     psnr = jnp.asarray(pix.psnr(gt_val, recon)).mean()
     ssim = jnp.asarray(pix.ssim(gt_val, recon)).mean()
+    _, index_counts_tokenizer = jnp.unique_counts(
+        jnp.ravel(outputs["video_tokens"]),
+        size=num_patch_latents,
+        fill_value=0,
+    )
+    codebook_usage_tokenizer = (index_counts_tokenizer != 0).mean()
     metrics = dict(
+        cross_entropy_loss=ce_loss,
+        masked_token_top1_accuracy=masked_token_top_1_acc,
+        masked_token_top2_accuracy=masked_token_top_2_acc,
+        masked_token_top5_accuracy=masked_token_top_5_acc,
+        masked_token_top16_accuracy=masked_token_top_16_acc,
+        select_logit=outputs["token_logits"].max(-1).mean(),
+        select_p=select_probs.max(-1).mean(),
+        entropy=jax.scipy.special.entr(select_probs).sum(-1).mean(),
+        z_loss=z_loss_metric,
         psnr=psnr,
         ssim=ssim,
+        codebook_usage_tokenizer=codebook_usage_tokenizer,
     )
-    if args.dyna_type == "diffusion":
-        metrics["mse"] = mse
-    else:
-        metrics["cross_entropy_loss"] = ce_loss
-        metrics["masked_token_top1_accuracy"] = masked_token_top_1_acc
-        metrics["masked_token_top2_accuracy"] = masked_token_top_2_acc
-        metrics["masked_token_top5_accuracy"] = masked_token_top_5_acc
-        metrics["masked_token_top16_accuracy"] = masked_token_top_16_acc
-        metrics["select_logit"] = outputs["token_logits"].max(-1).mean()
-        metrics["select_p"] = select_probs.max(-1).mean()
-        metrics["entropy"] = jax.scipy.special.entr(select_probs).sum(-1).mean()
-        metrics["z_loss"] = z_loss_metric
-        metrics["codebook_usage_tokenizer"] = codebook_usage_tokenizer
-        loss = ce_loss
     if "lam_indices" in outputs.keys():
         _, index_counts_lam = jnp.unique_counts(
             jnp.ravel(outputs["lam_indices"]),
@@ -425,7 +399,7 @@ def _calculate_step_metrics(
         )
         codebook_usage_lam = (index_counts_lam != 0).mean()
         metrics["codebook_usage_lam"] = codebook_usage_lam
-    return loss, metrics
+    return ce_loss, metrics
 
 
 def main(args: Args) -> None:
@@ -513,14 +487,11 @@ def main(args: Args) -> None:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
         outputs = model(inputs)
-        loss, metrics = _calculate_step_metrics(
+        ce_loss, metrics = _calculate_step_metrics(
             outputs, gt, args.num_actions, args.num_patch_latents
         )
-        if "z_loss" in metrics.keys():
-            z_loss = metrics["z_loss"]
-            total_loss = loss + args.z_loss_weight * z_loss
-        else:
-            total_loss = loss
+        z_loss = metrics["z_loss"]
+        total_loss = ce_loss + args.z_loss_weight * z_loss
         metrics["total_loss"] = total_loss
         return total_loss, (outputs["recon"], metrics)
 
@@ -553,13 +524,10 @@ def main(args: Args) -> None:
         # --- Evaluate full frame prediction (sampling) ---
         if args.eval_full_frame:
             inputs["videos"] = gt.astype(args.dtype)
-            if args.dyna_type != "diffusion":
-                tokenizer_outputs = genie.tokenizer.vq_encode(
-                    inputs["videos"], training=False
-                )
-                tokens_full_frame = tokenizer_outputs["indices"]
-            else:
-                tokens_full_frame = None
+            tokenizer_outputs = genie.tokenizer.vq_encode(
+                inputs["videos"], training=False
+            )
+            tokens_full_frame = tokenizer_outputs["indices"]
             lam_indices_E = None
             if not args.use_gt_actions:
                 lam_indices_E = genie.vq_encode(inputs, training=False)
@@ -567,23 +535,19 @@ def main(args: Args) -> None:
             inputs["videos"] = inputs["videos"][
                 :, :-1
             ]  # remove last frame for generation
-            recon_full_frame, logits_full_frame = genie.sample(
+            recon_full_frame, logits_full_frame = genie.sample_causal(
                 inputs,
                 args.seq_len,
                 args.val_temperature,
                 args.val_sample_argmax,
-                args.val_maskgit_steps,
-                args.diffusion_denoise_steps,
             )
-
             # Calculate metrics for the last frame only
             step_outputs = {
                 "recon": recon_full_frame[:, -1],
+                "token_logits": logits_full_frame[:, -1],
+                "video_tokens": tokens_full_frame[:, -1],
+                "mask": jnp.ones_like(tokens_full_frame[:, -1]),
             }
-            if args.dyna_type != "diffusion":
-                step_outputs["token_logits"] = logits_full_frame
-                step_outputs["video_tokens"] = tokens_full_frame
-                step_outputs["mask"] = jnp.ones_like(tokens_full_frame)
             if lam_indices_E is not None:
                 lam_indices_B = lam_indices_E.reshape((-1, args.seq_len - 1))[:, -1]
                 step_outputs["lam_indices"] = lam_indices_B

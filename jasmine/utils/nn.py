@@ -5,7 +5,6 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 import einops
-from utils.preprocess import patchify, unpatchify
 
 
 def _get_spatiotemporal_positional_encoding(d_model: int, max_len: int = 5000):
@@ -271,7 +270,6 @@ class TransformerBlock(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
-        decode: bool,
         rngs: nnx.Rngs,
         sow_weights: bool,
         sow_activations: bool,
@@ -283,7 +281,6 @@ class TransformerBlock(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
-        self.decode = decode
         self.sow_weights = sow_weights
         self.sow_activations = sow_activations
 
@@ -316,7 +313,7 @@ class TransformerBlock(nnx.Module):
                 self.use_flash_attention, is_causal=True
             ),
             rngs=rngs,
-            decode=self.decode,
+            decode=False,
         )
         self.spatial_attention = nnx.MultiHeadAttention(
             num_heads=self.num_heads,
@@ -329,7 +326,7 @@ class TransformerBlock(nnx.Module):
                 self.use_flash_attention, is_causal=True
             ),
             rngs=rngs,
-            decode=self.decode,
+            decode=False,
         )
         self.ffn_dense1 = nnx.Linear(
             in_features=self.model_dim,
@@ -401,7 +398,6 @@ class Transformer(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
-        decode: bool,
         rngs: nnx.Rngs,
         sow_logits: bool = False,
         sow_weights: bool = False,
@@ -457,7 +453,6 @@ class Transformer(nnx.Module):
                     param_dtype=self.param_dtype,
                     dtype=self.dtype,
                     use_flash_attention=self.use_flash_attention,
-                    decode=decode,
                     sow_weights=self.sow_weights,
                     sow_activations=self.sow_activations,
                     rngs=rngs,
@@ -497,21 +492,24 @@ class TimestepEmbedder(nnx.Module):
     Embeds scalar timesteps into vector representations.
     """
 
-    def __init__(self, hidden_size: int, rngs, bias: bool = True):
+    def __init__(
+        self, hidden_size: int, param_dtype: jnp.dtype, dtype: jnp.dtype, rngs: nnx.Rngs
+    ):
         self.hidden_size = hidden_size
-        self.bias = bias
+        self.param_dtype = param_dtype
+        self.dtype = dtype
         self.dense1 = nnx.Linear(
             self.hidden_size,
             self.hidden_size,
-            kernel_init=nnx.initializers.normal(0.02),
-            bias_init=nnx.initializers.normal(0.02),
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
             rngs=rngs,
         )
         self.dense2 = nnx.Linear(
             self.hidden_size,
             self.hidden_size,
-            kernel_init=nnx.initializers.normal(0.02),
-            bias_init=nnx.initializers.normal(0.02),
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
             rngs=rngs,
         )
 
@@ -558,10 +556,9 @@ class DiTBlock(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         rngs: nnx.Rngs,
-        use_flash_attention: bool = False,
-        decode: bool = False,
-        sow_weights: bool = False,
-        sow_activations: bool = False,
+        use_flash_attention: bool,
+        sow_weights: bool,
+        sow_activations: bool,
     ):
         self.model_dim = model_dim
         self.ffn_dim = ffn_dim
@@ -570,14 +567,13 @@ class DiTBlock(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
-        self.decode = decode
         self.sow_weights = sow_weights
         self.sow_activations = sow_activations
         self.condition_up = nnx.Linear(
             self.model_dim,
             9 * self.model_dim,
-            kernel_init=nnx.initializers.normal(0.02),
-            bias_init=nnx.initializers.normal(0.02),
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
             rngs=rngs,
         )
 
@@ -610,7 +606,7 @@ class DiTBlock(nnx.Module):
                 self.use_flash_attention, is_causal=True
             ),
             rngs=rngs,
-            decode=self.decode,
+            decode=False,
         )
         self.spatial_attention = nnx.MultiHeadAttention(
             num_heads=self.num_heads,
@@ -623,7 +619,7 @@ class DiTBlock(nnx.Module):
                 self.use_flash_attention, is_causal=False
             ),
             rngs=rngs,
-            decode=self.decode,
+            decode=False,
         )
         self.ffn_dense1 = nnx.Linear(
             in_features=self.model_dim,
@@ -640,67 +636,65 @@ class DiTBlock(nnx.Module):
             rngs=rngs,
         )
 
+    @nnx.remat
     def __call__(self, x_BTNM, c_BTM):
         B, T, N, M = x_BTNM.shape
 
-        # Calculate adaLn modulation parameters.
+        # --- Calculate adaLn modulation parameters ---
         c_BTM = nnx.silu(c_BTM)
         c = self.condition_up(c_BTM)  # (B, T, 6*M)
         (
-            shift_spatial,
-            scale_spatial,
-            gate_spatial,
-            shift_temporal,
-            scale_temporal,
-            gate_temporal,
-            shift_mlp,
-            scale_mlp,
-            gate_mlp,
+            shift_spatial_BTM,
+            scale_spatial_BTM,
+            gate_spatial_BTM,
+            shift_temporal_BTM,
+            scale_temporal_BTM,
+            gate_temporal_BTM,
+            shift_mlp_BTM,
+            scale_mlp_BTM,
+            gate_mlp_BTM,
         ) = jnp.split(c, 9, axis=-1)
 
-        # TODO find a better way to do this
-        """
-        We adapt adaLN conditioning to the spatio-temporal block. 
-
-        For spatial attention:
-        Each frame gets its noise level conditioning. Frame level conditioning is broadcasted to all patches in the frame.
-
-        For temporal attention:
-        Each patch needs to be aware of its noise level. Thus we replicate the frame level conditioning to all patches in the frame.
-        """
-        shift_spatial = einops.rearrange(shift_spatial, "b t m -> (b t) 1 m")
-        scale_spatial = einops.rearrange(scale_spatial, "b t m -> (b t) 1 m")
-        gate_spatial = einops.rearrange(gate_spatial, "b t m -> (b t) 1 m")
-        shift_temporal = einops.repeat(shift_temporal, "b t m -> (tile b) t m", tile=N)
-        scale_temporal = einops.repeat(scale_temporal, "b t m -> (tile b) t m", tile=N)
-        gate_temporal = einops.repeat(gate_temporal, "b t m -> (tile b) t m", tile=N)
-        shift_mlp = einops.rearrange(shift_mlp, "b t m -> b t 1 m")
-        scale_mlp = einops.rearrange(scale_mlp, "b t m -> b t 1 m")
-        gate_mlp = einops.rearrange(gate_mlp, "b t m -> b t 1 m")
+        # --- Prepare adaLN conditioning for spatio-temporal block ---
+        shift_spatial_F1M = einops.rearrange(shift_spatial_BTM, "b t m -> (b t) 1 m")
+        scale_spatial_F1M = einops.rearrange(scale_spatial_BTM, "b t m -> (b t) 1 m")
+        gate_spatial_F1M = einops.rearrange(gate_spatial_BTM, "b t m -> (b t) 1 m")
+        shift_temporal_PTM = einops.repeat(
+            shift_temporal_BTM, "b t m -> (tile b) t m", tile=N
+        )
+        scale_temporal_PTM = einops.repeat(
+            scale_temporal_BTM, "b t m -> (tile b) t m", tile=N
+        )
+        gate_temporal_PTM = einops.repeat(
+            gate_temporal_BTM, "b t m -> (tile b) t m", tile=N
+        )
+        shift_mlp_BT1M = einops.rearrange(shift_mlp_BTM, "b t m -> b t 1 m")
+        scale_mlp_BT1M = einops.rearrange(scale_mlp_BTM, "b t m -> b t 1 m")
+        gate_mlp_BT1M = einops.rearrange(gate_mlp_BTM, "b t m -> b t 1 m")
 
         # --- Spatial attention ---
         z_FNM = einops.rearrange(x_BTNM, "b t n m -> (b t) n m")
         z_FNM = self.spatial_norm(z_FNM)
-        z_FNM = modulate(z_FNM, shift_spatial, scale_spatial)
+        z_FNM = modulate(z_FNM, shift_spatial_F1M, scale_spatial_F1M)
         z_FNM = self.spatial_attention(z_FNM, sow_weights=self.sow_weights)
-        z_FNM = z_FNM * gate_spatial
+        z_FNM = z_FNM * gate_spatial_F1M
         z_BTNM = einops.rearrange(z_FNM, "(b t) n m -> b t n m", t=T)
         x_BTNM = x_BTNM + z_BTNM
         # --- Temporal attention ---
         z_PTM = einops.rearrange(x_BTNM, "b t n m -> (b n) t m")
         z_PTM = self.temporal_norm(z_PTM)
-        z_PTM = modulate(z_PTM, shift_temporal, scale_temporal)
+        z_PTM = modulate(z_PTM, shift_temporal_PTM, scale_temporal_PTM)
         z_PTM = self.temporal_attention(z_PTM, sow_weights=self.sow_weights)
-        z_PTM = z_PTM * gate_temporal
+        z_PTM = z_PTM * gate_temporal_PTM
         z_BTNM = einops.rearrange(z_PTM, "(b n) t m -> b t n m", n=N)
         x_BTNM = x_BTNM + z_BTNM
         # --- Feedforward ---
         z_BTNM = self.ffn_norm(x_BTNM)
-        z_BTNM = modulate(z_BTNM, shift_mlp, scale_mlp)
+        z_BTNM = modulate(z_BTNM, shift_mlp_BT1M, scale_mlp_BT1M)
         z_BTND = self.ffn_dense1(z_BTNM)
         z_BTND = jax.nn.gelu(z_BTND)
         z_BTNM = self.ffn_dense2(z_BTND)
-        z_BTNM = z_BTNM * gate_mlp
+        z_BTNM = z_BTNM * gate_mlp_BT1M
         x_BTNM = x_BTNM + z_BTNM
         if self.sow_activations:
             self.sow(nnx.Intermediate, "activations", x_BTNM)
@@ -722,8 +716,12 @@ class DiffusionTransformer(nnx.Module):
         dropout: float,
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
+        use_flash_attention: bool,
         rngs: nnx.Rngs,
-        decode: bool = False,
+        sow_weights: bool = False,
+        sow_activations: bool = False,
+        sow_logits: bool = False,
+        max_len: int = 5000,
     ):
         self.input_dim = input_dim
         self.model_dim = model_dim
@@ -734,8 +732,16 @@ class DiffusionTransformer(nnx.Module):
         self.dropout = dropout
         self.param_dtype = param_dtype
         self.dtype = dtype
-        self.pos_enc = _get_spatiotemporal_positional_encoding(self.model_dim)
-        self.blocks: nnx.List[DiTBlock] = nnx.List([])
+        self.use_flash_attention = use_flash_attention
+        self.sow_logits = sow_logits
+        self.sow_weights = sow_weights
+        self.sow_activations = sow_activations
+
+        self.pos_enc = _get_spatiotemporal_positional_encoding(
+            self.model_dim, max_len=max_len
+        )
+
+        self.blocks = nnx.List[DiTBlock]([])
         for _ in range(self.num_blocks):
             self.blocks.append(
                 DiTBlock(
@@ -745,59 +751,85 @@ class DiffusionTransformer(nnx.Module):
                     dropout=self.dropout,
                     param_dtype=self.param_dtype,
                     dtype=self.dtype,
+                    use_flash_attention=self.use_flash_attention,
+                    sow_weights=self.sow_weights,
+                    sow_activations=self.sow_activations,
                     rngs=rngs,
-                    decode=decode,
                 )
             )
-        self.time_step_embedder = TimestepEmbedder(self.model_dim, rngs=rngs)
-        self.step_size_embedder = TimestepEmbedder(self.model_dim, rngs=rngs)
+        self.time_step_embedder = TimestepEmbedder(
+            self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
 
         self.input_dense = nnx.Linear(
             self.input_dim,
             self.model_dim,
-            kernel_init=nnx.initializers.normal(0.02),
-            bias_init=nnx.initializers.normal(0.02),
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
             rngs=rngs,
         )
         self.condition_up = nnx.Linear(
             self.model_dim,
             2 * self.model_dim,
-            kernel_init=nnx.initializers.normal(0.02),
-            bias_init=nnx.initializers.normal(0.02),
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
             rngs=rngs,
         )
-        self.layer_norm = nnx.LayerNorm(
-            self.model_dim, use_bias=False, use_scale=False, rngs=rngs
+
+        self.input_norm1 = nnx.LayerNorm(
+            num_features=self.input_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.param_dtype,  # layer norm in full precision
+            rngs=rngs,
+        )
+        self.input_norm2 = nnx.LayerNorm(
+            num_features=self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.param_dtype,  # layer norm in full precision
+            rngs=rngs,
+        )
+        self.output_norm = nnx.LayerNorm(
+            num_features=self.model_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.param_dtype,  # layer norm in full precision
+            rngs=rngs,
         )
         self.output_dense = nnx.Linear(
             self.model_dim,
             self.out_dim,
-            kernel_init=nnx.initializers.normal(0.02),
-            bias_init=nnx.initializers.normal(0.02),
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
             rngs=rngs,
         )
 
     def __call__(
-        self, x_BTNL: jax.Array, t: jax.Array, dt: jax.Array, act_embed_BTM: jax.Array
+        self, x_BTNL: jax.Array, t: jax.Array, act_embed_BTM: jax.Array
     ) -> jax.Array:
-        B, T, N, L = x_BTNL.shape
+        x_BTNL = self.input_norm1(x_BTNL)
         x_BTNM = self.input_dense(x_BTNL)
+        x_BTNM = self.input_norm2(x_BTNM)
         x_BTNM = self.pos_enc(x_BTNM)
-        te = self.time_step_embedder(t)  # (B, T, hidden_size)
-        dte = self.step_size_embedder(dt)  # (B, T, hidden_size)
-        # TODO maybe prepending later?
-        c = te + dte + act_embed_BTM  # (B, T, hidden_size)
-        for block in self.blocks:
-            x_BTNM = block(x_BTNM, c)
+        t_BTM = self.time_step_embedder(t)
 
-        c = nnx.silu(c)
-        c = self.condition_up(c)
-        shift, scale = jnp.split(c, 2, axis=-1)
-        shift = einops.rearrange(shift, "b t m -> b t 1 m")
-        scale = einops.rearrange(scale, "b t m -> b t 1 m")
-        x_BTNM = self.layer_norm(x_BTNM)
-        x_BTNM = modulate(x_BTNM, shift, scale)
+        c_BTM = t_BTM + act_embed_BTM
+        for block in self.blocks:
+            x_BTNM = block(x_BTNM, c_BTM)
+
+        c_BTM = nnx.silu(c_BTM)
+        c_BTM = self.condition_up(c_BTM)
+        shift_BTM, scale_BTM = jnp.split(c_BTM, 2, axis=-1)
+        shift_BT1M = einops.rearrange(shift_BTM, "b t m -> b t 1 m")
+        scale_BT1M = einops.rearrange(scale_BTM, "b t m -> b t 1 m")
+        x_BTNM = self.output_norm(x_BTNM)
+        x_BTNM = modulate(x_BTNM, shift_BT1M, scale_BT1M)
         x_BTNL = self.output_dense(x_BTNM)
+
+        if self.sow_logits:
+            self.sow(nnx.Intermediate, "logits", x_BTNM)
+
         return x_BTNL
 
 
