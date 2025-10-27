@@ -140,6 +140,7 @@ def build_model(args: Args, rng: jax.Array) -> tuple[GenieMaskGIT, jax.Array]:
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
+        decode=False,
         rngs=rngs,
     )
     if args.use_gt_actions:
