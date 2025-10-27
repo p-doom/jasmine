@@ -702,14 +702,14 @@ class Genie(nnx.Module):
             noise_context_BSNL = jax.random.normal(
                 _rng_noise_context, (B, seq_len, N, L)
             )
-            currupted_latents_BSNL = (
+            corrupted_latents_BSNL = (
                 latents_BSNL * t_corrupt_context
                 + (1 - t_corrupt_context) * noise_context_BSNL
             )
             frame_mask = jnp.arange(seq_len) < frame_i
             frame_mask_1S11 = frame_mask.reshape(1, seq_len, 1, 1)
             corrupted_tok_latents_BSNL = jnp.where(
-                frame_mask_1S11, currupted_latents_BSNL, latents_BSNL
+                frame_mask_1S11, corrupted_latents_BSNL, latents_BSNL
             )
 
             # --- Predict transition ---

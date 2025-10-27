@@ -232,6 +232,7 @@ class DynamicsDiffusion(nnx.Module):
         self,
         batch: Dict[str, jax.Array],
     ) -> tuple[jax.Array, jax.Array]:
+        # Code adapted from https://github.com/kvfrans/shortcut-models/blob/main/baselines/targets_naive.py
         rng, _rng_time, _rng_noise = jax.random.split(batch["rng"], 3)
         latents_BTNL = batch["token_latents"]
         latent_actions_BTm11L = batch["latent_actions"]

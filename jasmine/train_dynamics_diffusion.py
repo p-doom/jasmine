@@ -1,5 +1,12 @@
-import os
+"""
+Parts of the diffusion training, sampling, and DiT implementation are adapted from:
+https://github.com/kvfrans/shortcut-models
 
+We extend their approach with the diffusion-forcing objective and integrate several
+elements inspired by Dreamer 4 (https://arxiv.org/abs/2509.24527).
+"""
+
+import os
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
 
@@ -343,11 +350,13 @@ def _calculate_step_metrics(
 
     loss = 0.0
     if "x_pred" in outputs.keys():
+        # x-pred instead of v-pred as per Dreamer 4 section 3.2
         mse_BTNL = (outputs["x_pred"] - outputs["x_gt"]) ** 2
         mse_BT = jnp.mean(mse_BTNL, axis=(2, 3))
         mse = jnp.mean(mse_BT)
         metrics["mse"] = mse
         if args.diffusion_use_ramp_weight:
+            # ramp weight as per Dreamer 4 section 3.2
             ramp_weight = 0.9 * outputs["signal_level"] + 0.1
             loss = jnp.mean(mse_BT * ramp_weight)
         else:
