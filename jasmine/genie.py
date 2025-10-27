@@ -648,6 +648,7 @@ class Genie(nnx.Module):
         pad_shape = (B, seq_len - T, N, L)
         pad = jax.random.normal(_rng_noise_full, pad_shape)
         token_latents_BSNL = jnp.concatenate([token_latents_BTNL, pad], axis=1)
+        dynamics_state = nnx.state(self.dynamics)
 
         if self.use_gt_actions:
             assert self.action_embed is not None
@@ -676,6 +677,23 @@ class Genie(nnx.Module):
             latents_BSNL, frame_i, rng = carry
             rng, _rng_noise_context = jax.random.split(rng)
 
+            # We need to reconstruct the submodule inside scan body to prevent trace context mismatches
+            dynamics_diffusion = DynamicsDiffusion(
+                model_dim=self.dyna_dim,
+                ffn_dim=self.dyna_ffn_dim,
+                latent_patch_dim=self.latent_patch_dim,
+                latent_action_dim=self.latent_action_dim,
+                num_blocks=self.dyna_num_blocks,
+                num_heads=self.dyna_num_heads,
+                denoise_steps=self.diffusion_denoise_steps,
+                dropout=self.dropout,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+                use_flash_attention=self.use_flash_attention,
+                rngs=nnx.Rngs(0),
+            )
+            nnx.update(dynamics_diffusion, dynamics_state)
+
             t = denoise_step / diffusion_steps
 
             # corrupt the context frames like in Dreamer 4 section 3.2
@@ -696,7 +714,7 @@ class Genie(nnx.Module):
             )
 
             # --- Predict transition ---
-            pred_latents_BSNL = self.dynamics.diffusion_transformer(
+            pred_latents_BSNL = dynamics_diffusion.diffusion_transformer(
                 corrupted_tok_latents_BSNL, t_vector, act_embed_BSM
             )
             latents_BSNL = latents_BSNL.at[:, frame_i].set(
