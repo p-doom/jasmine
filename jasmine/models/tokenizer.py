@@ -4,8 +4,8 @@ import flax.nnx as nnx
 import jax.numpy as jnp
 import jax
 
-from utils.preprocess import patchify, unpatchify
-from utils.nn import STTransformer, VectorQuantizer
+from jasmine.utils.preprocess import patchify, unpatchify
+from jasmine.utils.nn import STTransformer, VectorQuantizer
 
 
 class TokenizerVQVAE(nnx.Module):
@@ -176,7 +176,6 @@ class TokenizerMAE(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
-
         self.encoder = STTransformer(
             self.in_dim * self.patch_size**2,
             self.model_dim,
@@ -236,20 +235,22 @@ class TokenizerMAE(nnx.Module):
 
         # --- Randomly mask patches ---
         if training:
-            _rng_prob, *_rngs_mask = jax.random.split(rng, B + 1)
+            _rng_prob, _rng_mask = jax.random.split(jax.random.key(0), 2)
             mask_prob = jax.random.uniform(
-                _rng_prob, shape=(B,), minval=0, maxval=self.max_mask_ratio
+                _rng_prob, shape=(B * T,), minval=0, maxval=self.max_mask_ratio
             )
-            mask_BTN = jax.vmap(
-                lambda rng, prob: jax.random.bernoulli(rng, prob, (T, N)),
+            mask = jax.vmap(
+                lambda rng, prob: jax.random.bernoulli(rng, prob, (N,)),
                 in_axes=(0, 0),
-            )(jnp.asarray(_rngs_mask), mask_prob)
+            )(jax.random.split(_rng_mask, B * T), mask_prob)
+            mask_BTN = mask.reshape(B, T, N)
             patch_BTNP = jnp.where(
                 mask_BTN[..., None], self.mask_patch.value, patch_BTNP
             )
 
         # --- Encode ---
         z_BTNL = self.encoder(patch_BTNP)
+        # squeeze latents through tanh as descibed in Dreamer 4 section 3.1
         z_BTNL = nnx.tanh(z_BTNL)
         outputs = dict(z=z_BTNL)
         return outputs

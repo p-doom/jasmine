@@ -4,8 +4,8 @@ import jax
 import jax.numpy as jnp
 import flax.nnx as nnx
 
-from utils.preprocess import patchify, unpatchify
-from utils.nn import STTransformer, VectorQuantizer
+from jasmine.utils.preprocess import patchify, unpatchify
+from jasmine.utils.nn import STTransformer, VectorQuantizer
 
 
 class LatentActionModel(nnx.Module):

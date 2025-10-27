@@ -56,6 +56,7 @@ class STBlock(nnx.Module):
         rngs: nnx.Rngs,
         sow_weights: bool,
         sow_activations: bool,
+        decode: bool,
     ):
         self.dim = dim
         self.ffn_dim = ffn_dim
@@ -66,7 +67,7 @@ class STBlock(nnx.Module):
         self.use_flash_attention = use_flash_attention
         self.sow_weights = sow_weights
         self.sow_activations = sow_activations
-
+        self.decode = decode
         self.spatial_norm = nnx.LayerNorm(
             num_features=self.dim,
             param_dtype=self.param_dtype,
@@ -84,7 +85,7 @@ class STBlock(nnx.Module):
                 self.use_flash_attention, is_causal=False
             ),
             rngs=rngs,
-            decode=False,
+            decode=self.decode,
         )
 
         self.temporal_norm = nnx.LayerNorm(
@@ -104,7 +105,7 @@ class STBlock(nnx.Module):
                 self.use_flash_attention, is_causal=True
             ),
             rngs=rngs,
-            decode=False,
+            decode=self.decode,
         )
 
         self.ffn_norm = nnx.LayerNorm(
@@ -178,6 +179,7 @@ class STTransformer(nnx.Module):
         dtype: jnp.dtype,
         use_flash_attention: bool,
         rngs: nnx.Rngs,
+        decode: bool = False,
         sow_weights: bool = False,
         sow_activations: bool = False,
         sow_logits: bool = False,
@@ -196,7 +198,7 @@ class STTransformer(nnx.Module):
         self.sow_logits = sow_logits
         self.sow_weights = sow_weights
         self.sow_activations = sow_activations
-
+        self.decode = decode
         self.input_norm1 = nnx.LayerNorm(
             num_features=self.input_dim,
             param_dtype=self.param_dtype,
@@ -235,6 +237,7 @@ class STTransformer(nnx.Module):
                     rngs=rngs,
                     sow_weights=self.sow_weights,
                     sow_activations=self.sow_activations,
+                    decode=self.decode,
                 )
             )
 
@@ -273,6 +276,7 @@ class TransformerBlock(nnx.Module):
         rngs: nnx.Rngs,
         sow_weights: bool,
         sow_activations: bool,
+        decode: bool,
     ):
         self.model_dim = model_dim
         self.ffn_dim = ffn_dim
@@ -283,7 +287,7 @@ class TransformerBlock(nnx.Module):
         self.use_flash_attention = use_flash_attention
         self.sow_weights = sow_weights
         self.sow_activations = sow_activations
-
+        self.decode = decode
         self.temporal_norm = nnx.LayerNorm(
             num_features=self.model_dim,
             param_dtype=self.param_dtype,
@@ -313,7 +317,7 @@ class TransformerBlock(nnx.Module):
                 self.use_flash_attention, is_causal=True
             ),
             rngs=rngs,
-            decode=False,
+            decode=self.decode,
         )
         self.spatial_attention = nnx.MultiHeadAttention(
             num_heads=self.num_heads,
@@ -326,7 +330,7 @@ class TransformerBlock(nnx.Module):
                 self.use_flash_attention, is_causal=True
             ),
             rngs=rngs,
-            decode=False,
+            decode=self.decode,
         )
         self.ffn_dense1 = nnx.Linear(
             in_features=self.model_dim,
@@ -403,6 +407,7 @@ class Transformer(nnx.Module):
         sow_weights: bool = False,
         sow_activations: bool = False,
         max_len: int = 5000,
+        decode: bool = False,
     ):
         self.input_dim = input_dim
         self.model_dim = model_dim
@@ -417,7 +422,7 @@ class Transformer(nnx.Module):
         self.sow_logits = sow_logits
         self.sow_weights = sow_weights
         self.sow_activations = sow_activations
-
+        self.decode = decode
         self.input_norm1 = nnx.LayerNorm(
             num_features=self.input_dim,
             param_dtype=self.param_dtype,
@@ -455,6 +460,7 @@ class Transformer(nnx.Module):
                     use_flash_attention=self.use_flash_attention,
                     sow_weights=self.sow_weights,
                     sow_activations=self.sow_activations,
+                    decode=self.decode,
                     rngs=rngs,
                 )
             )
@@ -559,6 +565,7 @@ class DiTBlock(nnx.Module):
         use_flash_attention: bool,
         sow_weights: bool,
         sow_activations: bool,
+        decode: bool,
     ):
         self.model_dim = model_dim
         self.ffn_dim = ffn_dim
@@ -569,6 +576,7 @@ class DiTBlock(nnx.Module):
         self.use_flash_attention = use_flash_attention
         self.sow_weights = sow_weights
         self.sow_activations = sow_activations
+        self.decode = decode
         self.condition_up = nnx.Linear(
             self.model_dim,
             9 * self.model_dim,
@@ -606,7 +614,7 @@ class DiTBlock(nnx.Module):
                 self.use_flash_attention, is_causal=True
             ),
             rngs=rngs,
-            decode=False,
+            decode=self.decode,
         )
         self.spatial_attention = nnx.MultiHeadAttention(
             num_heads=self.num_heads,
@@ -619,7 +627,7 @@ class DiTBlock(nnx.Module):
                 self.use_flash_attention, is_causal=False
             ),
             rngs=rngs,
-            decode=False,
+            decode=self.decode,
         )
         self.ffn_dense1 = nnx.Linear(
             in_features=self.model_dim,
@@ -722,6 +730,7 @@ class DiffusionTransformer(nnx.Module):
         sow_activations: bool = False,
         sow_logits: bool = False,
         max_len: int = 5000,
+        decode: bool = False,
     ):
         self.input_dim = input_dim
         self.model_dim = model_dim
@@ -736,7 +745,7 @@ class DiffusionTransformer(nnx.Module):
         self.sow_logits = sow_logits
         self.sow_weights = sow_weights
         self.sow_activations = sow_activations
-
+        self.decode = decode
         self.pos_enc = _get_spatiotemporal_positional_encoding(
             self.model_dim, max_len=max_len
         )
@@ -754,6 +763,7 @@ class DiffusionTransformer(nnx.Module):
                     use_flash_attention=self.use_flash_attention,
                     sow_weights=self.sow_weights,
                     sow_activations=self.sow_activations,
+                    decode=self.decode,
                     rngs=rngs,
                 )
             )
