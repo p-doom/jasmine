@@ -538,7 +538,6 @@ class Genie(nnx.Module):
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
                 use_flash_attention=self.use_flash_attention,
-                decode=self.decode,
                 rngs=nnx.Rngs(0),
             )
             nnx.update(dynamics_causal, dynamics_state)
