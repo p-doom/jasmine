@@ -1,12 +1,13 @@
 import os
 
+
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.98")
 
 from dataclasses import dataclass, field
+import itertools
 from typing import cast, Optional
 
 import einops
-import itertools
 from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental.mesh_utils import create_device_mesh
 import optax
@@ -20,7 +21,7 @@ import wandb
 import grain
 import flax.nnx as nnx
 
-from models.tokenizer import TokenizerVQVAE, TokenizerMAE
+from genie import Genie, restore_genie_components
 from utils.dataloader import get_dataloader
 from utils.train_utils import (
     get_lr_schedule,
@@ -34,7 +35,7 @@ from utils.train_utils import (
 @dataclass
 class Args:
     # Experiment
-    num_steps: int = 300_000
+    num_steps: int = 200_000
     seed: int = 0
     seq_len: int = 16
     image_channels: int = 3
@@ -44,96 +45,115 @@ class Args:
     save_ckpt: bool = False
     restore_ckpt: bool = False
     # Optimization
-    vq_beta: float = 0.25
-    batch_size: int = 48
+    batch_size: int = 36
     init_lr: float = 0.0
-    max_lr: float = 3e-4
+    max_lr: float = 3e-5
     decay_end: float = 0.0
     wsd_decay_steps: int = (
-        30_000  # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
+        20_000  # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
     )
+    warmup_steps: int = 5000
     lr_schedule: str = "wsd"  # supported options: wsd, cos
-    warmup_steps: int = 10000
     # Tokenizer
-    model_dim: int = 512
-    ffn_dim: int = 2048
-    latent_dim: int = 32
-    num_latents: int = 1024
+    tokenizer_dim: int = 512
+    tokenizer_ffn_dim: int = 2048
+    latent_patch_dim: int = 32
+    num_patch_latents: int = 1024
     patch_size: int = 16
-    num_blocks: int = 4
-    num_heads: int = 8
+    tokenizer_num_blocks: int = 4
+    tokenizer_num_heads: int = 8
+    tokenizer_checkpoint: str = ""
+    # LAM
+    lam_dim: int = 512
+    lam_ffn_dim: int = 2048
+    latent_action_dim: int = 32
+    num_actions: int = 6
+    lam_patch_size: int = 16
+    lam_num_blocks: int = 4
+    lam_num_heads: int = 8
+    lam_checkpoint: str = ""
+    # Dynamics
+    dyna_dim: int = 512
+    dyna_ffn_dim: int = 2048
+    dyna_num_blocks: int = 6
+    dyna_num_heads: int = 8
     dropout: float = 0.0
-    codebook_dropout: float = 0.01
-    max_mask_ratio: float = 0.9
-    tokenizer_type: str = "vqvae"  # supported options: vqvae, mae
+    mask_limit: float = 0.5
+    z_loss_weight: float = 0.0
     param_dtype = jnp.float32
     dtype = jnp.bfloat16
     use_flash_attention: bool = True
+    use_gt_actions: bool = False
     # Logging
     log: bool = True
     entity: str = ""
     project: str = ""
-    name: str = "train_tokenizer"
-    tags: list[str] = field(default_factory=lambda: ["tokenizer"])
+    name: str = "train_dynamics_causal"
+    tags: list[str] = field(default_factory=lambda: ["dynamics", "causal"])
     log_interval: int = 50
     log_image_interval: int = 1000
     ckpt_dir: str = ""
-    log_checkpoint_interval: int = 1000
+    log_checkpoint_interval: int = 5000
     log_checkpoint_keep_period: int = 20_000
     log_gradients: bool = False
     val_data_dir: str = ""
     val_interval: int = 20_000
     val_steps: int = 50
+    eval_full_frame: bool = True
+    val_temperature: float = 1
+    val_sample_argmax: bool = False
     wandb_id: str = ""
 
 
-def build_model(
-    args: Args, rng: jax.Array
-) -> tuple[TokenizerVQVAE | TokenizerMAE, jax.Array]:
+def build_model(args: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
     rng, _rng = jax.random.split(rng)
     rngs = nnx.Rngs(_rng)
-    if args.tokenizer_type == "vqvae":
-        tokenizer = TokenizerVQVAE(
-            in_dim=args.image_channels,
-            model_dim=args.model_dim,
-            ffn_dim=args.ffn_dim,
-            latent_dim=args.latent_dim,
-            num_latents=args.num_latents,
-            patch_size=args.patch_size,
-            num_blocks=args.num_blocks,
-            num_heads=args.num_heads,
-            dropout=args.dropout,
-            codebook_dropout=args.codebook_dropout,
-            param_dtype=args.param_dtype,
-            dtype=args.dtype,
-            use_flash_attention=args.use_flash_attention,
-            rngs=rngs,
-        )
-    elif args.tokenizer_type == "mae":
-        tokenizer = TokenizerMAE(
-            in_dim=args.image_channels,
-            model_dim=args.model_dim,
-            ffn_dim=args.ffn_dim,
-            latent_dim=args.latent_dim,
-            num_latents=args.num_latents,
-            patch_size=args.patch_size,
-            num_blocks=args.num_blocks,
-            num_heads=args.num_heads,
-            dropout=args.dropout,
-            max_mask_ratio=args.max_mask_ratio,
-            param_dtype=args.param_dtype,
-            dtype=args.dtype,
-            use_flash_attention=args.use_flash_attention,
-            rngs=rngs,
-        )
+    genie = Genie(
+        # Tokenizer
+        in_dim=args.image_channels,
+        tokenizer_dim=args.tokenizer_dim,
+        tokenizer_ffn_dim=args.tokenizer_ffn_dim,
+        latent_patch_dim=args.latent_patch_dim,
+        num_patch_latents=args.num_patch_latents,
+        patch_size=args.patch_size,
+        tokenizer_num_blocks=args.tokenizer_num_blocks,
+        tokenizer_num_heads=args.tokenizer_num_heads,
+        tokenizer_type="vqvae",
+        # LAM
+        lam_dim=args.lam_dim,
+        lam_ffn_dim=args.lam_ffn_dim,
+        latent_action_dim=args.latent_action_dim,
+        num_actions=args.num_actions,
+        lam_patch_size=args.lam_patch_size,
+        lam_num_blocks=args.lam_num_blocks,
+        lam_num_heads=args.lam_num_heads,
+        lam_co_train=not args.lam_checkpoint,
+        use_gt_actions=args.use_gt_actions,
+        # Dynamics
+        dyna_type="causal",
+        dyna_dim=args.dyna_dim,
+        dyna_ffn_dim=args.dyna_ffn_dim,
+        dyna_num_blocks=args.dyna_num_blocks,
+        dyna_num_heads=args.dyna_num_heads,
+        dropout=args.dropout,
+        mask_limit=args.mask_limit,
+        param_dtype=args.param_dtype,
+        dtype=args.dtype,
+        use_flash_attention=args.use_flash_attention,
+        decode=False,
+        rngs=rngs,
+    )
+    if args.use_gt_actions:
+        assert (
+            not args.lam_checkpoint
+        ), "Cannot use LAM when using ground-truth actions."
     else:
-        raise ValueError(f"Invalid tokenizer type: {args.tokenizer_type}")
-    return tokenizer, rng
+        assert genie.lam is not None
+        del genie.lam.decoder
+    return genie, rng
 
 
-def build_optimizer(
-    model: TokenizerVQVAE | TokenizerMAE, args: Args
-) -> nnx.ModelAndOptimizer:
+def build_optimizer(genie: Genie, args: Args) -> nnx.ModelAndOptimizer:
     lr_schedule = get_lr_schedule(
         args.lr_schedule,
         args.init_lr,
@@ -150,18 +170,19 @@ def build_optimizer(
         weight_decay=1e-4,
         mu_dtype=args.param_dtype,  # moments in full precision
     )
-    optimizer = nnx.ModelAndOptimizer(model, tx)
+    optimizer = nnx.ModelAndOptimizer(genie, tx)
     return optimizer
 
 
 def build_mesh_and_sharding(
     num_devices: int,
-) -> tuple[Mesh, NamedSharding, NamedSharding]:
+) -> tuple[Mesh, NamedSharding, NamedSharding, NamedSharding]:
     device_mesh_arr = create_device_mesh((num_devices,))
     mesh = Mesh(devices=device_mesh_arr, axis_names=("data",))
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
     videos_sharding = NamedSharding(mesh, PartitionSpec("data", None, None, None, None))
-    return mesh, replicated_sharding, videos_sharding
+    actions_sharding = NamedSharding(mesh, PartitionSpec("data", None))
+    return mesh, replicated_sharding, videos_sharding, actions_sharding
 
 
 def shard_optimizer_states(
@@ -253,15 +274,21 @@ def build_checkpoint_manager(args: Args) -> Optional[ocp.CheckpointManager]:
         return None
 
 
-def restore_checkpoint_if_needed(
+def restore_or_initialize_components(
     args: Args,
     checkpoint_manager: Optional[ocp.CheckpointManager],
     optimizer: nnx.ModelAndOptimizer,
     train_iterator: grain.DataLoaderIterator,
+    rng: jax.Array,
+    replicated_sharding: NamedSharding,
     val_iterator: Optional[grain.DataLoaderIterator],
     restore_step: Optional[int] = None,
 ) -> tuple[
-    int, nnx.ModelAndOptimizer, grain.DataLoaderIterator, grain.DataLoaderIterator
+    int,
+    nnx.ModelAndOptimizer,
+    grain.DataLoaderIterator,
+    grain.DataLoaderIterator,
+    jax.Array,
 ]:
     step = 0
     if checkpoint_manager and restore_step is None:
@@ -281,15 +308,99 @@ def restore_checkpoint_if_needed(
                 model_state=ocp.args.PyTreeRestore(abstract_optimizer_state),  # type: ignore
                 train_dataloader_state=grain.checkpoint.CheckpointRestore(train_iterator),  # type: ignore
             )
-        restored = checkpoint_manager.restore(restore_step, args=restore_args)
+        restored = checkpoint_manager.restore(
+            checkpoint_manager.latest_step(), args=restore_args
+        )
         restored_optimizer_state = restored["model_state"]
         nnx.update(optimizer, restored_optimizer_state)
         train_iterator = restored["train_dataloader_state"]
         if val_iterator:
             val_iterator = restored["val_dataloader_state"]
-        step = restore_step or 0
+        step = checkpoint_manager.latest_step() or 0
         print(f"Restored dataloader and model state from step {step}")
-    return step, optimizer, train_iterator, val_iterator
+    else:
+        # Restore from pre-trained tokenizer (and LAM)
+        rng, _rng = jax.random.split(rng)
+        optimizer = restore_genie_components(optimizer, replicated_sharding, _rng, args)
+    return step, optimizer, train_iterator, val_iterator, rng
+
+
+def _calculate_top_k_accuracy(
+    token_logits_BTNV: jax.Array,
+    video_tokens_BTN: jax.Array,
+    mask_BTN: jax.Array,
+    k: int,
+) -> jax.Array:
+    _, topk_indices_BTNK = jax.lax.top_k(token_logits_BTNV, k)
+    topk_correct = jnp.any(
+        topk_indices_BTNK == video_tokens_BTN[..., jnp.newaxis], axis=-1
+    )
+    topk_acc = (mask_BTN * topk_correct).sum() / mask_BTN.sum()
+    return topk_acc
+
+
+def _calculate_step_metrics(
+    outputs: dict[str, jax.Array],
+    gt: jax.Array,
+    num_actions: int,
+    num_patch_latents: int,
+) -> tuple[jax.Array, dict]:
+    mask_BTN = outputs["mask"]
+    outputs["token_logits"] = outputs["token_logits"].astype(jnp.float32)
+    ce_loss = optax.softmax_cross_entropy_with_integer_labels(
+        outputs["token_logits"], outputs["video_tokens"]
+    )
+    ce_loss = (mask_BTN * ce_loss).sum() / mask_BTN.sum()
+    z_val = jax.nn.logsumexp(outputs["token_logits"], axis=-1)
+    z_loss_metric = (mask_BTN * (z_val**2)).sum() / mask_BTN.sum()
+
+    masked_token_top_1_acc = _calculate_top_k_accuracy(
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 1
+    )
+    masked_token_top_2_acc = _calculate_top_k_accuracy(
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 2
+    )
+    masked_token_top_5_acc = _calculate_top_k_accuracy(
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 5
+    )
+    masked_token_top_16_acc = _calculate_top_k_accuracy(
+        outputs["token_logits"], outputs["video_tokens"], mask_BTN, 16
+    )
+
+    select_probs = jax.nn.softmax(outputs["token_logits"])
+    gt_val = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
+    recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
+    psnr = jnp.asarray(pix.psnr(gt_val, recon)).mean()
+    ssim = jnp.asarray(pix.ssim(gt_val, recon)).mean()
+    _, index_counts_tokenizer = jnp.unique_counts(
+        jnp.ravel(outputs["video_tokens"]),
+        size=num_patch_latents,
+        fill_value=0,
+    )
+    codebook_usage_tokenizer = (index_counts_tokenizer != 0).mean()
+    metrics = dict(
+        cross_entropy_loss=ce_loss,
+        masked_token_top1_accuracy=masked_token_top_1_acc,
+        masked_token_top2_accuracy=masked_token_top_2_acc,
+        masked_token_top5_accuracy=masked_token_top_5_acc,
+        masked_token_top16_accuracy=masked_token_top_16_acc,
+        select_logit=outputs["token_logits"].max(-1).mean(),
+        select_p=select_probs.max(-1).mean(),
+        entropy=jax.scipy.special.entr(select_probs).sum(-1).mean(),
+        z_loss=z_loss_metric,
+        psnr=psnr,
+        ssim=ssim,
+        codebook_usage_tokenizer=codebook_usage_tokenizer,
+    )
+    if "lam_indices" in outputs.keys():
+        _, index_counts_lam = jnp.unique_counts(
+            jnp.ravel(outputs["lam_indices"]),
+            size=num_actions,
+            fill_value=0,
+        )
+        codebook_usage_lam = (index_counts_lam != 0).mean()
+        metrics["codebook_usage_lam"] = codebook_usage_lam
+    return ce_loss, metrics
 
 
 def main(args: Args) -> None:
@@ -308,9 +419,8 @@ def main(args: Args) -> None:
     rng = jax.random.key(args.seed)
 
     # --- Initialize model ---
-    tokenizer, rng = build_model(args, rng)
-
-    _, params, _ = nnx.split(tokenizer, nnx.Param, ...)
+    genie, rng = build_model(args, rng)
+    _, params, _ = nnx.split(genie, nnx.Param, ...)
     param_counts = count_parameters_by_component(params)
 
     if args.log and jax.process_index() == 0:
@@ -338,11 +448,13 @@ def main(args: Args) -> None:
     print(param_counts)
 
     # --- Initialize optimizer ---
-    optimizer = build_optimizer(tokenizer, args)
-    del tokenizer
+    optimizer = build_optimizer(genie, args)
+    del genie
 
     # FIXME: switch to create_hybrid_device_mesh for runs spanning multiple nodes
-    _, replicated_sharding, videos_sharding = build_mesh_and_sharding(num_devices)
+    _, replicated_sharding, videos_sharding, actions_sharding = build_mesh_and_sharding(
+        num_devices
+    )
 
     shard_optimizer_states(optimizer, replicated_sharding)
 
@@ -356,100 +468,123 @@ def main(args: Args) -> None:
         val_iterator = build_dataloader(args, args.val_data_dir)
 
     # --- Restore checkpoint ---
-    step, optimizer, train_iterator, val_iterator = restore_checkpoint_if_needed(
-        args, checkpoint_manager, optimizer, train_iterator, val_iterator
+    step, optimizer, train_iterator, val_iterator, rng = (
+        restore_or_initialize_components(
+            args,
+            checkpoint_manager,
+            optimizer,
+            train_iterator,
+            rng,
+            replicated_sharding,
+            val_iterator,
+        )
     )
 
     # --- Define loss and train step (close over args) ---
-    def tokenizer_loss_fn(
-        model: TokenizerVQVAE | TokenizerMAE, inputs: dict, training: bool = False
+    def dynamics_loss_fn(
+        model: Genie,
+        inputs: dict,
     ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
         gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
         inputs["videos"] = gt.astype(args.dtype)
-        outputs = model(inputs, training=training)
-        outputs["recon"] = outputs["recon"].astype(jnp.float32)
-        mse = jnp.square(gt - outputs["recon"]).mean()
-
-        gt_clipped = gt.clip(0, 1).reshape(-1, *gt.shape[2:])
-        recon = outputs["recon"].clip(0, 1).reshape(-1, *outputs["recon"].shape[2:])
-        psnr = jnp.asarray(pix.psnr(gt_clipped, recon)).mean()
-        ssim = jnp.asarray(pix.ssim(gt_clipped, recon)).mean()
-
-        metrics = dict(
-            mse=mse,
-            psnr=psnr,
-            ssim=ssim,
+        outputs = model(inputs)
+        ce_loss, metrics = _calculate_step_metrics(
+            outputs, gt, args.num_actions, args.num_patch_latents
         )
-
-        if args.tokenizer_type == "vqvae":
-            q_loss = jnp.square(
-                jax.lax.stop_gradient(outputs["emb"]) - outputs["z"]
-            ).mean()
-            commitment_loss = jnp.square(
-                outputs["emb"] - jax.lax.stop_gradient(outputs["z"])
-            ).mean()
-            loss = mse + q_loss + args.vq_beta * commitment_loss
-            _, index_counts = jnp.unique_counts(
-                jnp.ravel(outputs["indices"]), size=args.num_latents, fill_value=0
-            )
-            codebook_usage = (index_counts != 0).mean()
-            metrics["loss"] = loss
-            metrics["q_loss"] = q_loss
-            metrics["commitment_loss"] = commitment_loss
-            metrics["codebook_usage"] = codebook_usage
-        else:
-            loss = mse
-            metrics["loss"] = loss
-
-        return loss, (outputs["recon"], metrics)
+        z_loss = metrics["z_loss"]
+        total_loss = ce_loss + args.z_loss_weight * z_loss
+        metrics["total_loss"] = total_loss
+        return total_loss, (outputs["recon"], metrics)
 
     @nnx.jit(donate_argnums=0)
     def train_step(
         optimizer: nnx.ModelAndOptimizer, inputs: dict
     ) -> tuple[jax.Array, jax.Array, dict]:
-        def loss_fn(
-            model: TokenizerVQVAE | TokenizerMAE,
-        ) -> tuple[jax.Array, tuple[jax.Array, dict]]:
+        def loss_fn(model: Genie) -> tuple[jax.Array, tuple[jax.Array, dict]]:
             model.train()
-            return tokenizer_loss_fn(model, inputs, training=True)
+            return dynamics_loss_fn(model, inputs)
 
         (loss, (recon, metrics)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(
             optimizer.model
         )
         optimizer.update(grads)
         if args.log_gradients:
-            metrics["encoder_gradients_std/"] = jax.tree.map(
-                lambda x: x.std(), grads["params"]["encoder"]
-            )
-            if args.tokenizer_type == "vqvae":
-                metrics["vq_gradients_std/"] = jax.tree.map(
-                    lambda x: x.std(), grads["params"]["vq"]
-                )
-            metrics["decoder_gradients_std/"] = jax.tree.map(
-                lambda x: x.std(), grads["params"]["decoder"]
+            metrics["gradients_std/"] = jax.tree.map(
+                lambda x: x.std(), grads["params"]["dynamics"]
             )
         return loss, recon, metrics
 
     @nnx.jit
-    def val_step(
-        tokenizer: TokenizerVQVAE | TokenizerMAE, inputs: dict
-    ) -> tuple[jax.Array, jax.Array, dict]:
-        tokenizer.eval()
-        (loss, (recon, metrics)) = tokenizer_loss_fn(tokenizer, inputs, training=False)
-        return loss, recon, metrics
+    def val_step(genie: Genie, inputs: dict) -> dict:
+        """Evaluate model and compute metrics"""
+        genie.eval()
+        gt = jnp.asarray(inputs["videos"], dtype=jnp.float32) / 255.0
+        (loss, (recon, metrics)) = dynamics_loss_fn(genie, inputs)
+        val_output = {"loss": loss, "recon": recon, "metrics": metrics}
 
-    def calculate_validation_metrics(val_dataloader, tokenizer, rng):
+        # --- Evaluate full frame prediction (sampling) ---
+        if args.eval_full_frame:
+            inputs["videos"] = gt.astype(args.dtype)
+            tokenizer_outputs = genie.tokenizer.vq_encode(
+                inputs["videos"], training=False
+            )
+            tokens_full_frame = tokenizer_outputs["indices"]
+            lam_indices_E = None
+            if not args.use_gt_actions:
+                lam_indices_E = genie.vq_encode(inputs, training=False)
+                inputs["latent_actions"] = lam_indices_E
+            inputs["videos"] = inputs["videos"][
+                :, :-1
+            ]  # remove last frame for generation
+            recon_full_frame, logits_full_frame = genie.sample_causal(
+                inputs,
+                args.seq_len,
+                args.val_temperature,
+                args.val_sample_argmax,
+            )
+            # Calculate metrics for the last frame only
+            step_outputs = {
+                "recon": recon_full_frame[:, -1],
+                "token_logits": logits_full_frame[:, -1],
+                "video_tokens": tokens_full_frame[:, -1],
+                "mask": jnp.ones_like(tokens_full_frame[:, -1]),
+            }
+            if lam_indices_E is not None:
+                lam_indices_B = lam_indices_E.reshape((-1, args.seq_len - 1))[:, -1]
+                step_outputs["lam_indices"] = lam_indices_B
+
+            loss_full_frame, metrics_full_frame = _calculate_step_metrics(
+                step_outputs, gt[:, -1], args.num_actions, args.num_patch_latents
+            )
+            val_output.update(
+                {
+                    "loss_full_frame": loss_full_frame,
+                    "recon_full_frame": recon_full_frame,
+                    "metrics_full_frame": metrics_full_frame,
+                }
+            )
+        return val_output
+
+    def calculate_validation_metrics(val_dataloader, genie, rng):
         step = 0
         loss_per_step = []
         metrics_per_step = []
+        loss_full_frame_per_step = []
+        metrics_full_frame_per_step = []
         batch = None
         recon = None
+        recon_full_frame = None
         for batch in val_dataloader:
             rng, _rng_mask = jax.random.split(rng, 2)
             batch["rng"] = _rng_mask
-            loss, recon, metrics = val_step(tokenizer, batch)
-            loss_per_step.append(loss)
-            metrics_per_step.append(metrics)
+            val_outputs = val_step(genie, batch)
+            loss_per_step.append(val_outputs["loss"])
+            metrics_per_step.append(val_outputs["metrics"])
+            recon = val_outputs["recon"]
+            if args.eval_full_frame:
+                loss_full_frame_per_step.append(val_outputs["loss_full_frame"])
+                metrics_full_frame_per_step.append(val_outputs["metrics_full_frame"])
+                recon_full_frame = val_outputs["recon_full_frame"]
             step += 1
             if step > args.val_steps:
                 break
@@ -459,19 +594,34 @@ def main(args: Args) -> None:
                 f"Warning: Your validation dataset is too small to make val_steps many steps. Made {step} steps, expected {args.val_steps}"
             )
 
-        val_loss = np.mean(loss_per_step)
         val_metrics = {
             f"val_{key}": np.mean([float(m[key]) for m in metrics_per_step])
             for key in metrics_per_step[0].keys()
         }
-        val_metrics["val_loss"] = val_loss
-        return val_metrics, batch, recon
+        val_metrics["val_loss"] = np.mean(loss_per_step)
+        if args.eval_full_frame:
+            val_metrics_full_frame = {
+                f"val_full_frame_{key}": np.mean(
+                    [float(m[key]) for m in metrics_full_frame_per_step]
+                )
+                for key in metrics_full_frame_per_step[0].keys()
+            }
+            val_metrics.update(val_metrics_full_frame)
+            val_metrics["val_full_frame_loss"] = np.mean(loss_full_frame_per_step)
+        return val_metrics, batch, recon, recon_full_frame
 
     # --- TRAIN LOOP ---
     dataloader_train = (
         {
             "videos": jax.make_array_from_process_local_data(
-                videos_sharding, elem["videos"]
+                videos_sharding, local_data=elem["videos"]
+            ),
+            "actions": (
+                jax.make_array_from_process_local_data(
+                    actions_sharding, elem["actions"]
+                )
+                if args.use_gt_actions
+                else None
             ),
         }
         for elem in train_iterator
@@ -483,13 +633,19 @@ def main(args: Args) -> None:
                 "videos": jax.make_array_from_process_local_data(
                     videos_sharding, elem["videos"]
                 ),
+                "actions": (
+                    jax.make_array_from_process_local_data(
+                        actions_sharding, elem["actions"]
+                    )
+                    if args.use_gt_actions
+                    else None
+                ),
             }
             for elem in val_iterator
         )
     if jax.process_index() == 0:
-        rng, _rng = jax.random.split(rng)
         first_batch = next(dataloader_train)
-        first_batch["rng"] = _rng
+        first_batch["rng"] = rng  # type: ignore
         compiled = train_step.lower(optimizer, first_batch).compile()
         print_compiled_memory_stats(compiled.memory_analysis())
         print_compiled_cost_analysis(compiled.cost_analysis())
@@ -500,8 +656,8 @@ def main(args: Args) -> None:
     while step < args.num_steps:
         for batch in dataloader_train:
             # --- Train step ---
-            rng, _rng = jax.random.split(rng)
-            batch["rng"] = _rng
+            rng, _rng_mask = jax.random.split(rng, 2)
+            batch["rng"] = _rng_mask
             loss, recon, metrics = train_step(optimizer, batch)
             if step == first_step:
                 print_mem_stats("After params initialized")
@@ -510,16 +666,19 @@ def main(args: Args) -> None:
             # --- Validation loss ---
             val_results = {}
             if dataloader_val and step % args.val_interval == 0:
-                print("Calculating validation metrics...")
                 rng, _rng_mask_val = jax.random.split(rng, 2)
-                val_metrics, val_gt_batch, val_recon = calculate_validation_metrics(
-                    dataloader_val, optimizer.model, _rng_mask_val
+                print("Calculating validation metrics...")
+                val_metrics, val_gt_batch, val_recon, val_recon_full_frame = (
+                    calculate_validation_metrics(
+                        dataloader_val, optimizer.model, _rng_mask_val
+                    )
                 )
                 print(f"Step {step}, validation loss: {val_metrics['val_loss']}")
                 val_results = {
                     "metrics": val_metrics,
                     "gt_batch": val_gt_batch,
                     "recon": val_recon,
+                    "full_frame": val_recon_full_frame,
                 }
 
             # --- Logging ---
@@ -536,7 +695,7 @@ def main(args: Args) -> None:
                     comparison_seq = einops.rearrange(
                         comparison_seq * 255, "t h w c -> h (t w) c"
                     )
-                    if val_results and step % args.val_interval == 0:
+                    if val_results:
                         val_results["gt_seq_val"] = (
                             val_results["gt_batch"]["videos"][0].astype(jnp.float32)
                             / 255.0
@@ -544,33 +703,57 @@ def main(args: Args) -> None:
                         val_results["recon_seq_val"] = val_results["recon"][0].clip(
                             0, 1
                         )
-                        val_results["val_comparison_seq"] = jnp.concatenate(
+                        val_comparison_seq = jnp.concatenate(
                             (val_results["gt_seq_val"], val_results["recon_seq_val"]),
                             axis=1,
                         )
                         val_results["val_comparison_seq"] = einops.rearrange(
-                            val_results["val_comparison_seq"] * 255,
-                            "t h w c -> h (t w) c",
+                            val_comparison_seq * 255, "t h w c -> h (t w) c"
                         )
+                        if args.eval_full_frame:
+                            val_results["full_frame_seq_val"] = val_results[
+                                "full_frame"
+                            ][0].clip(0, 1)
+                            val_results["val_full_frame_comparison_seq"] = (
+                                jnp.concatenate(
+                                    (
+                                        val_results["gt_seq_val"],
+                                        val_results["full_frame_seq_val"],
+                                    ),
+                                    axis=1,
+                                )
+                            )
+                            val_results["val_full_frame_comparison_seq"] = (
+                                einops.rearrange(
+                                    val_results["val_full_frame_comparison_seq"] * 255,
+                                    "t h w c -> h (t w) c",
+                                )
+                            )
                     # NOTE: Process-dependent control flow deliberately happens
                     # after indexing operation since it must not contain code
                     # sections that lead to cross-accelerator communication.
                     if jax.process_index() == 0:
                         log_images = dict(
-                            image=wandb.Image(np.asarray(gt_seq[0])),
-                            recon=wandb.Image(np.asarray(recon_seq[0])),
+                            image=wandb.Image(np.asarray(gt_seq[args.seq_len - 1])),
+                            recon=wandb.Image(np.asarray(recon_seq[args.seq_len - 1])),
                             true_vs_recon=wandb.Image(
                                 np.asarray(comparison_seq.astype(np.uint8))
                             ),
                         )
-                        if val_results and step % args.val_interval == 0:
+                        if val_results:
                             log_images.update(
                                 dict(
                                     val_image=wandb.Image(
-                                        np.asarray(val_results["gt_seq_val"][0])
+                                        np.asarray(
+                                            val_results["gt_seq_val"][args.seq_len - 1]
+                                        )
                                     ),
                                     val_recon=wandb.Image(
-                                        np.asarray(val_results["recon_seq_val"][0])
+                                        np.asarray(
+                                            val_results["recon_seq_val"][
+                                                args.seq_len - 1
+                                            ]
+                                        )
                                     ),
                                     val_true_vs_recon=wandb.Image(
                                         np.asarray(
@@ -581,6 +764,25 @@ def main(args: Args) -> None:
                                     ),
                                 )
                             )
+                            if args.eval_full_frame:
+                                log_images.update(
+                                    dict(
+                                        val_full_frame=wandb.Image(
+                                            np.asarray(
+                                                val_results["full_frame_seq_val"][
+                                                    args.seq_len - 1
+                                                ]
+                                            )
+                                        ),
+                                        val_true_vs_full_frame=wandb.Image(
+                                            np.asarray(
+                                                val_results[
+                                                    "val_full_frame_comparison_seq"
+                                                ].astype(np.uint8)
+                                            )
+                                        ),
+                                    )
+                                )
                         wandb.log(log_images)
             # --- Checkpointing ---
             if args.save_ckpt and step % args.log_checkpoint_interval == 0:
