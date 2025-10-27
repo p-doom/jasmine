@@ -1,5 +1,5 @@
 import math
-from typing import Tuple, Callable, List
+from typing import Tuple, Callable
 
 from flax import nnx
 import jax
@@ -447,7 +447,7 @@ class Transformer(nnx.Module):
             self.model_dim, max_len=max_len
         )
 
-        self.blocks: List[TransformerBlock] = []
+        self.blocks = nnx.List[TransformerBlock]([])
         for _ in range(self.num_blocks):
             self.blocks.append(
                 TransformerBlock(
