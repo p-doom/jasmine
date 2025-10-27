@@ -5,7 +5,6 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 import einops
-from utils.preprocess import patchify, unpatchify
 
 
 def _get_spatiotemporal_positional_encoding(d_model: int, max_len: int = 5000):
@@ -271,7 +270,6 @@ class TransformerBlock(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
-        decode: bool,
         rngs: nnx.Rngs,
         sow_weights: bool,
         sow_activations: bool,
@@ -283,7 +281,6 @@ class TransformerBlock(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
-        self.decode = decode
         self.sow_weights = sow_weights
         self.sow_activations = sow_activations
 
@@ -316,7 +313,7 @@ class TransformerBlock(nnx.Module):
                 self.use_flash_attention, is_causal=True
             ),
             rngs=rngs,
-            decode=self.decode,
+            decode=False,
         )
         self.spatial_attention = nnx.MultiHeadAttention(
             num_heads=self.num_heads,
@@ -329,7 +326,7 @@ class TransformerBlock(nnx.Module):
                 self.use_flash_attention, is_causal=True
             ),
             rngs=rngs,
-            decode=self.decode,
+            decode=False,
         )
         self.ffn_dense1 = nnx.Linear(
             in_features=self.model_dim,
@@ -401,7 +398,6 @@ class Transformer(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
-        decode: bool,
         rngs: nnx.Rngs,
         sow_logits: bool = False,
         sow_weights: bool = False,
@@ -457,7 +453,6 @@ class Transformer(nnx.Module):
                     param_dtype=self.param_dtype,
                     dtype=self.dtype,
                     use_flash_attention=self.use_flash_attention,
-                    decode=decode,
                     sow_weights=self.sow_weights,
                     sow_activations=self.sow_activations,
                     rngs=rngs,
@@ -757,6 +752,8 @@ class DiffusionTransformer(nnx.Module):
                     param_dtype=self.param_dtype,
                     dtype=self.dtype,
                     use_flash_attention=self.use_flash_attention,
+                    sow_weights=self.sow_weights,
+                    sow_activations=self.sow_activations,
                     rngs=rngs,
                 )
             )

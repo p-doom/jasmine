@@ -138,7 +138,6 @@ def build_model(args: Args, rng: jax.Array) -> tuple[Genie, jax.Array]:
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
-        decode=False,
         rngs=rngs,
     )
     if args.use_gt_actions:
@@ -319,7 +318,9 @@ def restore_or_initialize_components(
     else:
         # Restore from pre-trained tokenizer (and LAM)
         rng, _rng = jax.random.split(rng)
-        optimizer = restore_genie_components(optimizer, replicated_sharding, _rng, args)
+        optimizer = restore_genie_components(
+            optimizer, replicated_sharding, _rng, "vqvae", args
+        )
     return step, optimizer, train_iterator, val_iterator, rng
 
 

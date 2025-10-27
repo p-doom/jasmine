@@ -42,7 +42,6 @@ class Genie(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
-        decode: bool,
         rngs: nnx.Rngs,
         dropout: float = 0.0,
         mask_limit: float = 0.0,
@@ -79,7 +78,6 @@ class Genie(nnx.Module):
         self.dropout = dropout
         self.mask_limit = mask_limit
         self.diffusion_denoise_steps = diffusion_denoise_steps
-        self.decode = decode
         self.tokenizer_type = tokenizer_type
         if self.tokenizer_type == "vqvae":
             self.tokenizer = TokenizerVQVAE(
@@ -167,7 +165,6 @@ class Genie(nnx.Module):
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
                 use_flash_attention=self.use_flash_attention,
-                decode=decode,
                 rngs=rngs,
             )
         elif self.dyna_type == "diffusion":
@@ -175,11 +172,9 @@ class Genie(nnx.Module):
                 self.diffusion_denoise_steps > 0
             ), "diffusion_denoise_steps must be greater than 0 when using the diffusion backend"
             self.dynamics = DynamicsDiffusion(
-                input_dim=self.latent_patch_dim,
                 model_dim=self.dyna_dim,
                 ffn_dim=self.dyna_ffn_dim,
-                out_dim=self.latent_patch_dim,
-                num_latents=self.num_patch_latents,
+                latent_patch_dim=self.latent_patch_dim,
                 latent_action_dim=self.latent_action_dim,
                 num_blocks=self.dyna_num_blocks,
                 num_heads=self.dyna_num_heads,
@@ -188,7 +183,6 @@ class Genie(nnx.Module):
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
                 use_flash_attention=self.use_flash_attention,
-                decode=decode,
                 rngs=rngs,
             )
         else:
@@ -749,6 +743,7 @@ def restore_genie_components(
     optimizer: nnx.ModelAndOptimizer,
     sharding: jax.sharding.NamedSharding,
     rng: jax.Array,
+    tokenizer_type: str,
     args,
 ) -> nnx.ModelAndOptimizer:
     """Restore pre-trained Genie components"""
@@ -771,7 +766,7 @@ def restore_genie_components(
         options=checkpoint_options,
         handler_registry=handler_registry,
     )
-    if args.tokenizer_type == "vqvae":
+    if tokenizer_type == "vqvae":
         dummy_tokenizer = TokenizerVQVAE(
             in_dim=args.image_channels,
             model_dim=args.tokenizer_dim,
@@ -788,7 +783,7 @@ def restore_genie_components(
             use_flash_attention=args.use_flash_attention,
             rngs=rngs_tokenizer,
         )
-    elif args.tokenizer_type == "mae":
+    elif tokenizer_type == "mae":
         dummy_tokenizer = TokenizerMAE(
             in_dim=args.image_channels,
             model_dim=args.tokenizer_dim,
@@ -806,7 +801,7 @@ def restore_genie_components(
             rngs=rngs_tokenizer,
         )
     else:
-        raise ValueError(f"Invalid tokenizer type: {args.tokenizer_type}")
+        raise ValueError(f"Invalid tokenizer type: {tokenizer_type}")
 
     dummy_tokenizer_optimizer = nnx.ModelAndOptimizer(dummy_tokenizer, tx)
     dummy_tokenizer_optimizer_state = nnx.state(dummy_tokenizer_optimizer)

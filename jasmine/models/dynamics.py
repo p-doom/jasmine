@@ -123,7 +123,6 @@ class DynamicsCausal(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
-        decode: bool,
         rngs: nnx.Rngs,
     ):
         self.model_dim = model_dim
@@ -136,7 +135,6 @@ class DynamicsCausal(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
-        self.decode = decode
 
         self.transformer = Transformer(
             self.model_dim,
@@ -149,7 +147,6 @@ class DynamicsCausal(nnx.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
-            decode=self.decode,
             rngs=rngs,
         )
         self.patch_embed = nnx.Embed(self.num_latents, self.model_dim, rngs=rngs)
@@ -185,11 +182,9 @@ class DynamicsDiffusion(nnx.Module):
 
     def __init__(
         self,
-        input_dim: int,
         model_dim: int,
         ffn_dim: int,
-        out_dim: int,
-        num_latents: int,  # unused! TODO remove
+        latent_patch_dim: int,
         latent_action_dim: int,
         num_blocks: int,
         num_heads: int,
@@ -198,13 +193,11 @@ class DynamicsDiffusion(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
-        decode: bool,  # TODO remove
         rngs: nnx.Rngs,
     ):
-        self.input_dim = input_dim  # TODO should be latent_patch_dim
         self.model_dim = model_dim
         self.ffn_dim = ffn_dim
-        self.out_dim = out_dim  # TODO should be latent patch dim
+        self.latent_patch_dim = latent_patch_dim
         self.latent_action_dim = latent_action_dim
         self.num_blocks = num_blocks
         self.num_heads = num_heads
@@ -215,10 +208,10 @@ class DynamicsDiffusion(nnx.Module):
         self.denoise_steps = denoise_steps
 
         self.diffusion_transformer = DiffusionTransformer(
-            self.input_dim,
+            self.latent_patch_dim,
             self.model_dim,
             self.ffn_dim,
-            self.out_dim,
+            self.latent_patch_dim,
             self.num_blocks,
             self.num_heads,
             self.dropout,
