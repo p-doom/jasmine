@@ -784,11 +784,11 @@ class GenieDiffusion(nnx.Module):
             latent_actions_E = batch["latent_actions"]
             action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
 
-        t_corrupt_context = 1 - diffusion_corrupt_context_factor
-        t_corrupt_context = jnp.argmin(
-            jnp.abs(jnp.arange(diffusion_steps) / diffusion_steps - t_corrupt_context)
+        ctx_signal_level = 1 - diffusion_corrupt_context_factor
+        ctx_signal_level = jnp.argmin(
+            jnp.abs(jnp.arange(diffusion_steps) / diffusion_steps - ctx_signal_level)
         )
-        t_corrupt_context = t_corrupt_context / diffusion_steps
+        ctx_signal_level = ctx_signal_level / diffusion_steps
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
         def denoise_step_fn(
@@ -823,8 +823,8 @@ class GenieDiffusion(nnx.Module):
                 _rng_noise_context, (B, seq_len, N, L)
             )
             corrupted_latents_BSNL = (
-                latents_BSNL * t_corrupt_context
-                + (1 - t_corrupt_context) * noise_context_BSNL
+                latents_BSNL * ctx_signal_level
+                + (1 - ctx_signal_level) * noise_context_BSNL
             )
             frame_mask = jnp.arange(seq_len) < frame_i
             frame_mask_1S11 = frame_mask.reshape(1, seq_len, 1, 1)
