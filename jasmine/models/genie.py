@@ -784,10 +784,6 @@ class GenieDiffusion(nnx.Module):
             latent_actions_E = batch["latent_actions"]
             action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
 
-        action_tokens_BSm11L = jnp.reshape(action_tokens_EL, (B, seq_len - 1, 1, -1))
-        act_embed_BS1L = jnp.pad(action_tokens_BSm11L, ((0, 0), (1, 0), (0, 0), (0, 0)))
-        act_embed_BS1L = self.dynamics.action_up(act_embed_BS1L)
-
         t_corrupt_context = 1 - diffusion_corrupt_context_factor
         t_corrupt_context = jnp.argmin(
             jnp.abs(jnp.arange(diffusion_steps) / diffusion_steps - t_corrupt_context)
@@ -837,9 +833,16 @@ class GenieDiffusion(nnx.Module):
             )
 
             # --- Predict transition ---
+            action_tokens_BSm11L = jnp.reshape(
+                action_tokens_EL, (B, seq_len - 1, 1, -1)
+            )
+            act_embed_BSm11L = self.dynamics.action_up(action_tokens_BSm11L)
+            act_embed_BS1L = jnp.pad(act_embed_BSm11L, ((0, 0), (1, 0), (0, 0), (0, 0)))
+
             denoise_step_embed_BS1L = self.dynamics.timestep_embed(
                 denoise_step_BS
             ).reshape(B, seq_len, 1, self.latent_patch_dim)
+
             inputs_BSNp2L = jnp.concatenate(
                 [act_embed_BS1L, denoise_step_embed_BS1L, corrupted_tok_latents_BSNL],
                 axis=2,
