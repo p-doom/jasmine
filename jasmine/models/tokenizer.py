@@ -211,7 +211,7 @@ class TokenizerMAE(nnx.Module):
         )
 
     def __call__(
-        self, batch: Dict[str, jax.Array | nnx.Rngs], training: bool = True
+        self, batch: Dict[str, jax.Array], training: bool = True
     ) -> Dict[str, jax.Array]:
         H, W = batch["videos"].shape[2:4]
         videos_BTHWC = batch["videos"]
@@ -226,7 +226,7 @@ class TokenizerMAE(nnx.Module):
         return outputs
 
     def mask_and_encode(
-        self, videos: jax.Array, rng: nnx.Rngs, training: bool = True
+        self, videos: jax.Array, rng: jax.Array, training: bool = True
     ) -> Dict[str, jax.Array]:
         # --- Preprocess videos ---
         B, T = videos.shape[:2]
