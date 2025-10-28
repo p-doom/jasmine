@@ -13,7 +13,7 @@ Jasmine scales from single hosts to hundreds of xPUs thanks to XLA and strives t
 
 <h2 name="overview" id="overview">Overview</h2>
 
-Genie has three components: a [video tokenizer](jasmine/models/tokenizer.py), a [latent action model (LAM)](jasmine/models/lam.py), and a [dynamics model](jasmine/models/dynamics.py). 
+Genie has three components: A [video tokenizer](jasmine/models/tokenizer.py), a [latent action model (LAM)](jasmine/models/lam.py), and a [dynamics model](jasmine/models/dynamics.py). 
 The tokenizer needs to be trained first, which the dynamics then uses. Jasmine supports co-training the LAM with the dynamics model.
 Jasmine implements a VQ-VAE and a MAE based tokenizer. The MaskGIT and causal baseline need to be trained using the discrete VQ-VAE tokenizer. The diffusion baseline is trained on latents from the MAE tokenizer.  The diffusion baseline, uses several elements from [Dreamer 4](https://arxiv.org/abs/2509.24527) (Hafner et. al., 2025) and is trained on the [diffusion forcing](https://arxiv.org/abs/2407.01392) (Chen et. al., 2024) objective.
 The baselines and their respective training scripts can be found under `jasmine/baselines`.
