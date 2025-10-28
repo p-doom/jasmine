@@ -847,10 +847,10 @@ class GenieDiffusion(nnx.Module):
                 [act_embed_BS1L, denoise_step_embed_BS1L, corrupted_tok_latents_BSNL],
                 axis=2,
             )
-            pred_latents_BSNL = dynamics_diffusion.diffusion_transformer(
+            pred_latents_BSNp2L = dynamics_diffusion.diffusion_transformer(
                 inputs_BSNp2L,
             )
-            pred_latents_BSNL = pred_latents_BSNL[:, :, 2:]
+            pred_latents_BSNL = pred_latents_BSNp2L[:, :, 2:]
             latents_BSNL = latents_BSNL.at[:, frame_i].set(
                 pred_latents_BSNL[:, frame_i]
             )
