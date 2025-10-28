@@ -497,7 +497,7 @@ def main(args: Args) -> None:
             inputs["videos"] = inputs["videos"][
                 :, :-1
             ]  # remove last frame for generation
-            recon_full_frame, _ = genie.sample(
+            recon_full_frame = genie.sample(
                 inputs,
                 args.seq_len,
                 args.diffusion_denoise_steps,

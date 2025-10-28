@@ -217,8 +217,8 @@ if __name__ == "__main__":
 
     ssim_vmap = jax.vmap(pix.ssim, in_axes=(0, 0))
     psnr_vmap = jax.vmap(pix.psnr, in_axes=(0, 0))
-    ssim = ssim_vmap(gt, recon)
-    psnr = psnr_vmap(gt, recon)
+    ssim = jnp.asarray(ssim_vmap(gt, recon))
+    psnr = jnp.asarray(psnr_vmap(gt, recon))
     per_frame_ssim = ssim.mean(0)
     per_frame_psnr = psnr.mean(0)
     avg_ssim = ssim.mean()

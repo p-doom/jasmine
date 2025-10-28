@@ -178,13 +178,15 @@ class GenieMaskGIT(nnx.Module):
 
         tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
         token_indices_BTN = tokenizer_outputs["indices"]
+
+        latent_actions = (
+            action_embeddings_BTm11L if self.use_gt_actions else latent_actions_BTm11L
+        )
+        assert type(latent_actions) == jax.Array
+
         outputs = dict(
             video_tokens=jax.lax.stop_gradient(token_indices_BTN),
-            latent_actions=(
-                action_embeddings_BTm11L
-                if self.use_gt_actions
-                else latent_actions_BTm11L
-            ),
+            latent_actions=latent_actions,
         )
         outputs["mask_rng"] = batch["rng"]
         dyna_logits_BTNV, dyna_mask = self.dynamics(outputs)
@@ -737,7 +739,7 @@ class GenieDiffusion(nnx.Module):
         seq_len: int,
         diffusion_steps: int = 64,
         diffusion_corrupt_context_factor: float = 0.1,
-    ) -> tuple[jax.Array, jax.Array]:
+    ) -> jax.Array:
         """
         Autoregressively samples up to `seq_len` future frames.
 
@@ -793,7 +795,9 @@ class GenieDiffusion(nnx.Module):
         t_corrupt_context = t_corrupt_context / diffusion_steps
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
-        def denoise_step_fn(carry, denoise_step: jax.Array) -> jax.Array:
+        def denoise_step_fn(
+            carry: tuple[jax.Array, jax.Array, jax.Array], denoise_step: jax.Array
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
             latents_BSNL, frame_i, rng = carry
             rng, _rng_noise_context = jax.random.split(rng)
 
@@ -851,7 +855,9 @@ class GenieDiffusion(nnx.Module):
             return new_carry
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
-        def autoregressive_step_fn(carry, frame_t: jax.Array) -> jax.Array:
+        def autoregressive_step_fn(
+            carry: tuple[jax.Array, jax.Array], frame_t: jax.Array
+        ) -> tuple[jax.Array, jax.Array]:
             latents_BSNL, rng = carry
             rng, _rng_noise_context = jax.random.split(rng)
 
@@ -870,7 +876,7 @@ class GenieDiffusion(nnx.Module):
 
         final_videos_BSHWC = self.tokenizer.decode(final_latents_BSNL, video_hw=(H, W))
 
-        return final_videos_BSHWC, None
+        return final_videos_BSHWC
 
     def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
         # --- Preprocess videos ---
