@@ -3,7 +3,7 @@ import os
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.98")
 
 from dataclasses import dataclass, field
-from typing import cast, Optional
+from typing import cast, Optional, Literal
 
 import einops
 import itertools
@@ -30,6 +30,10 @@ from utils.train_utils import (
     print_compiled_cost_analysis,
 )
 
+DTYPE_MAP = {
+    "float32": jnp.float32,
+    "bfloat16": jnp.bfloat16,
+}
 
 @dataclass
 class Args:
@@ -52,7 +56,7 @@ class Args:
     wsd_decay_steps: int = (
         30_000  # NOTE: wsd_decay_steps will only be used when using a wsd-schedule
     )
-    lr_schedule: str = "wsd"  # supported options: wsd, cos
+    lr_schedule: Literal["wsd", "cos"] = "wsd"
     warmup_steps: int = 10000
     # Tokenizer
     model_dim: int = 512
@@ -64,8 +68,8 @@ class Args:
     num_heads: int = 8
     dropout: float = 0.0
     codebook_dropout: float = 0.01
-    param_dtype = jnp.float32
-    dtype = jnp.bfloat16
+    param_dtype: Literal["float32", "bfloat16"] = "float32"
+    dtype: Literal["float32", "bfloat16"] = "bfloat16"
     use_flash_attention: bool = True
     # Logging
     log: bool = True
@@ -308,7 +312,7 @@ def main(args: Args) -> None:
             )
         wandb.init(**wandb_init_kwargs)
 
-        wandb.config.update({"model_param_count": param_counts})
+        wandb.config.update({"model_param_count": param_counts, "param_dtype": args.param_dtype, "dtype": args.dtype})
 
     print("Parameter counts:")
     print(param_counts)
@@ -571,4 +575,12 @@ def main(args: Args) -> None:
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
+
+    args.param_dtype = DTYPE_MAP[args.param_dtype]
+    args.dtype = DTYPE_MAP[args.dtype]
+    
+    if args.dtype == jnp.float32:
+        args.use_flash_attention = False
+        print("Using bfloat16, disabling flash attention")
+
     main(args)
