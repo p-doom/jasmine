@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import flax.nnx as nnx
 
 from jasmine.utils.preprocess import patchify, unpatchify
-from jasmine.utils.nn import STTransformer, VectorQuantizer
+from jasmine.utils.nn import AxialTransformer, VectorQuantizer
 
 
 class LatentActionModel(nnx.Module):
@@ -59,7 +59,7 @@ class LatentActionModel(nnx.Module):
         self.use_flash_attention = use_flash_attention
 
         self.patch_token_dim = self.in_dim * self.patch_size**2
-        self.encoder = STTransformer(
+        self.encoder = AxialTransformer(
             self.patch_token_dim,
             self.model_dim,
             self.ffn_dim,
@@ -100,7 +100,7 @@ class LatentActionModel(nnx.Module):
             dtype=self.dtype,
             rngs=rngs,
         )
-        self.decoder = STTransformer(
+        self.decoder = AxialTransformer(
             self.model_dim,
             self.model_dim,
             self.ffn_dim,

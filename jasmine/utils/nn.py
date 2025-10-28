@@ -43,8 +43,8 @@ def _get_spatiotemporal_positional_encoding(d_model: int, max_len: int = 5000):
     return _encode
 
 
-class STBlock(nnx.Module):
-    """ST transformer block"""
+class AxialBlock(nnx.Module):
+    """Axial transformer block"""
 
     def __init__(
         self,
@@ -160,9 +160,9 @@ class STBlock(nnx.Module):
         return x_BTNM
 
 
-class STTransformer(nnx.Module):
+class AxialTransformer(nnx.Module):
     """
-    ST transformer
+    Axial transformer
 
     Dimension keys:
         B: batch size
@@ -238,7 +238,7 @@ class STTransformer(nnx.Module):
         self.blocks = []
         for _ in range(self.num_blocks):
             self.blocks.append(
-                STBlock(
+                AxialBlock(
                     dim=self.model_dim,
                     ffn_dim=self.ffn_dim,
                     num_heads=self.num_heads,

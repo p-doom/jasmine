@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import jax
 
 from jasmine.utils.preprocess import patchify, unpatchify
-from jasmine.utils.nn import STTransformer, VectorQuantizer
+from jasmine.utils.nn import AxialTransformer, VectorQuantizer
 
 
 class TokenizerVQVAE(nnx.Module):
@@ -55,7 +55,7 @@ class TokenizerVQVAE(nnx.Module):
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
 
-        self.encoder = STTransformer(
+        self.encoder = AxialTransformer(
             self.in_dim * self.patch_size**2,
             self.model_dim,
             self.ffn_dim,
@@ -78,7 +78,7 @@ class TokenizerVQVAE(nnx.Module):
             rngs=rngs,
         )
         self.out_dim = self.in_dim * self.patch_size**2
-        self.decoder = STTransformer(
+        self.decoder = AxialTransformer(
             self.latent_dim,
             self.model_dim,
             self.ffn_dim,
@@ -180,7 +180,7 @@ class TokenizerMAE(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
-        self.encoder = STTransformer(
+        self.encoder = AxialTransformer(
             self.in_dim * self.patch_size**2,
             self.model_dim,
             self.ffn_dim,
@@ -197,7 +197,7 @@ class TokenizerMAE(nnx.Module):
         )
 
         self.out_dim = self.in_dim * self.patch_size**2
-        self.decoder = STTransformer(
+        self.decoder = AxialTransformer(
             self.latent_dim,
             self.model_dim,
             self.ffn_dim,

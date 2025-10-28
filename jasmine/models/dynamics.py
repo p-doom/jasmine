@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import flax.nnx as nnx
 
-from jasmine.utils.nn import STTransformer
+from jasmine.utils.nn import AxialTransformer
 
 
 class DynamicsMaskGIT(nnx.Module):
@@ -47,7 +47,7 @@ class DynamicsMaskGIT(nnx.Module):
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
         self.decode = decode
-        self.transformer = STTransformer(
+        self.transformer = AxialTransformer(
             self.model_dim,
             self.model_dim,
             self.ffn_dim,
@@ -141,7 +141,7 @@ class DynamicsCausal(nnx.Module):
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
         self.decode = decode
-        self.transformer = STTransformer(
+        self.transformer = AxialTransformer(
             self.model_dim,
             self.model_dim,
             self.ffn_dim,
@@ -216,7 +216,7 @@ class DynamicsDiffusion(nnx.Module):
         self.use_flash_attention = use_flash_attention
         self.denoise_steps = denoise_steps
         self.decode = decode
-        self.diffusion_transformer = STTransformer(
+        self.diffusion_transformer = AxialTransformer(
             self.latent_patch_dim,
             self.model_dim,
             self.ffn_dim,
