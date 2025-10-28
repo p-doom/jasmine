@@ -782,9 +782,9 @@ class GenieDiffusion(nnx.Module):
             latent_actions_E = batch["latent_actions"]
             action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
 
-        action_tokens_BSm1L = jnp.reshape(action_tokens_EL, (B, seq_len - 1, -1))
-        act_embed_BSL = jnp.pad(action_tokens_BSm1L, ((0, 0), (1, 0), (0, 0)))
-        act_embed_BSM = self.dynamics.action_up(act_embed_BSL)
+        action_tokens_BSm11L = jnp.reshape(action_tokens_EL, (B, seq_len - 1, 1, -1))
+        act_embed_BS1L = jnp.pad(action_tokens_BSm11L, ((0, 0), (1, 0), (0, 0), (0, 0)))
+        act_embed_BS1L = self.dynamics.action_up(act_embed_BS1L)
 
         t_corrupt_context = 1 - diffusion_corrupt_context_factor
         t_corrupt_context = jnp.argmin(
@@ -815,11 +815,9 @@ class GenieDiffusion(nnx.Module):
             )
             nnx.update(dynamics_diffusion, dynamics_state)
 
-            t = denoise_step / diffusion_steps
-
             # corrupt the context frames like in Dreamer 4 section 3.2
-            t_vector = jnp.ones((B, seq_len)) * t_corrupt_context
-            t_vector = t_vector.at[:, frame_i].set(t)
+            denoise_step_BS = jnp.ones((B, seq_len)) * diffusion_steps - 1
+            denoise_step_BS = denoise_step_BS.at[:, frame_i].set(denoise_step)
 
             noise_context_BSNL = jax.random.normal(
                 _rng_noise_context, (B, seq_len, N, L)
@@ -835,9 +833,17 @@ class GenieDiffusion(nnx.Module):
             )
 
             # --- Predict transition ---
-            pred_latents_BSNL = dynamics_diffusion.diffusion_transformer(
-                corrupted_tok_latents_BSNL, t_vector, act_embed_BSM
+            denoise_step_embed_BS1L = self.dynamics.timestep_embed(
+                denoise_step_BS
+            ).reshape(B, seq_len, 1, self.latent_patch_dim)
+            inputs_BSNp2L = jnp.concatenate(
+                [act_embed_BS1L, denoise_step_embed_BS1L, corrupted_tok_latents_BSNL],
+                axis=2,
             )
+            pred_latents_BSNL = dynamics_diffusion.diffusion_transformer(
+                inputs_BSNp2L,
+            )
+            pred_latents_BSNL = pred_latents_BSNL[:, :, 2:]
             latents_BSNL = latents_BSNL.at[:, frame_i].set(
                 pred_latents_BSNL[:, frame_i]
             )

@@ -35,10 +35,7 @@ class Args:
     temperature: float = 1.0
     sample_argmax: bool = True
     start_frame: int = 1
-    diffusion_denoise_steps: int = 0
-    diffusion_corrupt_context_factor: float = 0.1
     # Tokenizer checkpoint
-    tokenizer_type: str = "vqvae"
     tokenizer_dim: int = 512
     tokenizer_ffn_dim: int = 2048
     latent_patch_dim: int = 32
@@ -95,7 +92,6 @@ if __name__ == "__main__":
         patch_size=args.patch_size,
         tokenizer_num_blocks=args.tokenizer_num_blocks,
         tokenizer_num_heads=args.tokenizer_num_heads,
-        tokenizer_type=args.tokenizer_type,
         # LAM
         lam_dim=args.lam_dim,
         lam_ffn_dim=args.lam_ffn_dim,
@@ -115,7 +111,6 @@ if __name__ == "__main__":
         param_dtype=args.param_dtype,
         dtype=args.dtype,
         use_flash_attention=args.use_flash_attention,
-        diffusion_denoise_steps=args.diffusion_denoise_steps,
         # FIXME (f.srambical): implement spatiotemporal KV caching and set decode=True
         decode=False,
         rngs=rngs,
@@ -168,7 +163,6 @@ if __name__ == "__main__":
         assert args.dyna_type in [
             "maskgit",
             "causal",
-            "diffusion",
         ], f"Invalid dynamics type: {args.dyna_type}"
         frames, _ = model.sample(
             batch,

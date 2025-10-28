@@ -2,8 +2,8 @@
 Parts of the diffusion training, sampling, and DiT implementation are adapted from:
 https://github.com/kvfrans/shortcut-models
 
-We extend their approach with the diffusion-forcing objective and integrate several
-elements inspired by Dreamer 4 (https://arxiv.org/abs/2509.24527).
+For diffusion-forcing training, we integrate several elements inspired by Dreamer 4
+(https://arxiv.org/abs/2509.24527).
 """
 
 import os
@@ -347,7 +347,7 @@ def _calculate_step_metrics(
         ssim=ssim,
     )
 
-    loss = 0.0
+    loss = jnp.asarray(0.0)
     if "x_pred" in outputs.keys():
         # x-pred instead of v-pred as per Dreamer 4 section 3.2
         mse_BTNL = (outputs["x_pred"] - outputs["x_gt"]) ** 2

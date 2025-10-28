@@ -1,3 +1,4 @@
+from jax._src.basearray import Array
 from typing import Dict
 
 import jax
@@ -228,7 +229,14 @@ class DynamicsDiffusion(nnx.Module):
         )
         self.action_up = nnx.Linear(
             self.latent_action_dim,
-            self.model_dim,
+            self.latent_patch_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+        self.timestep_embed = nnx.Embed(
+            num_embeddings=self.denoise_steps,
+            features=self.latent_patch_dim,
             param_dtype=self.param_dtype,
             dtype=self.dtype,
             rngs=rngs,
@@ -239,7 +247,7 @@ class DynamicsDiffusion(nnx.Module):
         batch: Dict[str, jax.Array],
     ) -> tuple[jax.Array, jax.Array]:
         # Code adapted from https://github.com/kvfrans/shortcut-models/blob/main/baselines/targets_naive.py
-        rng, _rng_time, _rng_noise = jax.random.split(batch["rng"], 3)
+        _rng_time, _rng_noise = jax.random.split(batch["rng"])
         latents_BTNL = batch["token_latents"]
         latent_actions_BTm11L = batch["latent_actions"]
         B, T, N, L = latents_BTNL.shape
@@ -247,6 +255,9 @@ class DynamicsDiffusion(nnx.Module):
         # --- Add noise to latents ---
         denoise_step_BT = jax.random.randint(
             _rng_time, (B, T), minval=0, maxval=self.denoise_steps
+        )
+        denoise_step_embed_BT1L = self.timestep_embed(denoise_step_BT).reshape(
+            B, T, 1, self.latent_patch_dim
         )
         denoise_t_BT = denoise_step_BT / self.denoise_steps
         denoise_t_BT11 = denoise_t_BT[:, :, None, None]
@@ -256,15 +267,18 @@ class DynamicsDiffusion(nnx.Module):
         ) * noise_BTNL + denoise_t_BT11 * latents_BTNL
 
         # --- Process actions ---
-        act_embed_BTm11M = self.action_up(latent_actions_BTm11L)
-        padded_act_embed_BTM = jnp.pad(
-            act_embed_BTm11M, ((0, 0), (1, 0), (0, 0), (0, 0))
-        ).reshape(B, T, self.model_dim)
+        act_embed_BTm11L = self.action_up(latent_actions_BTm11L)
+        padded_act_embed_BT1L: Array = jnp.pad(
+            act_embed_BTm11L, ((0, 0), (1, 0), (0, 0), (0, 0))
+        )
 
         # --- Call the diffusion transformer ---
-        pred_latents_BTNL = self.diffusion_transformer(
-            noised_latents_BTNL,
-            denoise_t_BT,
-            padded_act_embed_BTM,
+        inputs_BTNp2L = jnp.concatenate(
+            [padded_act_embed_BT1L, denoise_step_embed_BT1L, noised_latents_BTNL],
+            axis=2,
         )
+        outputs_BTNp2L = self.diffusion_transformer(
+            inputs_BTNp2L,
+        )
+        pred_latents_BTNL = outputs_BTNp2L[:, :, 2:]
         return pred_latents_BTNL, denoise_t_BT
