@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import flax.nnx as nnx
 
-from jasmine.utils.nn import MaskGitTransformer, CausalTransformer, DiffusionTransformer
+from jasmine.utils.nn import STTransformer
 
 
 class DynamicsMaskGIT(nnx.Module):
@@ -47,7 +47,7 @@ class DynamicsMaskGIT(nnx.Module):
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
         self.decode = decode
-        self.transformer = MaskGitTransformer(
+        self.transformer = STTransformer(
             self.model_dim,
             self.model_dim,
             self.ffn_dim,
@@ -59,6 +59,8 @@ class DynamicsMaskGIT(nnx.Module):
             self.dtype,
             decode=self.decode,
             use_flash_attention=self.use_flash_attention,
+            spatial_causal=False,
+            temporal_causal=True,
             rngs=rngs,
         )
         self.patch_embed = nnx.Embed(self.num_latents, self.model_dim, rngs=rngs)
@@ -139,7 +141,7 @@ class DynamicsCausal(nnx.Module):
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
         self.decode = decode
-        self.transformer = CausalTransformer(
+        self.transformer = STTransformer(
             self.model_dim,
             self.model_dim,
             self.ffn_dim,
@@ -150,6 +152,8 @@ class DynamicsCausal(nnx.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
+            spatial_causal=True,
+            temporal_causal=True,
             rngs=rngs,
             decode=self.decode,
         )
@@ -212,7 +216,7 @@ class DynamicsDiffusion(nnx.Module):
         self.use_flash_attention = use_flash_attention
         self.denoise_steps = denoise_steps
         self.decode = decode
-        self.diffusion_transformer = DiffusionTransformer(
+        self.diffusion_transformer = STTransformer(
             self.latent_patch_dim,
             self.model_dim,
             self.ffn_dim,
@@ -223,6 +227,8 @@ class DynamicsDiffusion(nnx.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
+            spatial_causal=False,
+            temporal_causal=True,
             rngs=rngs,
             decode=self.decode,
         )

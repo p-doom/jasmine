@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import jax
 
 from jasmine.utils.preprocess import patchify, unpatchify
-from jasmine.utils.nn import MaskGitTransformer, VectorQuantizer
+from jasmine.utils.nn import STTransformer, VectorQuantizer
 
 
 class TokenizerVQVAE(nnx.Module):
@@ -55,7 +55,7 @@ class TokenizerVQVAE(nnx.Module):
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
 
-        self.encoder = MaskGitTransformer(
+        self.encoder = STTransformer(
             self.in_dim * self.patch_size**2,
             self.model_dim,
             self.ffn_dim,
@@ -66,6 +66,8 @@ class TokenizerVQVAE(nnx.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
+            spatial_causal=False,
+            temporal_causal=True,
             rngs=rngs,
         )
         self.vq = VectorQuantizer(
@@ -76,7 +78,7 @@ class TokenizerVQVAE(nnx.Module):
             rngs=rngs,
         )
         self.out_dim = self.in_dim * self.patch_size**2
-        self.decoder = MaskGitTransformer(
+        self.decoder = STTransformer(
             self.latent_dim,
             self.model_dim,
             self.ffn_dim,
@@ -87,6 +89,8 @@ class TokenizerVQVAE(nnx.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
+            spatial_causal=False,
+            temporal_causal=True,
             rngs=rngs,
         )
 
@@ -176,7 +180,7 @@ class TokenizerMAE(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
-        self.encoder = MaskGitTransformer(
+        self.encoder = STTransformer(
             self.in_dim * self.patch_size**2,
             self.model_dim,
             self.ffn_dim,
@@ -187,11 +191,13 @@ class TokenizerMAE(nnx.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
+            spatial_causal=False,
+            temporal_causal=True,
             rngs=rngs,
         )
 
         self.out_dim = self.in_dim * self.patch_size**2
-        self.decoder = MaskGitTransformer(
+        self.decoder = STTransformer(
             self.latent_dim,
             self.model_dim,
             self.ffn_dim,
@@ -202,6 +208,8 @@ class TokenizerMAE(nnx.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
+            spatial_causal=False,
+            temporal_causal=True,
             rngs=rngs,
         )
         self.mask_patch = nnx.Param(
