@@ -605,6 +605,6 @@ if __name__ == "__main__":
     
     if args.dtype == jnp.float32:
         args.use_flash_attention = False
-        print("Using bfloat16, disabling flash attention")
+        print("Using float32, disabling flash attention")
 
     main(args)
