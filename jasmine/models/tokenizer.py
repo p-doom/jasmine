@@ -211,7 +211,7 @@ class TokenizerMAE(nnx.Module):
         )
 
     def __call__(
-        self, batch: Dict[str, jax.Array], training: bool = True
+        self, batch: Dict[str, jax.Array | nnx.Rngs], training: bool = True
     ) -> Dict[str, jax.Array]:
         H, W = batch["videos"].shape[2:4]
         videos_BTHWC = batch["videos"]
@@ -235,7 +235,7 @@ class TokenizerMAE(nnx.Module):
 
         # --- Randomly mask patches ---
         if training:
-            _rng_prob, _rng_mask = jax.random.split(jax.random.key(0), 2)
+            _rng_prob, _rng_mask = jax.random.split(rng, 2)
             mask_prob = jax.random.uniform(
                 _rng_prob, shape=(B * T,), minval=0, maxval=self.max_mask_ratio
             )
