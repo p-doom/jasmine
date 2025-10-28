@@ -43,7 +43,9 @@ def _get_spatiotemporal_positional_encoding(d_model: int, max_len: int = 5000):
     return _encode
 
 
-class STBlock(nnx.Module):
+class MaskGitBlock(nnx.Module):
+    """MaskGIT transformer block"""
+
     def __init__(
         self,
         dim: int,
@@ -154,8 +156,10 @@ class STBlock(nnx.Module):
         return x_BTNM
 
 
-class STTransformer(nnx.Module):
+class MaskGitTransformer(nnx.Module):
     """
+    MaskGIT transformer
+
     Dimension keys:
         B: batch size
         T: number of frames
@@ -223,10 +227,10 @@ class STTransformer(nnx.Module):
             self.model_dim, max_len=max_len
         )
 
-        self.blocks = nnx.List[STBlock]([])
+        self.blocks = []
         for _ in range(self.num_blocks):
             self.blocks.append(
-                STBlock(
+                MaskGitBlock(
                     dim=self.model_dim,
                     ffn_dim=self.ffn_dim,
                     num_heads=self.num_heads,
@@ -263,7 +267,9 @@ class STTransformer(nnx.Module):
         return x_BTNV
 
 
-class TransformerBlock(nnx.Module):
+class CausalBlock(nnx.Module):
+    """Causal transformer block"""
+
     def __init__(
         self,
         model_dim: int,
@@ -376,8 +382,10 @@ class TransformerBlock(nnx.Module):
         return x_BTNM
 
 
-class Transformer(nnx.Module):
+class CausalTransformer(nnx.Module):
     """
+    Causal transformer
+
     Dimension keys:
         B: batch size
         T: number of frames
@@ -447,10 +455,10 @@ class Transformer(nnx.Module):
             self.model_dim, max_len=max_len
         )
 
-        self.blocks = nnx.List[TransformerBlock]([])
+        self.blocks = []
         for _ in range(self.num_blocks):
             self.blocks.append(
-                TransformerBlock(
+                CausalBlock(
                     model_dim=self.model_dim,
                     ffn_dim=self.ffn_dim,
                     num_heads=self.num_heads,
@@ -488,8 +496,8 @@ class Transformer(nnx.Module):
         return x_BTNV
 
 
-class DiTBlock(nnx.Module):
-    """DiT block"""
+class DiffusionBlock(nnx.Module):
+    """Diffusion transformer block"""
 
     def __init__(
         self,
@@ -611,7 +619,16 @@ class DiTBlock(nnx.Module):
 
 
 class DiffusionTransformer(nnx.Module):
-    """Diffusion transformer"""
+    """
+    Diffusion transformer
+
+    Dimension keys:
+        B: batch size
+        T: number of frames
+        N: number of patches per frame
+        L: latent dimension
+        M: model dimension
+    """
 
     def __init__(
         self,
@@ -650,10 +667,10 @@ class DiffusionTransformer(nnx.Module):
             self.model_dim, max_len=max_len
         )
 
-        self.blocks = nnx.List[DiTBlock]([])
+        self.blocks = []
         for _ in range(self.num_blocks):
             self.blocks.append(
-                DiTBlock(
+                DiffusionBlock(
                     model_dim=self.model_dim,
                     ffn_dim=self.ffn_dim,
                     num_heads=self.num_heads,
