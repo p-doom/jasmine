@@ -492,8 +492,7 @@ class GenieMaskGIT(nnx.Module):
             )
             vid_embed_BSNp1M = jnp.concatenate([act_embed_BS1M, vid_embed_BSNM], axis=2)
             final_logits_BTNp1V = (
-                dynamics_causal.transformer(vid_embed_BSNp1M, (step_t, step_n))
-                / temperature
+                dynamics_causal.transformer(vid_embed_BSNp1M) / temperature
             )
             final_logits_BV = final_logits_BTNp1V[:, step_t, step_n, :]
 
@@ -816,7 +815,9 @@ class GenieDiffusion(nnx.Module):
             nnx.update(dynamics_diffusion, dynamics_state)
 
             # corrupt the context frames like in Dreamer 4 section 3.2
-            denoise_step_BS = jnp.ones((B, seq_len)) * diffusion_steps - 1
+            denoise_step_BS = (
+                jnp.ones((B, seq_len), dtype=jnp.int32) * diffusion_steps - 1
+            )
             denoise_step_BS = denoise_step_BS.at[:, frame_idx].set(denoise_step)
 
             noise_context_BSNL = jax.random.normal(
