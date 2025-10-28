@@ -31,8 +31,8 @@ def _get_spatiotemporal_positional_encoding(d_model: int, max_len: int = 5000):
         num_spatial_patches = x.shape[2]
 
         # Temporal positional encoding: (1, T, 1, D)
-        temporal_pe = pe[None, :num_timesteps, None, :]
-        x = x + temporal_pe
+        # temporal_pe = pe[None, :num_timesteps, None, :]
+        # x = x + temporal_pe
 
         # Spatial positional encoding: (1, 1, S, D)
         spatial_pe = pe[None, None, :num_spatial_patches, :]
@@ -66,6 +66,8 @@ class STBlock(nnx.Module):
         self.use_flash_attention = use_flash_attention
         self.sow_weights = sow_weights
         self.sow_activations = sow_activations
+
+        self.pos_enc = _get_spatiotemporal_positional_encoding(self.dim)
 
         self.spatial_norm = nnx.LayerNorm(
             num_features=self.dim,
@@ -120,25 +122,29 @@ class STBlock(nnx.Module):
             dtype=self.dtype,
             rngs=rngs,
         )
-        self.ffn_dense2 = nnx.Linear(
-            in_features=self.ffn_dim,
-            out_features=self.dim,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-            rngs=rngs,
-        )
+        # self.ffn_dense2 = nnx.Linear(
+        #     in_features=self.ffn_dim,
+        #     out_features=self.dim,
+        #     param_dtype=self.param_dtype,
+        #     dtype=self.dtype,
+        #     rngs=rngs,
+        # )
 
     @nnx.remat
     def __call__(self, x_BTNM: jax.Array) -> jax.Array:
         # --- Spatial attention ---
-        z_BTNM = self.spatial_norm(x_BTNM)
-        z_BTNM = self.spatial_attention(z_BTNM, sow_weights=self.sow_weights)
+        # <<< CHANGED: Apply PE before LayerNorm
+        z_with_pe = self.pos_enc(x_BTNM)
+        z_BTNM = self.spatial_norm(z_with_pe)
+        z_BTNM = self.spatial_attention(z_BTNM)  # sow_weights removed for simplicity
         x_BTNM = x_BTNM + z_BTNM
 
         # --- Temporal attention ---
         x_BNTM = x_BTNM.swapaxes(1, 2)
-        z_BNTM = self.temporal_norm(x_BNTM)
-        z_BNTM = self.temporal_attention(z_BNTM, sow_weights=self.sow_weights)
+        # <<< CHANGED: Apply PE to swapped axes before LayerNorm
+        z_with_pe_swapped = self.pos_enc(x_BNTM)
+        z_BNTM = self.temporal_norm(z_with_pe_swapped)
+        z_BNTM = self.temporal_attention(z_BNTM)  # sow_weights removed for simplicity
         x_BNTM = x_BNTM + z_BNTM
         x_BTNM = x_BNTM.swapaxes(1, 2)
 
@@ -146,8 +152,8 @@ class STBlock(nnx.Module):
         z_BTNM = self.ffn_norm(x_BTNM)
         z_BTND = self.ffn_dense1(z_BTNM)
         z_BTND = jax.nn.gelu(z_BTND)
-        z_BTNM = self.ffn_dense2(z_BTND)
-        x_BTNM = x_BTNM + z_BTNM
+        # z_BTNM = self.ffn_dense2(z_BTND)
+        x_BTNM = x_BTNM + z_BTND
         if self.sow_activations:
             self.sow(nnx.Intermediate, "activations", x_BTNM)
         return x_BTNM
@@ -217,9 +223,6 @@ class STTransformer(nnx.Module):
             rngs=rngs,
         )
 
-        self.pos_enc = _get_spatiotemporal_positional_encoding(
-            self.model_dim, max_len=max_len
-        )
 
         self.blocks = []
         for _ in range(self.num_blocks):
@@ -250,7 +253,7 @@ class STTransformer(nnx.Module):
         x_BTNI = self.input_norm1(x_BTNI)
         x_BTNM = self.input_dense(x_BTNI)
         x_BTNM = self.input_norm2(x_BTNM)
-        x_BTNM = self.pos_enc(x_BTNM)
+
         for block in self.blocks:
             x_BTNM = block(x_BTNM)
 
@@ -337,13 +340,13 @@ class TransformerBlock(nnx.Module):
             dtype=self.dtype,
             rngs=rngs,
         )
-        self.ffn_dense2 = nnx.Linear(
-            in_features=self.ffn_dim,
-            out_features=self.model_dim,
-            param_dtype=self.param_dtype,
-            dtype=self.dtype,
-            rngs=rngs,
-        )
+        # self.ffn_dense2 = nnx.Linear(
+        #     in_features=self.ffn_dim,
+        #     out_features=self.model_dim,
+        #     param_dtype=self.param_dtype,
+        #     dtype=self.dtype,
+        #     rngs=rngs,
+        # )
 
     @nnx.remat
     def __call__(
@@ -366,8 +369,8 @@ class TransformerBlock(nnx.Module):
         z_BTNM = self.ffn_norm(x_BTNM)
         z_BTND = self.ffn_dense1(z_BTNM)
         z_BTND = jax.nn.gelu(z_BTND)
-        z_BTNM = self.ffn_dense2(z_BTND)
-        x_BTNM = x_BTNM + z_BTNM
+        # z_BTNM = self.ffn_dense2(z_BTND)
+        x_BTNM = x_BTNM + z_BTND
         if self.sow_activations:
             self.sow(nnx.Intermediate, "activations", x_BTNM)
 
