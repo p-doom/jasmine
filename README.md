@@ -136,7 +136,6 @@ If you prefer to use the raw VPT dataset from OpenAI and preprocess it yourself,
 
 <h2 name="train" id="train">Quick Start 🚀 </h2>
 
-For a quickstart you can train the tokenizer, latent action model and dynamics model sequentially as shown below. However, note that Jasmine supports various features, which can be configured through command line arguments. Therefore, please refer to the respective training scripts. 
 
 To train the video tokenizer, run:
 
