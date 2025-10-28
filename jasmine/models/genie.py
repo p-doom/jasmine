@@ -794,7 +794,7 @@ class GenieDiffusion(nnx.Module):
         def denoise_step_fn(
             carry: tuple[jax.Array, jax.Array, jax.Array], denoise_step: jax.Array
         ) -> tuple[jax.Array, jax.Array, jax.Array]:
-            latents_BSNL, frame_i, rng = carry
+            latents_BSNL, frame_idx, rng = carry
             rng, _rng_noise_context = jax.random.split(rng)
 
             # We need to reconstruct the submodule inside scan body to prevent trace context mismatches
@@ -817,7 +817,7 @@ class GenieDiffusion(nnx.Module):
 
             # corrupt the context frames like in Dreamer 4 section 3.2
             denoise_step_BS = jnp.ones((B, seq_len)) * diffusion_steps - 1
-            denoise_step_BS = denoise_step_BS.at[:, frame_i].set(denoise_step)
+            denoise_step_BS = denoise_step_BS.at[:, frame_idx].set(denoise_step)
 
             noise_context_BSNL = jax.random.normal(
                 _rng_noise_context, (B, seq_len, N, L)
@@ -826,7 +826,7 @@ class GenieDiffusion(nnx.Module):
                 latents_BSNL * ctx_signal_level
                 + (1 - ctx_signal_level) * noise_context_BSNL
             )
-            frame_mask = jnp.arange(seq_len) < frame_i
+            frame_mask = jnp.arange(seq_len) < frame_idx
             frame_mask_1S11 = frame_mask.reshape(1, seq_len, 1, 1)
             corrupted_tok_latents_BSNL = jnp.where(
                 frame_mask_1S11, corrupted_latents_BSNL, latents_BSNL
@@ -851,20 +851,20 @@ class GenieDiffusion(nnx.Module):
                 inputs_BSNp2L,
             )
             pred_latents_BSNL = pred_latents_BSNp2L[:, :, 2:]
-            latents_BSNL = latents_BSNL.at[:, frame_i].set(
-                pred_latents_BSNL[:, frame_i]
+            latents_BSNL = latents_BSNL.at[:, frame_idx].set(
+                pred_latents_BSNL[:, frame_idx]
             )
-            new_carry = (latents_BSNL, frame_i, rng)
+            new_carry = (latents_BSNL, frame_idx, rng)
             return new_carry
 
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
         def autoregressive_step_fn(
-            carry: tuple[jax.Array, jax.Array], frame_t: jax.Array
+            carry: tuple[jax.Array, jax.Array], frame_index: jax.Array
         ) -> tuple[jax.Array, jax.Array]:
             latents_BSNL, rng = carry
             rng, _rng_noise_context = jax.random.split(rng)
 
-            carry_denoise = (latents_BSNL, frame_t, _rng_noise_context)
+            carry_denoise = (latents_BSNL, frame_index, _rng_noise_context)
             final_carry_denoise = denoise_step_fn(
                 carry_denoise, jnp.arange(diffusion_steps)
             )
