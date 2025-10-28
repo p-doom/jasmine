@@ -307,7 +307,7 @@ class GenieMaskGIT(nnx.Module):
             # --- Construct + encode video ---
             vid_embed_BSNM = dynamics_maskgit.patch_embed(token_idxs_BSN)
             mask_token_111M = dynamics_maskgit.mask_token.value
-            mask_expanded_BSN1 = mask_BSN[..., None]
+            mask_expanded_BSN1 = mask_BSN[..., jnp.newaxis]
             vid_embed_BSNM = jnp.where(
                 mask_expanded_BSN1, mask_token_111M, vid_embed_BSNM
             )
@@ -377,9 +377,9 @@ class GenieMaskGIT(nnx.Module):
 
             # Mask current frame (i.e., t == step_t)
             mask_S = jnp.arange(seq_len) == step_t
-            mask_BSN = jnp.broadcast_to(mask_S[None, :, None], (B, seq_len, N)).astype(
-                bool
-            )
+            mask_BSN = jnp.broadcast_to(
+                mask_S[jnp.newaxis, :, jnp.newaxis], (B, seq_len, N)
+            ).astype(bool)
             masked_token_idxs_BSN = current_token_idxs_BSN * ~mask_BSN
             masked_logits_BSNV = current_logits_BSNV * jnp.expand_dims(~mask_BSN, -1)
 

@@ -12,7 +12,7 @@ def _get_spatiotemporal_positional_encoding(d_model: int, max_len: int = 5000):
     Creates a function that applies separate sinusoidal positional encodings to the temporal and spatial dimensions.
     """
     pe = jnp.zeros((max_len, d_model))
-    position = jnp.arange(0, max_len, dtype=jnp.float32)[:, None]
+    position = jnp.arange(0, max_len, dtype=jnp.float32)[:, jnp.newaxis]
     div_term = jnp.exp(jnp.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
     pe = pe.at[:, 0::2].set(jnp.sin(position * div_term))
     pe = pe.at[:, 1::2].set(jnp.cos(position * div_term))
@@ -31,11 +31,11 @@ def _get_spatiotemporal_positional_encoding(d_model: int, max_len: int = 5000):
         num_spatial_patches = x.shape[2]
 
         # Temporal positional encoding: (1, T, 1, D)
-        temporal_pe = pe[None, :num_timesteps, None, :]
+        temporal_pe = pe[jnp.newaxis, :num_timesteps, jnp.newaxis, :]
         x = x + temporal_pe
 
         # Spatial positional encoding: (1, 1, S, D)
-        spatial_pe = pe[None, None, :num_spatial_patches, :]
+        spatial_pe = pe[jnp.newaxis, jnp.newaxis, :num_spatial_patches, :]
         x = x + spatial_pe
 
         return x

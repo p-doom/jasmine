@@ -245,7 +245,7 @@ class TokenizerMAE(nnx.Module):
             )(jax.random.split(_rng_mask, B * T), mask_prob)
             mask_BTN = mask.reshape(B, T, N)
             patch_BTNP = jnp.where(
-                mask_BTN[..., None], self.mask_patch.value, patch_BTNP
+                mask_BTN[..., jnp.newaxis], self.mask_patch.value, patch_BTNP
             )
 
         # --- Encode ---

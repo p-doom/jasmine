@@ -1,4 +1,3 @@
-from jax._src.basearray import Array
 from typing import Dict
 
 import jax
@@ -260,15 +259,16 @@ class DynamicsDiffusion(nnx.Module):
             B, T, 1, self.latent_patch_dim
         )
         denoise_t_BT = denoise_step_BT / self.denoise_steps
-        denoise_t_BT11 = denoise_t_BT[:, :, None, None]
+        denoise_t_BT11 = denoise_t_BT[:, :, jnp.newaxis, jnp.newaxis]
         noise_BTNL = jax.random.normal(_rng_noise, (B, T, N, L))
         noised_latents_BTNL = (
-            1 - (1 - 1e-5) * denoise_t_BT11
+            1
+            - (1 - 1e-5) * denoise_t_BT11  # we adopt 1e-5 from kvfrans/shortcut-models
         ) * noise_BTNL + denoise_t_BT11 * latents_BTNL
 
         # --- Process actions ---
         act_embed_BTm11L = self.action_up(latent_actions_BTm11L)
-        padded_act_embed_BT1L: Array = jnp.pad(
+        padded_act_embed_BT1L = jnp.pad(
             act_embed_BTm11L, ((0, 0), (1, 0), (0, 0), (0, 0))
         )
 
