@@ -7,15 +7,14 @@ import dm_pix as pix
 import einops
 import jax
 import jax.numpy as jnp
-import flax.linen as nn
 import numpy as np
 import orbax.checkpoint as ocp
 from PIL import Image, ImageDraw
 import tyro
 from flax import nnx
 
-from genie import Genie
-from utils.dataloader import get_dataloader
+from jasmine.models.genie import GenieMaskGIT
+from jasmine.utils.dataloader import get_dataloader
 
 
 @dataclass
@@ -42,7 +41,7 @@ class Args:
     tokenizer_ffn_dim: int = 2048
     latent_patch_dim: int = 32
     num_patch_latents: int = 1024
-    patch_size: int = 4
+    patch_size: int = 16
     tokenizer_num_blocks: int = 4
     tokenizer_num_heads: int = 8
     # LAM checkpoint
@@ -84,7 +83,7 @@ if __name__ == "__main__":
 
     # --- Load Genie checkpoint ---
     rngs = nnx.Rngs(rng)
-    genie = Genie(
+    genie = GenieMaskGIT(
         # Tokenizer
         in_dim=args.image_channels,
         tokenizer_dim=args.tokenizer_dim,
@@ -160,7 +159,7 @@ if __name__ == "__main__":
     nnx.update(dummy_optimizer, restored_optimizer_state)
 
     # --- Define sampling function ---
-    def _sampling_fn(model: Genie, batch: dict) -> jax.Array:
+    def _sampling_fn(model: GenieMaskGIT, batch: dict) -> jax.Array:
         """Runs Genie.sample with pre-defined generation hyper-parameters."""
         assert args.dyna_type in [
             "maskgit",
@@ -176,7 +175,7 @@ if __name__ == "__main__":
         return frames
 
     # --- Define autoregressive sampling loop ---
-    def _autoreg_sample(genie, rng, batch):
+    def _autoreg_sample(genie: GenieMaskGIT, rng: jax.Array, batch: dict) -> jax.Array:
         batch["videos"] = batch["videos"][:, : args.start_frame]
         batch["rng"] = rng
         generated_vid_BSHWC = _sampling_fn(genie, batch)
@@ -219,8 +218,8 @@ if __name__ == "__main__":
 
     ssim_vmap = jax.vmap(pix.ssim, in_axes=(0, 0))
     psnr_vmap = jax.vmap(pix.psnr, in_axes=(0, 0))
-    ssim = ssim_vmap(gt, recon)
-    psnr = psnr_vmap(gt, recon)
+    ssim = jnp.asarray(ssim_vmap(gt, recon))
+    psnr = jnp.asarray(psnr_vmap(gt, recon))
     per_frame_ssim = ssim.mean(0)
     per_frame_psnr = psnr.mean(0)
     avg_ssim = ssim.mean()

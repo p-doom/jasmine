@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import flax.nnx as nnx
 
-from utils.nn import STTransformer, Transformer
+from jasmine.utils.nn import AxialTransformer
 
 
 class DynamicsMaskGIT(nnx.Module):
@@ -33,6 +33,7 @@ class DynamicsMaskGIT(nnx.Module):
         dtype: jnp.dtype,
         use_flash_attention: bool,
         rngs: nnx.Rngs,
+        decode: bool,
     ):
         self.model_dim = model_dim
         self.ffn_dim = ffn_dim
@@ -45,8 +46,8 @@ class DynamicsMaskGIT(nnx.Module):
         self.param_dtype = param_dtype
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
-
-        self.transformer = STTransformer(
+        self.decode = decode
+        self.transformer = AxialTransformer(
             self.model_dim,
             self.model_dim,
             self.ffn_dim,
@@ -56,7 +57,10 @@ class DynamicsMaskGIT(nnx.Module):
             self.dropout,
             self.param_dtype,
             self.dtype,
+            decode=self.decode,
             use_flash_attention=self.use_flash_attention,
+            spatial_causal=False,
+            temporal_causal=True,
             rngs=rngs,
         )
         self.patch_embed = nnx.Embed(self.num_latents, self.model_dim, rngs=rngs)
@@ -123,8 +127,8 @@ class DynamicsCausal(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
-        decode: bool,
         rngs: nnx.Rngs,
+        decode: bool,
     ):
         self.model_dim = model_dim
         self.ffn_dim = ffn_dim
@@ -137,8 +141,7 @@ class DynamicsCausal(nnx.Module):
         self.dtype = dtype
         self.use_flash_attention = use_flash_attention
         self.decode = decode
-
-        self.transformer = Transformer(
+        self.transformer = AxialTransformer(
             self.model_dim,
             self.model_dim,
             self.ffn_dim,
@@ -149,8 +152,10 @@ class DynamicsCausal(nnx.Module):
             self.param_dtype,
             self.dtype,
             use_flash_attention=self.use_flash_attention,
-            decode=self.decode,
+            spatial_causal=True,
+            temporal_causal=True,
             rngs=rngs,
+            decode=self.decode,
         )
         self.patch_embed = nnx.Embed(self.num_latents, self.model_dim, rngs=rngs)
         self.action_up = nnx.Linear(
@@ -178,3 +183,108 @@ class DynamicsCausal(nnx.Module):
         logits_BTNp1V = self.transformer(vid_embed_BTNp1M)
         logits_BTNV = logits_BTNp1V[:, :, :-1]
         return logits_BTNV, jnp.ones_like(video_tokens_BTN)
+
+
+class DynamicsDiffusion(nnx.Module):
+    """Diffusion transformer dynamics model"""
+
+    def __init__(
+        self,
+        model_dim: int,
+        ffn_dim: int,
+        latent_patch_dim: int,
+        latent_action_dim: int,
+        num_blocks: int,
+        num_heads: int,
+        denoise_steps: int,
+        dropout: float,
+        param_dtype: jnp.dtype,
+        dtype: jnp.dtype,
+        use_flash_attention: bool,
+        rngs: nnx.Rngs,
+        decode: bool,
+    ):
+        self.model_dim = model_dim
+        self.ffn_dim = ffn_dim
+        self.latent_patch_dim = latent_patch_dim
+        self.latent_action_dim = latent_action_dim
+        self.num_blocks = num_blocks
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.param_dtype = param_dtype
+        self.dtype = dtype
+        self.use_flash_attention = use_flash_attention
+        self.denoise_steps = denoise_steps
+        self.decode = decode
+        self.diffusion_transformer = AxialTransformer(
+            self.latent_patch_dim,
+            self.model_dim,
+            self.ffn_dim,
+            self.latent_patch_dim,
+            self.num_blocks,
+            self.num_heads,
+            self.dropout,
+            self.param_dtype,
+            self.dtype,
+            use_flash_attention=self.use_flash_attention,
+            spatial_causal=False,
+            temporal_causal=True,
+            rngs=rngs,
+            decode=self.decode,
+        )
+        self.action_up = nnx.Linear(
+            self.latent_action_dim,
+            self.latent_patch_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+        self.timestep_embed = nnx.Embed(
+            num_embeddings=self.denoise_steps,
+            features=self.latent_patch_dim,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            rngs=rngs,
+        )
+
+    def __call__(
+        self,
+        batch: Dict[str, jax.Array],
+    ) -> tuple[jax.Array, jax.Array]:
+        # Code adapted from https://github.com/kvfrans/shortcut-models/blob/main/baselines/targets_naive.py
+        _rng_time, _rng_noise = jax.random.split(batch["rng"])
+        latents_BTNL = batch["token_latents"]
+        latent_actions_BTm11L = batch["latent_actions"]
+        B, T, N, L = latents_BTNL.shape
+
+        # --- Add noise to latents ---
+        denoise_step_BT = jax.random.randint(
+            _rng_time, (B, T), minval=0, maxval=self.denoise_steps
+        )
+        denoise_step_embed_BT1L = self.timestep_embed(denoise_step_BT).reshape(
+            B, T, 1, self.latent_patch_dim
+        )
+        denoise_t_BT = denoise_step_BT / self.denoise_steps
+        denoise_t_BT11 = denoise_t_BT[:, :, jnp.newaxis, jnp.newaxis]
+        noise_BTNL = jax.random.normal(_rng_noise, (B, T, N, L))
+        noised_latents_BTNL = (
+            1
+            - (1 - 1e-5) * denoise_t_BT11  # we adopt 1e-5 from kvfrans/shortcut-models
+        ) * noise_BTNL + denoise_t_BT11 * latents_BTNL
+
+        # --- Process actions ---
+        act_embed_BTm11L = self.action_up(latent_actions_BTm11L)
+        padded_act_embed_BT1L = jnp.pad(
+            act_embed_BTm11L, ((0, 0), (1, 0), (0, 0), (0, 0))
+        )
+
+        # --- Call the diffusion transformer ---
+        inputs_BTNp2L = jnp.concatenate(
+            [padded_act_embed_BT1L, denoise_step_embed_BT1L, noised_latents_BTNL],
+            axis=2,
+        )
+        outputs_BTNp2L = self.diffusion_transformer(
+            inputs_BTNp2L,
+        )
+        pred_latents_BTNL = outputs_BTNp2L[:, :, 2:]
+        return pred_latents_BTNL, denoise_t_BT

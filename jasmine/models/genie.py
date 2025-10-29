@@ -6,13 +6,13 @@ import jax.numpy as jnp
 import flax.nnx as nnx
 import orbax.checkpoint as ocp
 
-from models.dynamics import DynamicsMaskGIT, DynamicsCausal
-from models.lam import LatentActionModel
-from models.tokenizer import TokenizerVQVAE
+from jasmine.models.dynamics import DynamicsMaskGIT, DynamicsCausal, DynamicsDiffusion
+from jasmine.models.lam import LatentActionModel
+from jasmine.models.tokenizer import TokenizerVQVAE, TokenizerMAE
 
 
-class Genie(nnx.Module):
-    """Genie model"""
+class GenieMaskGIT(nnx.Module):
+    """GenieMaskGIT model"""
 
     def __init__(
         self,
@@ -41,8 +41,8 @@ class Genie(nnx.Module):
         param_dtype: jnp.dtype,
         dtype: jnp.dtype,
         use_flash_attention: bool,
-        decode: bool,
         rngs: nnx.Rngs,
+        decode: bool,
         dropout: float = 0.0,
         mask_limit: float = 0.0,
     ):
@@ -77,7 +77,6 @@ class Genie(nnx.Module):
         self.dropout = dropout
         self.mask_limit = mask_limit
         self.decode = decode
-
         self.tokenizer = TokenizerVQVAE(
             in_dim=self.in_dim,
             model_dim=self.tokenizer_dim,
@@ -130,6 +129,7 @@ class Genie(nnx.Module):
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
                 use_flash_attention=self.use_flash_attention,
+                decode=self.decode,
                 rngs=rngs,
             )
         elif self.dyna_type == "causal":
@@ -144,7 +144,7 @@ class Genie(nnx.Module):
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
                 use_flash_attention=self.use_flash_attention,
-                decode=decode,
+                decode=self.decode,
                 rngs=rngs,
             )
         else:
@@ -155,8 +155,7 @@ class Genie(nnx.Module):
         batch: Dict[str, jax.Array],
     ) -> Dict[str, jax.Array]:
         videos_BTHWC = batch["videos"]
-        tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
-        token_indices_BTN = tokenizer_outputs["indices"]
+        H, W = videos_BTHWC.shape[2:4]
         latent_actions_BTm11L = None
         action_embeddings_BTm11L = None
         if self.use_gt_actions:
@@ -176,23 +175,29 @@ class Genie(nnx.Module):
                 lambda: z_q_BTm11L,
                 lambda: jax.lax.stop_gradient(z_q_BTm11L),
             )
+
+        tokenizer_outputs = self.tokenizer.vq_encode(videos_BTHWC, training=False)
+        token_indices_BTN = tokenizer_outputs["indices"]
+
+        latent_actions = (
+            action_embeddings_BTm11L if self.use_gt_actions else latent_actions_BTm11L
+        )
+        assert isinstance(latent_actions, jax.Array)
+
         outputs = dict(
             video_tokens=jax.lax.stop_gradient(token_indices_BTN),
-            latent_actions=(
-                action_embeddings_BTm11L
-                if self.use_gt_actions
-                else latent_actions_BTm11L
-            ),
+            latent_actions=latent_actions,
         )
         outputs["mask_rng"] = batch["rng"]
         dyna_logits_BTNV, dyna_mask = self.dynamics(outputs)
         outputs["token_logits"] = dyna_logits_BTNV
         outputs["mask"] = dyna_mask
         mle_indices_BTN = jnp.argmax(outputs["token_logits"], axis=-1)
-        H, W = batch["videos"].shape[2:4]
         outputs["recon"] = self.tokenizer.decode(mle_indices_BTN, (H, W))
+
         if action_indices_E is not None:
             outputs["lam_indices"] = action_indices_E
+
         return outputs
 
     def sample(
@@ -221,7 +226,7 @@ class Genie(nnx.Module):
         sample_argmax: bool = False,
     ) -> tuple[jax.Array, jax.Array]:
         """
-        Autoregressively samples up to `seq_len` future frames, following Figure 8 of the paper.
+        Autoregressively samples up to `seq_len` future frames, following Figure 8 of the Genie 1 paper (Bruce et al. (2022)).
 
         - Input frames are tokenized once.
         - Future frames are generated autoregressively in token space.
@@ -294,6 +299,7 @@ class Genie(nnx.Module):
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
                 use_flash_attention=self.use_flash_attention,
+                decode=self.decode,
                 rngs=nnx.Rngs(0),
             )
             nnx.update(dynamics_maskgit, dynamics_state)
@@ -301,7 +307,7 @@ class Genie(nnx.Module):
             # --- Construct + encode video ---
             vid_embed_BSNM = dynamics_maskgit.patch_embed(token_idxs_BSN)
             mask_token_111M = dynamics_maskgit.mask_token.value
-            mask_expanded_BSN1 = mask_BSN[..., None]
+            mask_expanded_BSN1 = mask_BSN[..., jnp.newaxis]
             vid_embed_BSNM = jnp.where(
                 mask_expanded_BSN1, mask_token_111M, vid_embed_BSNM
             )
@@ -371,9 +377,9 @@ class Genie(nnx.Module):
 
             # Mask current frame (i.e., t == step_t)
             mask_S = jnp.arange(seq_len) == step_t
-            mask_BSN = jnp.broadcast_to(mask_S[None, :, None], (B, seq_len, N)).astype(
-                bool
-            )
+            mask_BSN = jnp.broadcast_to(
+                mask_S[jnp.newaxis, :, jnp.newaxis], (B, seq_len, N)
+            ).astype(bool)
             masked_token_idxs_BSN = current_token_idxs_BSN * ~mask_BSN
             masked_logits_BSNV = current_logits_BSNV * jnp.expand_dims(~mask_BSN, -1)
 
@@ -414,19 +420,6 @@ class Genie(nnx.Module):
         sample_argmax: bool = False,
     ) -> tuple[jax.Array, jax.Array]:
         """
-        Autoregressively samples up to `seq_len` future frames, following Figure 8 of the paper.
-
-        - Input frames are tokenized once.
-        - Future frames are generated autoregressively in token space.
-        - All frames are detokenized in a single pass.
-
-        Note:
-        - For interactive or step-wise sampling, detokenization should occur after each action.
-        - To maintain consistent tensor shapes across timesteps, all current and future frames are decoded at every step.
-        - Temporal causal structure is preserved by
-            a) reapplying the mask before each decoding step.
-            b) a temporal causal mask is applied within each ST-transformer block.
-
         Dimension keys:
             B: batch size
             T: number of input (conditioning) frames
@@ -499,8 +492,7 @@ class Genie(nnx.Module):
             )
             vid_embed_BSNp1M = jnp.concatenate([act_embed_BS1M, vid_embed_BSNM], axis=2)
             final_logits_BTNp1V = (
-                dynamics_causal.transformer(vid_embed_BSNp1M, (step_t, step_n))
-                / temperature
+                dynamics_causal.transformer(vid_embed_BSNp1M) / temperature
             )
             final_logits_BV = final_logits_BTNp1V[:, step_t, step_n, :]
 
@@ -566,11 +558,347 @@ class Genie(nnx.Module):
         return lam_indices_E
 
 
+class GenieDiffusion(nnx.Module):
+    """GenieDiffusion model"""
+
+    def __init__(
+        self,
+        in_dim: int,
+        tokenizer_dim: int,
+        tokenizer_ffn_dim: int,
+        latent_patch_dim: int,
+        num_patch_latents: int,
+        patch_size: int,
+        tokenizer_num_blocks: int,
+        tokenizer_num_heads: int,
+        lam_dim: int,
+        lam_ffn_dim: int,
+        latent_action_dim: int,
+        num_actions: int,
+        lam_patch_size: int,
+        lam_num_blocks: int,
+        lam_num_heads: int,
+        lam_co_train: bool,
+        use_gt_actions: bool,
+        dyna_dim: int,
+        dyna_ffn_dim: int,
+        dyna_num_blocks: int,
+        dyna_num_heads: int,
+        param_dtype: jnp.dtype,
+        dtype: jnp.dtype,
+        use_flash_attention: bool,
+        rngs: nnx.Rngs,
+        decode: bool,
+        dropout: float = 0.0,
+        diffusion_denoise_steps: int = 0,
+    ):
+        # --- Tokenizer ---
+        self.in_dim = in_dim
+        self.tokenizer_dim = tokenizer_dim
+        self.tokenizer_ffn_dim = tokenizer_ffn_dim
+        self.latent_patch_dim = latent_patch_dim
+        self.num_patch_latents = num_patch_latents
+        self.patch_size = patch_size
+        self.tokenizer_num_blocks = tokenizer_num_blocks
+        self.tokenizer_num_heads = tokenizer_num_heads
+        # --- LAM ---
+        self.lam_dim = lam_dim
+        self.lam_ffn_dim = lam_ffn_dim
+        self.latent_action_dim = latent_action_dim
+        self.num_actions = num_actions
+        self.lam_patch_size = lam_patch_size
+        self.lam_num_blocks = lam_num_blocks
+        self.lam_num_heads = lam_num_heads
+        self.lam_co_train = lam_co_train
+        self.use_gt_actions = use_gt_actions
+        # --- Dynamics ---
+        self.dyna_dim = dyna_dim
+        self.dyna_ffn_dim = dyna_ffn_dim
+        self.dyna_num_blocks = dyna_num_blocks
+        self.dyna_num_heads = dyna_num_heads
+        self.param_dtype = param_dtype
+        self.dtype = dtype
+        self.use_flash_attention = use_flash_attention
+        self.dropout = dropout
+        self.diffusion_denoise_steps = diffusion_denoise_steps
+        self.decode = decode
+        self.tokenizer = TokenizerMAE(
+            in_dim=self.in_dim,
+            model_dim=self.tokenizer_dim,
+            ffn_dim=self.tokenizer_ffn_dim,
+            latent_dim=self.latent_patch_dim,
+            num_latents=self.num_patch_latents,
+            patch_size=self.patch_size,
+            num_blocks=self.tokenizer_num_blocks,
+            num_heads=self.tokenizer_num_heads,
+            dropout=0.0,
+            max_mask_ratio=0.0,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            use_flash_attention=self.use_flash_attention,
+            rngs=rngs,
+        )
+        if self.use_gt_actions:
+            self.action_embed = nnx.Embed(
+                self.num_actions, self.latent_action_dim, rngs=rngs
+            )
+            self.lam = None
+        else:
+            self.lam = LatentActionModel(
+                in_dim=self.in_dim,
+                model_dim=self.lam_dim,
+                ffn_dim=self.lam_ffn_dim,
+                latent_dim=self.latent_patch_dim,
+                num_latents=self.num_actions,
+                patch_size=self.lam_patch_size,
+                num_blocks=self.lam_num_blocks,
+                num_heads=self.lam_num_heads,
+                dropout=0.0,
+                codebook_dropout=0.0,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+                use_flash_attention=self.use_flash_attention,
+                rngs=rngs,
+            )
+            self.action_embed = None
+        assert (
+            self.diffusion_denoise_steps > 0
+        ), "diffusion_denoise_steps must be greater than 0 when using the diffusion backend"
+        self.dynamics = DynamicsDiffusion(
+            model_dim=self.dyna_dim,
+            ffn_dim=self.dyna_ffn_dim,
+            latent_patch_dim=self.latent_patch_dim,
+            latent_action_dim=self.latent_action_dim,
+            num_blocks=self.dyna_num_blocks,
+            num_heads=self.dyna_num_heads,
+            denoise_steps=self.diffusion_denoise_steps,
+            dropout=self.dropout,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+            use_flash_attention=self.use_flash_attention,
+            rngs=rngs,
+            decode=self.decode,
+        )
+
+    def __call__(
+        self,
+        batch: Dict[str, jax.Array],
+    ) -> Dict[str, jax.Array]:
+        videos_BTHWC = batch["videos"]
+        H, W = videos_BTHWC.shape[2:4]
+        latent_actions_BTm11L = None
+        action_embeddings_BTm11L = None
+        if self.use_gt_actions:
+            assert self.action_embed is not None
+            action_indices_E = None
+            action_embeddings_BT1L = self.action_embed(batch["actions"]).reshape(
+                *batch["actions"].shape[:2], 1, self.latent_action_dim
+            )
+            action_embeddings_BTm11L = action_embeddings_BT1L[:, :-1]
+        else:
+            assert self.lam is not None
+            lam_outputs = self.lam.vq_encode(videos_BTHWC, training=False)
+            z_q_BTm11L = lam_outputs["z_q"]
+            action_indices_E = lam_outputs["indices"]
+            latent_actions_BTm11L = jax.lax.cond(
+                self.lam_co_train,
+                lambda: z_q_BTm11L,
+                lambda: jax.lax.stop_gradient(z_q_BTm11L),
+            )
+
+        rng, _rng = jax.random.split(batch["rng"])
+        tokenizer_outputs = self.tokenizer.mask_and_encode(
+            videos_BTHWC, rng, training=False
+        )
+        token_latents_BTNL = tokenizer_outputs["z"]
+        token_latents_BTNL = jax.lax.stop_gradient(token_latents_BTNL)
+        outputs = dict(
+            token_latents=token_latents_BTNL,
+            latent_actions=(
+                action_embeddings_BTm11L
+                if self.use_gt_actions
+                else latent_actions_BTm11L
+            ),
+            rng=rng,
+        )
+        pred_latents_BTNL, denoise_t = self.dynamics(outputs)
+        outputs["x_pred"] = pred_latents_BTNL
+        outputs["x_gt"] = token_latents_BTNL
+        outputs["signal_level"] = denoise_t
+        outputs["recon"] = self.tokenizer.decode(pred_latents_BTNL, (H, W))
+
+        if action_indices_E is not None:
+            outputs["lam_indices"] = action_indices_E
+
+        return outputs
+
+    def sample(
+        self,
+        batch: Dict[str, jax.Array],
+        seq_len: int,
+        diffusion_steps: int = 64,
+        diffusion_corrupt_context_factor: float = 0.1,
+    ) -> jax.Array:
+        """
+        Autoregressively samples up to `seq_len` future frames.
+
+        - Input frames are tokenized once.
+        - Future frames are generated autoregressively in latent space.
+        - The context frames are corrupted by noise like in Dreamer 4 section 3.2.
+        - All frames are decoded in a single pass.
+
+        Dimension keys:
+            B: batch size
+            T: number of input (conditioning) frames
+            N: number of patches per frame
+            L: latent dimension
+            S: sequence length
+            H: height
+            W: width
+        """
+        assert isinstance(self.dynamics, DynamicsDiffusion)
+        # --- Encode videos and actions ---
+        videos_BTHWC = batch["videos"]
+        H, W = videos_BTHWC.shape[2:4]
+        rng, _rng_mask, _rng_noise_full = jax.random.split(batch["rng"], 3)
+        tokenizer_outputs = self.tokenizer.mask_and_encode(
+            videos_BTHWC, _rng_mask, training=False
+        )
+        token_latents_BTNL = tokenizer_outputs["z"]
+        B, T, N, L = token_latents_BTNL.shape
+        pad_shape = (B, seq_len - T, N, L)
+        pad = jax.random.normal(_rng_noise_full, pad_shape)
+        token_latents_BSNL = jnp.concatenate([token_latents_BTNL, pad], axis=1)
+        dynamics_state = nnx.state(self.dynamics)
+
+        if self.use_gt_actions:
+            assert self.action_embed is not None
+            latent_actions_BT1L = self.action_embed(batch["actions"]).reshape(
+                *batch["actions"].shape[:2], 1, self.latent_action_dim
+            )
+            latent_actions_BTm11L = latent_actions_BT1L[:, :-1]
+            action_tokens_EL = latent_actions_BTm11L.reshape(-1, self.latent_action_dim)
+        else:
+            assert self.lam is not None
+            latent_actions_E = batch["latent_actions"]
+            action_tokens_EL = self.lam.vq.get_codes(latent_actions_E)
+
+        ctx_signal_level = 1 - diffusion_corrupt_context_factor
+        ctx_signal_level = jnp.argmin(
+            jnp.abs(jnp.arange(diffusion_steps) / diffusion_steps - ctx_signal_level)
+        )
+        ctx_signal_level = ctx_signal_level / diffusion_steps
+
+        @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
+        def denoise_step_fn(
+            carry: tuple[jax.Array, jax.Array, jax.Array], denoise_step: jax.Array
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            latents_BSNL, frame_idx, rng = carry
+            rng, _rng_noise_context = jax.random.split(rng)
+
+            # We need to reconstruct the submodule inside scan body to prevent trace context mismatches
+            dynamics_diffusion = DynamicsDiffusion(
+                model_dim=self.dyna_dim,
+                ffn_dim=self.dyna_ffn_dim,
+                latent_patch_dim=self.latent_patch_dim,
+                latent_action_dim=self.latent_action_dim,
+                num_blocks=self.dyna_num_blocks,
+                num_heads=self.dyna_num_heads,
+                denoise_steps=self.diffusion_denoise_steps,
+                dropout=self.dropout,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+                use_flash_attention=self.use_flash_attention,
+                rngs=nnx.Rngs(0),
+                decode=self.decode,
+            )
+            nnx.update(dynamics_diffusion, dynamics_state)
+
+            # corrupt the context frames like in Dreamer 4 section 3.2
+            denoise_step_BS = (
+                jnp.ones((B, seq_len), dtype=jnp.int32) * diffusion_steps - 1
+            )
+            denoise_step_BS = denoise_step_BS.at[:, frame_idx].set(denoise_step)
+
+            noise_context_BSNL = jax.random.normal(
+                _rng_noise_context, (B, seq_len, N, L)
+            )
+            corrupted_latents_BSNL = (
+                latents_BSNL * ctx_signal_level
+                + (1 - ctx_signal_level) * noise_context_BSNL
+            )
+            frame_mask = jnp.arange(seq_len) < frame_idx
+            frame_mask_1S11 = frame_mask.reshape(1, seq_len, 1, 1)
+            corrupted_tok_latents_BSNL = jnp.where(
+                frame_mask_1S11, corrupted_latents_BSNL, latents_BSNL
+            )
+
+            # --- Predict transition ---
+            action_tokens_BSm11L = jnp.reshape(
+                action_tokens_EL, (B, seq_len - 1, 1, -1)
+            )
+            act_embed_BSm11L = self.dynamics.action_up(action_tokens_BSm11L)
+            act_embed_BS1L = jnp.pad(act_embed_BSm11L, ((0, 0), (1, 0), (0, 0), (0, 0)))
+
+            denoise_step_embed_BS1L = self.dynamics.timestep_embed(
+                denoise_step_BS
+            ).reshape(B, seq_len, 1, self.latent_patch_dim)
+
+            inputs_BSNp2L = jnp.concatenate(
+                [act_embed_BS1L, denoise_step_embed_BS1L, corrupted_tok_latents_BSNL],
+                axis=2,
+            )
+            pred_latents_BSNp2L = dynamics_diffusion.diffusion_transformer(
+                inputs_BSNp2L,
+            )
+            pred_latents_BSNL = pred_latents_BSNp2L[:, :, 2:]
+            latents_BSNL = latents_BSNL.at[:, frame_idx].set(
+                pred_latents_BSNL[:, frame_idx]
+            )
+            new_carry = (latents_BSNL, frame_idx, rng)
+            return new_carry
+
+        @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
+        def autoregressive_step_fn(
+            carry: tuple[jax.Array, jax.Array], frame_index: jax.Array
+        ) -> tuple[jax.Array, jax.Array]:
+            latents_BSNL, rng = carry
+            rng, _rng_noise_context = jax.random.split(rng)
+
+            carry_denoise = (latents_BSNL, frame_index, _rng_noise_context)
+            final_carry_denoise = denoise_step_fn(
+                carry_denoise, jnp.arange(diffusion_steps)
+            )
+            latents_BSNL = final_carry_denoise[0]
+            new_carry = (latents_BSNL, rng)
+            return new_carry
+
+        rng, _rng_sample = jax.random.split(rng)
+        initial_carry = (token_latents_BSNL, _rng_sample)
+        final_carry = autoregressive_step_fn(initial_carry, jnp.arange(T, seq_len))
+        final_latents_BSNL = final_carry[0]
+
+        final_videos_BSHWC = self.tokenizer.decode(final_latents_BSNL, video_hw=(H, W))
+
+        return final_videos_BSHWC
+
+    def vq_encode(self, batch: Dict[str, jax.Array], training: bool) -> jax.Array:
+        # --- Preprocess videos ---
+        assert self.lam is not None
+        video_BTHWC = batch["videos"]
+        lam_output: Dict[str, jax.Array] = self.lam.vq_encode(
+            video_BTHWC, training=training
+        )
+        lam_indices_E = lam_output["indices"]
+        return lam_indices_E
+
+
 # FIXME (f.srambical): add conversion script for old checkpoints
 def restore_genie_components(
     optimizer: nnx.ModelAndOptimizer,
     sharding: jax.sharding.NamedSharding,
     rng: jax.Array,
+    tokenizer_type: str,
     args,
 ) -> nnx.ModelAndOptimizer:
     """Restore pre-trained Genie components"""
@@ -593,22 +921,43 @@ def restore_genie_components(
         options=checkpoint_options,
         handler_registry=handler_registry,
     )
-    dummy_tokenizer = TokenizerVQVAE(
-        in_dim=args.image_channels,
-        model_dim=args.tokenizer_dim,
-        ffn_dim=args.tokenizer_ffn_dim,
-        latent_dim=args.latent_patch_dim,
-        num_latents=args.num_patch_latents,
-        patch_size=args.patch_size,
-        num_blocks=args.tokenizer_num_blocks,
-        num_heads=args.tokenizer_num_heads,
-        dropout=args.dropout,
-        codebook_dropout=args.dropout,
-        param_dtype=args.param_dtype,
-        dtype=args.dtype,
-        use_flash_attention=args.use_flash_attention,
-        rngs=rngs_tokenizer,
-    )
+    if tokenizer_type == "vqvae":
+        dummy_tokenizer = TokenizerVQVAE(
+            in_dim=args.image_channels,
+            model_dim=args.tokenizer_dim,
+            ffn_dim=args.tokenizer_ffn_dim,
+            latent_dim=args.latent_patch_dim,
+            num_latents=args.num_patch_latents,
+            patch_size=args.patch_size,
+            num_blocks=args.tokenizer_num_blocks,
+            num_heads=args.tokenizer_num_heads,
+            dropout=args.dropout,
+            codebook_dropout=args.dropout,
+            param_dtype=args.param_dtype,
+            dtype=args.dtype,
+            use_flash_attention=args.use_flash_attention,
+            rngs=rngs_tokenizer,
+        )
+    elif tokenizer_type == "mae":
+        dummy_tokenizer = TokenizerMAE(
+            in_dim=args.image_channels,
+            model_dim=args.tokenizer_dim,
+            ffn_dim=args.tokenizer_ffn_dim,
+            latent_dim=args.latent_patch_dim,
+            num_latents=args.num_patch_latents,
+            patch_size=args.patch_size,
+            num_blocks=args.tokenizer_num_blocks,
+            num_heads=args.tokenizer_num_heads,
+            dropout=args.dropout,
+            max_mask_ratio=0.0,
+            param_dtype=args.param_dtype,
+            dtype=args.dtype,
+            use_flash_attention=args.use_flash_attention,
+            rngs=rngs_tokenizer,
+        )
+    else:
+        raise ValueError(f"Invalid tokenizer type: {tokenizer_type}")
+
     dummy_tokenizer_optimizer = nnx.ModelAndOptimizer(dummy_tokenizer, tx)
     dummy_tokenizer_optimizer_state = nnx.state(dummy_tokenizer_optimizer)
     abstract_sharded_tokenizer_optimizer_state = _create_abstract_sharded_pytree(

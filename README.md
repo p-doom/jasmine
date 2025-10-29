@@ -7,11 +7,48 @@
         <img src="https://img.shields.io/badge/code%20style-black-000000.svg" /></a>
 </p>
 
-Jasmine is a production-ready JAX-based world modeling codebase. It currently implements the high-level architecture of [Genie: Generative Interactive Environments](https://arxiv.org/abs/2402.15391) (Bruce et al., 2024) with [MaskGIT](https://arxiv.org/abs/2202.04200) (Chang et al., 2022), as well as an autoregressive (causal) baseline. A diffusion baseline is coming soon.
+Jasmine is a production-ready JAX-based world modeling codebase. It currently implements the high-level architecture of [Genie: Generative Interactive Environments](https://arxiv.org/abs/2402.15391) (Bruce et al., 2024) with [MaskGIT](https://arxiv.org/abs/2202.04200) (Chang et al., 2022), a diffusion baseline, as well as an autoregressive (causal) baseline. 
 
 Jasmine scales from single hosts to hundreds of xPUs thanks to XLA and strives to be an easily hackable, batteries-included foundation for world modeling research.
 
 <h2 name="overview" id="overview">Overview</h2>
+
+Genie has three components: A [video tokenizer](jasmine/models/tokenizer.py), a [latent action model (LAM)](jasmine/models/lam.py), and a [dynamics model](jasmine/models/dynamics.py). 
+The tokenizer needs to be trained first, which the dynamics subsequently uses. Jasmine supports co-training the LAM with the dynamics model.
+The repository contains a VQ-VAE-based and a MAE-based tokenizer. The MaskGIT-based and causal baselines need to be trained using the discrete VQ-VAE tokenizer. The diffusion baseline uses the MAE tokenizer. The diffusion baseline adopts several (but not all) techniques from [Dreamer 4](https://arxiv.org/abs/2509.24527) (Hafner et. al., 2025) and uses the [diffusion forcing](https://arxiv.org/abs/2407.01392) (Chen et. al., 2024) objective for supervision.
+The baselines and their respective training scripts can be found under `jasmine/baselines`.
+```
+jasmine
+├── data
+│   ├── jasmine_data
+│   ├── pyproject.toml
+├── jasmine
+│   ├── baselines
+│   │   ├── diffusion
+│   │   │   ├── sample_diffusion.py
+│   │   │   ├── train_dynamics_diffusion.py
+│   │   │   └── train_tokenizer_mae.py
+│   │   ├── maskgit
+│   │   │   ├── sample_maskgit.py
+│   │   │   ├── train_dynamics_causal.py
+│   │   │   ├── train_dynamics_maskgit.py
+|   │   │   └── train_tokenizer_vqvae.py
+│   │   └── train_lam.py
+│   ├── models
+│   │   ├── dynamics.py
+│   │   ├── genie.py
+│   │   └── lam.py
+│   └── utils
+│       ├── dataloader.py
+│       ├── nn.py
+│       ├── preprocess.py
+│       └── train_utils.py
+├── LICENSE
+├── pyproject.toml
+└── README.md
+```
+
+<h2 name="overview" id="overview">Features</h2>
 
 - Asynchronous & distributed checkpointing thanks to [orbax.checkpoint](https://github.com/google/orbax)
     - Jasmine also supports mixing and matching hardware topologies (e.g. train on four nodes, load the checkpoint on a single node)
@@ -59,7 +96,7 @@ You can either download our preprocessed dataset from [Hugging Face](https://hug
 The easiest way to get started is to download our preprocessed dataset from Hugging Face. This script will handle downloading and extracting it:
 
 ```bash
-bash data/minecraft/huggingface/download_openai_array_records.sh
+bash data/jasmine_data/minecraft/huggingface/download_openai_array_records.sh
 ```
 
 ---
@@ -99,24 +136,31 @@ If you prefer to use the raw VPT dataset from OpenAI and preprocess it yourself,
 
 <h2 name="train" id="train">Quick Start 🚀 </h2>
 
-Genie has three components: a [video tokenizer](models/tokenizer.py), a [latent action model](models/lam.py), and a [dynamics model](models/dynamics.py). Each of these components are trained separately, however, the dynamics model requires a pre-trained video tokenizer (and latent action model).
 
 To train the video tokenizer, run:
 
 ```bash
-uv run python jasmine/train_tokenizer.py --ckpt_dir <path>
+uv run python jasmine/baselines/maskgit/train_tokenizer_vqvae.py \
+    --ckpt_dir <path> \
+    --data_dir <path>
 ```
 
 To train the latent action model, run:
 
 ```bash
-uv run python jasmine/train_lam.py --ckpt_dir <path>
+uv run python jasmine/baselines/train_lam.py \
+    --ckpt_dir <path> \
+    --data_dir <path>
 ```
 
 Once the tokenizer and LAM are trained, the dynamics model can be trained with:
 
 ```bash
-uv run python jasmine/train_dynamics.py --tokenizer_checkpoint <path> --lam_checkpoint <path>
+uv run python jasmine/train_dynamics.py \
+    --tokenizer_checkpoint <path> \
+    --lam_checkpoint <path> \
+    --ckpt_dir <path> \
+    --data_dir <path>
 ```
 
 Logging with `wandb` is supported. To enable logging, set the `WANDB_API_KEY` environment variable or run:
@@ -128,7 +172,12 @@ wandb login
 Training can then be logged by setting the `--log` flag:
 
 ```bash
-uv run python jasmine/train_tokenizer.py --log --entity <wandb-entity> --project <wandb-project>
+uv run python jasmine/baselines/maskgit/train_tokenizer_vqvae.py \
+    --ckpt_dir <path> \
+    --data_dir <path> \
+    --log \
+    --entity <wandb-entity> \
+    --project <wandb-project>
 ```
 
 <h2 name="cite" id="cite">Citing 📜 </h2>
