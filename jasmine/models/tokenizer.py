@@ -258,7 +258,7 @@ class TokenizerMAE(nnx.Module):
 
         # --- Encode ---
         z_BTNL = self.encoder(patch_BTNP)
-        # squeeze latents through tanh as descibed in Dreamer 4 section 3.1
+        # squeeze latents through tanh as described in Dreamer 4 section 3.1
         z_BTNL = nnx.tanh(z_BTNL)
         outputs = dict(z=z_BTNL)
         return outputs

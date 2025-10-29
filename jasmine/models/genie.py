@@ -182,7 +182,7 @@ class GenieMaskGIT(nnx.Module):
         latent_actions = (
             action_embeddings_BTm11L if self.use_gt_actions else latent_actions_BTm11L
         )
-        assert type(latent_actions) == jax.Array
+        assert isinstance(latent_actions, jax.Array)
 
         outputs = dict(
             video_tokens=jax.lax.stop_gradient(token_indices_BTN),
