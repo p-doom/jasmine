@@ -4,6 +4,7 @@ Episodes are saved individually as memory-mapped files for efficient loading.
 """
 
 from dataclasses import dataclass
+from typing import Sequence
 
 from gym3 import types_np
 import numpy as np
@@ -11,7 +12,8 @@ from procgen import ProcgenGym3Env
 import tyro
 import json
 import os
-from jasmine_data.utils import save_chunks
+import pickle
+from array_record.python.array_record_module import ArrayRecordWriter
 
 
 @dataclass
@@ -23,8 +25,6 @@ class Args:
     output_dir: str = "data/coinrun_episodes"
     min_episode_length: int = 1000
     max_episode_length: int = 1000
-    chunk_size: int = 160
-    chunks_per_file: int = 100
     seed: int = 0
 
 
@@ -33,20 +33,16 @@ assert (
     args.max_episode_length >= args.min_episode_length
 ), "Maximum episode length must be greater than or equal to minimum episode length."
 
-if args.min_episode_length < args.chunk_size:
-    print(
-        "Warning: Minimum episode length is smaller than chunk size. Note that episodes shorter than the chunk size will be discarded."
-    )
-
 
 # --- Generate episodes ---
 def generate_episodes(num_episodes, split, start_level, env_name):
     episode_idx = 0
     episode_metadata = []
-    obs_chunks = []
-    act_chunks = []
     file_idx = 0
     output_dir_split = os.path.join(args.output_dir, split)
+    os.makedirs(output_dir_split, exist_ok=True)
+
+    total_sequence_length = 0
     while episode_idx < num_episodes:
         env = ProcgenGym3Env(
             num=1, env_name=env_name, start_level=start_level + episode_idx
@@ -54,8 +50,6 @@ def generate_episodes(num_episodes, split, start_level, env_name):
 
         observations_seq = []
         actions_seq = []
-        episode_obs_chunks = []
-        episode_act_chunks = []
 
         # --- Run episode ---
         step_t = 0
@@ -66,55 +60,32 @@ def generate_episodes(num_episodes, split, start_level, env_name):
             env.act(action)
             observations_seq.append(obs["rgb"])
             actions_seq.append(action)
-            if len(observations_seq) == args.chunk_size:
-                episode_obs_chunks.append(observations_seq)
-                episode_act_chunks.append(actions_seq)
-                observations_seq = []
-                actions_seq = []
             if first and not first_obs:
                 break
             first_obs = False
 
-        # --- Save episode ---
         if step_t + 1 >= args.min_episode_length:
-            if observations_seq:
-                if len(observations_seq) < args.chunk_size:
-                    print(
-                        f"Warning: Inconsistent chunk_sizes. Episode has {len(observations_seq)} frames, "
-                        f"which is smaller than the requested chunk_size: {args.chunk_size}. "
-                        "This might lead to performance degradation during training."
-                    )
-                episode_obs_chunks.append(observations_seq)
-                episode_act_chunks.append(actions_seq)
+            episode_data = np.concatenate(observations_seq, axis=0).astype(np.uint8)
 
-            obs_chunks_data = [
-                np.concatenate(seq, axis=0).astype(np.uint8)
-                for seq in episode_obs_chunks
-            ]
-            act_chunks_data = [
-                np.concatenate(act, axis=0) for act in episode_act_chunks
-            ]
-            obs_chunks.extend(obs_chunks_data)
-            act_chunks.extend(act_chunks_data)
-
-            ep_metadata, file_idx, obs_chunks, act_chunks = save_chunks(
-                file_idx, args.chunks_per_file, output_dir_split, obs_chunks, act_chunks
+            # save as array record
+            episode_path = os.path.join(
+                output_dir_split, f"episode_{episode_idx}.array_record"
             )
-            episode_metadata.extend(ep_metadata)
+            writer = ArrayRecordWriter(str(episode_path), "group_size:1")
+            writer.write(
+                pickle.dumps(
+                    {"raw_video": episode_data.tobytes(), "sequence_length": step_t + 1}
+                )
+            )
+            total_sequence_length += step_t + 1
+            writer.close()
 
-            print(f"Episode {episode_idx} completed, length: {step_t + 1}.")
+            # save episode metadata
+            episode_metadata.append({"path": episode_path, "length": step_t + 1})
             episode_idx += 1
-        else:
-            print(f"Episode too short ({step_t + 1}), resampling...")
-
-    if len(obs_chunks) > 0:
-        print(
-            f"Warning: Dropping {len(obs_chunks)} chunks for consistent number of chunks per file.",
-            "Consider changing the chunk_size and chunks_per_file parameters to prevent data-loss.",
-        )
 
     print(f"Done generating {split} split")
-    return episode_metadata
+    return total_sequence_length
 
 
 def get_action_space():
@@ -130,13 +101,13 @@ def main():
     test_start_level = val_start_level + args.num_episodes_val
 
     # --- Generate episodes ---
-    train_episode_metadata = generate_episodes(
+    train_total_sequence_length = generate_episodes(
         args.num_episodes_train, "train", train_start_level, args.env_name
     )
-    val_episode_metadata = generate_episodes(
+    val_total_sequence_length = generate_episodes(
         args.num_episodes_val, "val", val_start_level, args.env_name
     )
-    test_episode_metadata = generate_episodes(
+    test_total_sequence_length = generate_episodes(
         args.num_episodes_test, "test", test_start_level, args.env_name
     )
 
@@ -147,18 +118,9 @@ def main():
         "num_episodes_train": args.num_episodes_train,
         "num_episodes_val": args.num_episodes_val,
         "num_episodes_test": args.num_episodes_test,
-        "avg_episode_len_train": np.mean(
-            [ep["avg_seq_len"] for ep in train_episode_metadata]
-        ),
-        "avg_episode_len_val": np.mean(
-            [ep["avg_seq_len"] for ep in val_episode_metadata]
-        ),
-        "avg_episode_len_test": np.mean(
-            [ep["avg_seq_len"] for ep in test_episode_metadata]
-        ),
-        "episode_metadata_train": train_episode_metadata,
-        "episode_metadata_val": val_episode_metadata,
-        "episode_metadata_test": test_episode_metadata,
+        "total_sequence_length_train": train_total_sequence_length,
+        "total_sequence_length_val": val_total_sequence_length,
+        "total_sequence_length_test": test_total_sequence_length,
     }
     with open(os.path.join(args.output_dir, "metadata.json"), "w") as f:
         json.dump(metadata, f)
